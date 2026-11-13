@@ -16,16 +16,17 @@
 
 package com.google.javascript.jscomp;
 
+import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
+import static org.junit.Assert.assertThrows;
 
 import com.google.common.base.Joiner;
+import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.javascript.jscomp.testing.TestExternsBuilder;
 import com.google.javascript.rhino.Node;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -39,7 +40,17 @@ import org.junit.runners.JUnit4;
 public final class PeepholeFoldConstantsTest extends CompilerTestCase {
 
   public PeepholeFoldConstantsTest() {
-    super(DEFAULT_EXTERNS);
+    super(
+        new TestExternsBuilder()
+            .addArray()
+            .addIterable()
+            .addObject()
+            .addUndefined()
+            .addFunction()
+            .addString()
+            .addInfinity()
+            .addNaN()
+            .build());
   }
 
   private boolean late;
@@ -56,6 +67,8 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
     useTypes = true;
     // Reduce this to 1 if we get better expression evaluators.
     numRepetitions = 2;
+    enableNormalize();
+    disableCompareJsDoc();
   }
 
   @Override
@@ -474,25 +487,125 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
   @Test
   public void testBigIntStringComparison() {
     test("1n < '2'", "true");
+    test("1n <= '2'", "true");
+    test("1n > '2'", "false");
+    test("1n >= '2'", "false");
+    test("1n < '1'", "false");
+    test("1n <= '1'", "true");
+    test("1n > '1'", "false");
+    test("1n >= '1'", "true");
+    test("1n == '1'", "true");
+    test("1n != '1'", "false");
     test("2n > '1'", "true");
     test("123n > '34'", "true");
-    test("1n == '1'", "true");
     test("1n == '2'", "false");
-    test("1n != '1'", "false");
     test("1n === '1'", "false");
     test("1n !== '1'", "true");
+
+    test("10n == '  10  '", "true");
+    test("10n < '  20  '", "true");
+    test("16n == '0x10'", "true");
+    test("2n == '0b10'", "true");
+    test("8n == '0o10'", "true");
+    test("-1n == '-1'", "true");
+    test("1n == '+1'", "true");
+
+    // Invalid BigInt strings (StringToBigInt returns undefined) evaluate to false for all
+    // relational comparisons
+    test("1n < 'foo'", "false");
+    test("1n > 'foo'", "false");
+    test("1n <= 'foo'", "false");
+    test("1n >= 'foo'", "false");
+    test("1n == 'foo'", "false");
+    test("1n != 'foo'", "true");
+
+    test("1n < '1e2'", "false");
+    test("1n > '1e2'", "false");
+    test("1n <= '1e2'", "false");
+    test("1n >= '1e2'", "false");
+    test("1n == '1e2'", "false");
+    test("1n != '1e2'", "true");
+
+    test("1n < '1.5'", "false");
+    test("1n > '1.5'", "false");
+    test("1n <= '1.5'", "false");
+    test("1n >= '1.5'", "false");
+    test("1n == '1.5'", "false");
+    test("1n != '1.5'", "true");
+
+    test("1n < 'Infinity'", "false");
+    test("1n > 'Infinity'", "false");
+    test("1n <= 'Infinity'", "false");
+    test("1n >= 'Infinity'", "false");
+
+    test("1n < '-Infinity'", "false");
+    test("1n > '-Infinity'", "false");
+    test("1n <= '-Infinity'", "false");
+    test("1n >= '-Infinity'", "false");
   }
 
   @Test
   public void testStringBigIntComparison() {
-    test("'1' < 2n", "true");
+    test("'2' < 1n", "false");
+    test("'2' <= 1n", "false");
     test("'2' > 1n", "true");
-    test("'123' > 34n", "true");
+    test("'2' >= 1n", "true");
+    test("'1' < 1n", "false");
+    test("'1' <= 1n", "true");
+    test("'1' > 1n", "false");
+    test("'1' >= 1n", "true");
     test("'1' == 1n", "true");
-    test("'1' == 2n", "false");
     test("'1' != 1n", "false");
+    test("'1' < 2n", "true");
+    test("'123' > 34n", "true");
+    test("'1' == 2n", "false");
     test("'1' === 1n", "false");
     test("'1' !== 1n", "true");
+
+    test("'  10  ' == 10n", "true");
+    test("'  20  ' > 10n", "true");
+    test("'0x10' == 16n", "true");
+    test("'0b10' == 2n", "true");
+    test("'0o10' == 8n", "true");
+    test("'-1' == -1n", "true");
+    test("'+1' == 1n", "true");
+
+    test("'foo' < 1n", "false");
+    test("'foo' > 1n", "false");
+    test("'foo' <= 1n", "false");
+    test("'foo' >= 1n", "false");
+    test("'foo' == 1n", "false");
+    test("'foo' != 1n", "true");
+
+    test("'1e2' < 1n", "false");
+    test("'1e2' > 1n", "false");
+    test("'1e2' <= 1n", "false");
+    test("'1e2' >= 1n", "false");
+
+    test("'1.5' < 1n", "false");
+    test("'1.5' > 1n", "false");
+    test("'1.5' <= 1n", "false");
+    test("'1.5' >= 1n", "false");
+  }
+
+  @Test
+  public void testBigIntEqualityWithNullOrUndefined() {
+    test("null == 1n", "false");
+    test("undefined == 1n", "false");
+    test("1n == null", "false");
+    test("1n == undefined", "false");
+    test("null != 1n", "true");
+    test("undefined != 1n", "true");
+    test("1n != null", "true");
+    test("1n != undefined", "true");
+  }
+
+  @Test
+  public void testBigIntEqualityWithVariables() {
+    testSame("x == 1n");
+    testSame("1n == y");
+    testSame("x != 1n");
+    testSame("1n != y");
   }
 
   @Test
@@ -707,7 +820,6 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
     testSame("a = x ?? true ? b : c");
 
     testSame("x = foo() ?? true ?? bar()");
-    ;
     test("x = foo() ?? (true && bar())", "x = foo() ?? bar()");
     testSame("x = (foo() || false) ?? bar()");
 
@@ -729,6 +841,156 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
 
     // potential optimization
     testSame("x = undefined?.y"); // `x = void 0;`
+  }
+
+  @Test
+  public void testFoldOptChain_nonNullReceiver() {
+    // Constant folding on literals with optional chaining
+    test("x = 'hello'?.length", "x = 5");
+    test("x = ''?.length", "x = 0");
+    test("x = [1, 2, 3]?.length", "x = 3");
+    test("x = []?.length", "x = 0");
+    test("x = ([10, 20])?.[0]", "x = 10");
+    test("x = ([10, 20])?.[1]", "x = 20");
+    test("x = 'abcdef'?.[1]", "x = 'b'");
+    test("x = ({a: 1})?.a", "x = 1");
+    test("x = ({a: 1})?.['a']", "x = 1");
+
+    // Guard cases / unknown receivers must remain untouched
+    testSame("x = str?.length");
+    testSame("x = arr?.length");
+    testSame("x = obj?.a");
+    testSame("x = obj?.[key]");
+    testSame("x = fn?.(arg)");
+    testSame("x = [foo()]?.length"); // side-effecting array
+  }
+
+  @Test
+  public void testFoldOptChain_nullishReceiver() {
+    // Current compiler behavior in PeepholeFoldConstants (unfolded / preserved)
+    testSame("x = null?.y");
+    testSame("x = undefined?.y");
+    testSame("x = (void 0)?.y");
+    testSame("x = null?.[0]");
+    testSame("x = undefined?.[foo()]");
+    testSame("x = null?.(foo())");
+    testSame("x = (foo(), null)?.y");
+  }
+
+  @Test
+  public void testFoldNullishCoalesce_advanced() {
+    // Basic nullish LHS folding
+    test("null ?? 1", "1");
+    test("undefined ?? false", "false");
+    test("(void 0) ?? 'default'", "'default'");
+    test("(a(), null) ?? 1", "(a(), null, 1)");
+
+    // Non-nullish LHS folding
+    test("x = false ?? x", "x = false");
+    test("x = true ?? x", "x = true");
+    test("x = 0 ?? x", "x = 0");
+    test("x = '' ?? x", "x = ''");
+    test("x = 'hello' ?? x", "x = 'hello'");
+    test("x = 3 ?? x", "x = 3");
+    test("x = [1, 2] ?? x", "x = [1, 2]");
+    test("x = ({a: 1}) ?? x", "x = ({a: 1})");
+    test("x = [foo()] ?? x", "x = [foo()]");
+
+    // Guard cases: RHS cannot be folded if LHS is unknown
+    testSame("a = x ?? true");
+    testSame("a = x ?? false");
+    testSame("a = x ?? 3");
+    testSame("a = x ?? null");
+    testSame("a = (foo() ? null : 1) ?? 2");
+  }
+
+  @Test
+  public void testFoldLogicalAssignments() {
+    // Under normalization, logical assignments normalize to short-circuiting conditional assigns
+    testSame("x || (x = y)");
+    testSame("x && (x = y)");
+    testSame("x ?? (x = y)");
+    testSame("x || (x = false)");
+    testSame("x && (x = true)");
+    testSame("x ?? (x = null)");
+    testSame("obj[foo()] || (obj[foo()] = y)");
+  }
+
+  @Test
+  public void testBatchC_templateLiteralsAndSpread() {
+    // OPP-012: Template literal substitutions and guards
+    test("`a${'b'}c`", "`abc`");
+    test("`a${123}c`", "`a123c`");
+    test("`a${true}c`", "`atruec`");
+    test("`a${false}c`", "`afalsec`");
+    test("`${''}a${''}`", "`a`");
+    testSame("tag`a${'b'}c`");
+    testSame("`a${foo()}c`");
+    testSame("`a${x}c`");
+    testSame("`$${''}{`");
+
+    // OPP-013: Object spread constant flattening and guards
+    test("x = {...{}}", "x = {}");
+    test("x = {a, ...{}, b}", "x = {a, b}");
+    test("x = {...{a, b}, c, ...{d, e}}", "x = {a, b, c, d, e}");
+    test("x = {...{...{a}, b}, c}", "x = {a, b, c}");
+    testSame("x = {...obj}");
+    testSame("x = {...foo()}");
+    testSame("x = {...{get a() { return 1; }}}");
+    testSame("x = {...{set a(v) { }}}");
+
+    // OPP-014: Array spread constant flattening and guards
+    test("x = [...[]]", "x = []");
+    test("x = [0, ...[], 1]", "x = [0, 1]");
+    test("x = [...[0, 1], 2, ...[3, 4]]", "x = [0, 1, 2, 3, 4]");
+    test("x = [...[...[0], 1], 2]", "x = [0, 1, 2]");
+    test("foo(...[0], 1)", "foo(0, 1)");
+    test("foo([...[...[0], 1], 2])", "foo([0, 1, 2])");
+    testSame("x = [...iter]");
+    testSame("foo(...iter)");
+    testSame("x = [...{}]");
+    testSame("x = {...[]}");
+  }
+
+  @Test
+  public void testBatchE_arithmeticNeutralElements() {
+    // OPP-020: Arithmetic Neutral Elements & Strength Reductions
+    // Literal double negation
+    test("x = -(-4)", "x = 4");
+    test("x = -(-4n)", "x = 4n");
+
+    // Guard cases: expressions that must not fold or are preserved
+    testSame("x = foo() ** 0"); // side-effectful base
+    testSame("x = bigIntVal ** 1"); // cannot mix BigInt with number 1
+    testSame("x = (a + b) ** 1"); // non-constant exponentiation
+    testSame("x = (a + b) ** 0");
+    testSame("x = -(-(a + b))");
+    testSame("x = a % 1");
+  }
+
+  @Test
+  public void testBatchE_bitwiseNeutralAndAbsorptionIdentities() {
+    // OPP-021: Bitwise Neutral, Idempotent & Absorption Identities
+    // Fold constant bitwise operations
+    test("x = 1.5 | 0", "x = 1");
+    test("x = 4294967295 | 0", "x = -1");
+    test("x = -1 & 0", "x = 0");
+    test("x = 0 & -1", "x = 0");
+    test("x = ~0", "x = -1");
+    test("x = ~-7", "x = 6");
+
+    // Guard cases: non-constant / side-effectful expressions
+    testSame("x = foo() ^ foo()"); // side effects cannot be dropped
+    testSame("x = foo() & 0"); // side effects cannot be dropped
+    testSame("x = (a | b) | 0");
+    testSame("x = (a & b) & -1");
+    testSame("x = (a ^ b) ^ 0");
+    testSame("x = (a >> b) >> 0");
+    testSame("x = (a >>> b) >>> 0");
+    testSame("x = ~~ (a | b)");
+    testSame("x = (a + b) ^ (a + b)");
+    testSame("x = (a + b) & 0");
+    testSame("x = y | 0");
   }
 
   @Test
@@ -854,6 +1116,7 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
   @Test
   public void testFoldingMixTypesLate() {
     late = true;
+    disableNormalize();
     test("x = x + '2'", "x+='2'");
     test("x = +x + +'2'", "x = +x + 2");
     test("x = x - '2'", "x-=2");
@@ -948,18 +1211,12 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
     testSame("1 << 32");
     testSame("1 << -1");
     testSame("1 >> 32");
-    testSame("1.5 << 0",
-        PeepholeFoldConstants.FRACTIONAL_BITWISE_OPERAND);
-    testSame("1 << .5",
-        PeepholeFoldConstants.FRACTIONAL_BITWISE_OPERAND);
-    testSame("1.5 >>> 0",
-        PeepholeFoldConstants.FRACTIONAL_BITWISE_OPERAND);
-    testSame("1 >>> .5",
-        PeepholeFoldConstants.FRACTIONAL_BITWISE_OPERAND);
-    testSame("1.5 >> 0",
-        PeepholeFoldConstants.FRACTIONAL_BITWISE_OPERAND);
-    testSame("1 >> .5",
-        PeepholeFoldConstants.FRACTIONAL_BITWISE_OPERAND);
+    testSame("1.5 << 0", PeepholeFoldConstants.FRACTIONAL_BITWISE_OPERAND);
+    testSame("1 << .5", PeepholeFoldConstants.FRACTIONAL_BITWISE_OPERAND);
+    testSame("1.5 >>> 0", PeepholeFoldConstants.FRACTIONAL_BITWISE_OPERAND);
+    testSame("1 >>> .5", PeepholeFoldConstants.FRACTIONAL_BITWISE_OPERAND);
+    testSame("1.5 >> 0", PeepholeFoldConstants.FRACTIONAL_BITWISE_OPERAND);
+    testSame("1 >> .5", PeepholeFoldConstants.FRACTIONAL_BITWISE_OPERAND);
   }
 
   @Test
@@ -976,8 +1233,8 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
     test("x = 'a' + 'bc'", "x = 'abc'");
     test("x = 'a' + 5", "x = 'a5'");
     test("x = 5 + 'a'", "x = '5a'");
-    test("x = 'a' + 5n", "x = 'a5n'");
-    test("x = 5n + 'a'", "x = '5na'");
+    test("x = 'a' + 5n", "x = 'a5'");
+    test("x = 5n + 'a'", "x = '5a'");
     test("x = 'a' + ''", "x = 'a'");
     test("x = 'a' + foo()", "x = 'a'+foo()");
     test("x = foo() + 'a' + 'b'", "x = foo()+'ab'");
@@ -1012,6 +1269,7 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
     testSame("x = (p2 + 'a') + (1 + p1 + p2)");
     testSame("x = (p2 + 'a') + (1 + (p1 + p2))");
   }
+
   @Test
   public void testStringAdd_identity() {
     enableTypeCheck();
@@ -1024,7 +1282,7 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
   @Test
   public void testIssue821() {
     testSame("var a =(Math.random()>0.5? '1' : 2 ) + 3 + 4;");
-    testSame("var a = ((Math.random() ? 0 : 1) ||" + "(Math.random()>0.5? '1' : 2 )) + 3 + 4;");
+    testSame("var a = ((Math.random() ? 0 : 1) || (Math.random()>0.5? '1' : 2 )) + 3 + 4;");
   }
 
   @Test
@@ -1045,9 +1303,9 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
   public void testFoldArithmetic() {
     test("x = 10 + 20", "x = 30");
     test("x = 2 / 4", "x = 0.5");
-    test("x = 2.25 * 3", "x = 6.75");
-    testSame("z = x * y");
-    testSame("x = y * 5");
+    test("x = 2.25 & 3", "x = 2");
+    testSame("z = x & y");
+    testSame("x = y & 5");
     testSame("x = 1 / 0");
     test("x = 3 % 2", "x = 1");
     test("x = 3 % -2", "x = 1");
@@ -1063,19 +1321,19 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
   public void testFoldArithmetic2() {
     testSame("x = y + 10 + 20");
     testSame("x = y / 2 / 4");
-    test("x = y * 2.25 * 3", "x = y * 6.75");
-    testSame("x = y * 2.25 * z * 3");
-    testSame("z = x * y");
-    testSame("x = y * 5");
-    test("x = y + (z * 24 * 60 * 60 * 1000)", "x = y + z * 864E5");
+    test("x = y & 2.25 & 3", "x = y & 2");
+    testSame("x = y & 2.25 & z & 3");
+    testSame("z = x &y");
+    testSame("x = y & 5");
+    test("x = y + (z & 24 & 60 & 60 & 1000)", "x = y + (z & 8)");
   }
 
   @Test
   public void testFoldArithmetic3() {
-    test("x = null * undefined", "x = NaN");
-    test("x = null * 1", "x = 0");
-    test("x = (null - 1) * 2", "x = -2");
-    test("x = (null + 1) * 2", "x = 2");
+    test("x = null | undefined", "x = 0");
+    test("x = null | 1", "x = 1");
+    test("x = (null - 1)| 2", "x = -1");
+    test("x = (null + 1) | 2", "x = 3");
     test("x = null ** 0", "x = 1");
     test("x = (-0) ** 3", "x = -0");
   }
@@ -1096,8 +1354,8 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
 
   @Test
   public void testNoFoldArithmeticWithSideEffects() {
-    // can't fold this to "x = y * 6.75" because you can't remove the "sideEffects()" call
-    testSame("x = y * 2.25 * (sideEffects(), 3)");
+    // can't fold this to "x = y & 6.75" because you can't remove the "sideEffects()" call
+    testSame("x = y & 2.25 & (sideEffects(), 3)");
   }
 
   @Test
@@ -1107,14 +1365,23 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
     test("x = 2n * 3n", "x = 6n");
     test("x = 6n / 2n", "x = 3n");
     test("x = 3n % 2n", "x = 1n");
+    test("x = -5n % 3n", "x = -2n");
+    test("x = 5n % -3n", "x = 2n");
+    test("x = -5n % -3n", "x = -2n");
+    testSame("x = 1n % 0n");
+    test("x = 0n % -3n", "x = 0n");
+    testSame("x = 0n % 0n");
     test("x = 2n ** 3n", "x = 8n");
 
     // The compiler is not designed to fold expressions with an exponent > 2147483647
     test("x = 1n ** 2147483647n", "x = 1n");
     testSame("x = 1n ** 2147483648n");
 
-    test("x = y * 2n * 3n", "x = y * 6n");
+    test("x = y & 2n & 3n", "x = y & 2n");
+
+    // TODO b/361826515: Optimize associative bigint operations
     testSame("x = y * 2n * z * 3n");
+    testSame("x = y + 2n + z + 3n");
   }
 
   @Test
@@ -1318,13 +1585,21 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
     test("x = [10, 20][-1]", "x = void 0;");
     test("x = [10, 20][2]", "x = void 0;");
 
+    // TODO(b/538156673): Fix PeepholeFoldConstants to not fold out-of-bounds GETELEM on arrays with
+    // side-effect elements
     testSame("x = [foo(), 0][1]");
     test("x = [0, foo()][1]", "x = foo()");
     testSame("x = [0, foo()][0]");
+    testSame("x = [foo(), 0][-1]");
+    testSame("x = [0, foo()][-1]");
+    testSame("x = [foo(), 0][2]");
+    testSame("x = [0, foo()][2]");
     testSame("for([1][0] in {});");
   }
 
   /** Optional versions of the above `testFoldGetElem1` tests */
+  // TODO(b/538156673): Fix PeepholeFoldConstants to not fold out-of-bounds GETELEM on arrays with
+  // side-effect elements
   @Test
   public void testFoldOptChainGetElem1() {
     numRepetitions = 1;
@@ -1339,6 +1614,10 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
     testSame("x = [foo(), 0]?.[1]");
     test("x = [0, foo()]?.[1]", "x = foo()");
     testSame("x = [0, foo()]?.[0]");
+    testSame("x = [foo(), 0]?.[-1]");
+    testSame("x = [0, foo()]?.[-1]");
+    testSame("x = [foo(), 0]?.[2]");
+    testSame("x = [0, foo()]?.[2]");
   }
 
   @Test
@@ -1355,6 +1634,44 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
     testSame("x = 'string'[0.5]", PeepholeFoldConstants.INVALID_GETELEM_INDEX_ERROR);
     test("x = 'string'[-1]", "x = void 0;");
     test("x = 'string'[6]", "x = void 0;");
+  }
+
+  @Test
+  public void testFoldGetElem_nonCanonicalKeys() {
+    testSame("var x = [1, 2]['+0'];");
+    testSame("var x = 'abc'['00'];");
+    testSame("var x = [1][false];");
+    testSame("var x = [1, 2]['1.0'];");
+    testSame("var x = [1, 2][' 0 '];");
+    testSame("var x = [1, 2][''];");
+    testSame("var x = [1, 2][null];");
+    testSame("var x = [1, 2][true];");
+    test("var x = [1, 2][!0];", "var x = [1, 2][true];");
+
+    test("var x = [1, 2]['0'];", "var x = 1;");
+    test("var x = [1, 2]['1'];", "var x = 2;");
+    test("var x = 'abc'['0'];", "var x = 'a';");
+
+    // Leading zeros, signs, exponents, and radix prefixes are not canonical.
+    testSame("var x = [1, 2]['01'];");
+    testSame("var x = [1, 2]['-0'];");
+    testSame("var x = [1, 2]['-1'];");
+    testSame("var x = 'abc'['-1'];");
+    testSame("var x = [1, 2]['1e0'];");
+    testSame("var x = [1, 2]['0x1'];");
+    // '0.5' names a property; it is not an invalid index, so no warning.
+    testSame("var x = [1, 2]['0.5'];");
+    // String([]) is '', which is not an index.
+    testSame("var x = [1, 2][[]];");
+    // 2^31 - 1 is the largest index folded; larger valid indexes are left alone.
+    test("var x = [1, 2]['2147483647'];", "var x = void 0;");
+    testSame("var x = [1, 2]['2147483648'];");
+    testSame("var x = [1, 2]['4294967294'];");
+    testSame("var x = [1, 2]['4294967295'];");
+    // Number keys still fold; -0 converts to the key '0'.
+    test("var x = [1, 2][-0];", "var x = 1;");
+    testSame("var x = [1, 2]?.['01'];");
+    test("var x = [1, 2]?.['1'];", "var x = 2;");
   }
 
   /** Optional versions of the above `testFoldGetElem2` tests */
@@ -1414,6 +1731,18 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
     test("x = [...[0, 1], 2, ...[3, 4]]", "x = [0, 1, 2, 3, 4]");
     test("x = [...[...[0], 1], 2]", "x = [0, 1, 2]");
     testSame("[...[x]] = arr");
+    test("foo([...[...[0], 1], 2])", "foo([0, 1, 2])");
+    testSame("x = [1, ...[,], 2];");
+    testSame("x = [0, ...[,,], 3];");
+    testSame("x = [...[,]];");
+  }
+
+  @Test
+  public void testFoldArrayLitSpreadInArg() {
+    test("foo(...[0], 1)", "foo(0, 1)");
+    testSame("foo(...[,]);");
+    testSame("foo(...[,,,,\"foo\"], 1)");
+    testSame("foo(...(false ? [0] : [1]))"); // other opts need to fold the ternery first
   }
 
   @Test
@@ -1455,6 +1784,31 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
   }
 
   @Test
+  public void testDontFoldObjectSpread_withGetterSetter() {
+    numRepetitions = 1;
+
+    // At runtime, object spread converts getters to regular data properties, and omits setters.
+    // We back off on folding spread with getters & setters.
+    // In theory, we could make the compiler smart enough to turn
+    //   `{...{get a() { return 1; }}}` into `{a: 1}`, or `{...{set a(v) { }}}` into `{}`, but
+    // it doesn't seem worth the complexity right now.
+    testSame("x = {...{get a() { return 1; }}}");
+    testSame("x = {...{set a(v) { }}}");
+
+    // Test case with side-effects. If in the future we implement spread folding for getters/setters
+    // we would need to preserve evaluation of the console.log.
+    testSame("x = {...{get a() { console.log('hi'); return 1; }}}");
+  }
+
+  @Test
+  public void testDontFoldObjectSpread_withComputedGetterSetter() {
+    numRepetitions = 1;
+
+    testSame("x = {...{get [a]() { return 1; }}}");
+    testSame("x = {...{set [a](v) { }}}");
+  }
+
+  @Test
   public void testDontFoldMixedObjectAndArraySpread() {
     numRepetitions = 1;
     testSame("x = [...{}]");
@@ -1473,7 +1827,7 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
   @Test
   public void testFoldLeft() {
     testSame("(+x - 1) + 2"); // not yet
-    test("(+x + 1) + 2", "+x + 3");
+    test("(+x & 1) & 2", "+x & 0");
   }
 
   @Test
@@ -1489,6 +1843,15 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
     // Cannot fold
     test("x = [foo(), 0].length", "x = [foo(),0].length");
     testSame("x = y.length");
+    testSame("[1, 2].length = 0;");
+    test("[1, 2].length >>= 1;", "[1, 2].length = 1;");
+    testSame("[1, 2].length++;");
+    testSame("++[1, 2].length;");
+    testSame("[1, 2].length--;");
+    testSame("--[1, 2].length;");
+    testSame("x = [...'abc'].length");
+    testSame("x = [1, ...'ab', 3].length");
+    testSame("x = [...`abc`].length");
   }
 
   @Test
@@ -1499,6 +1862,14 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
 
     // Test Unicode escapes are accounted for.
     test("x = '123\u01dc'.length", "x = 4");
+
+    // Cannot fold when length is an lvalue
+    testSame("\"a\".length = 1;");
+    test("\"a\".length >>= 1;", "\"a\".length = 0;");
+    testSame("\"a\".length++;");
+    testSame("++\"a\".length;");
+    testSame("\"a\".length--;");
+    testSame("--\"a\".length;");
   }
 
   @Test
@@ -1537,6 +1908,17 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
     test("NaN instanceof Object", "false");
     test("Infinity instanceof Object", "false");
 
+    // Untagged template literals always evaluate to strings.
+    test("`` instanceof Object", "false");
+    test("`${[]}` instanceof Object", "false");
+    test("`${function(){}}` instanceof Object", "false");
+    // Back off when substitutions have side-effects.
+    testSame("`${(console.log(0), [])}` instanceof Object");
+
+    // Tagged template literals may evaluate to a non-string, though. Would require type information
+    // to fold.
+    testSame("tag`${function(){}}` instanceof Object");
+
     // Array and object literals are known to be objects.
     test("[] instanceof Object", "true");
     test("({}) instanceof Object", "true");
@@ -1566,6 +1948,7 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
   @Test
   public void testAssignOpsLate() {
     late = true;
+    disableNormalize();
     test("x=x+y", "x+=y");
     testSame("x=y+x");
     test("x=x*y", "x*=y");
@@ -1577,8 +1960,21 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
     testSame("x=y-x");
     test("x=x|y", "x|=y");
     test("x=y|x", "x|=y");
+    test("x=x|y|z", "x|=y|z");
+    testSame("x=x&&y&&z");
     test("x=x*y", "x*=y");
     test("x=y*x", "x*=y");
+    testSame("x=foo()*x");
+    testSame("x=(x=5)*x");
+    testSame("x=(y++)*x");
+    testSame("x=foo()|x");
+    testSame("x=foo()&x");
+    testSame("x=foo()^x");
+    test("x=x*foo()", "x*=foo()");
+    test("x=x|foo()", "x|=foo()");
+    test("x=x&foo()", "x&=foo()");
+    test("x=x^foo()", "x^=foo()");
+    test("x=x+foo()", "x+=foo()");
     test("x=x**y", "x**=y");
     testSame("x=y**x");
     test("x.y=x.y+z", "x.y+=z");
@@ -1614,6 +2010,7 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
   @Test
   public void testUnfoldAssignOpsLate() {
     late = true;
+    disableNormalize();
     testSame("x+=y");
     testSame("x*=y");
     testSame("x.y+=z");
@@ -1622,6 +2019,8 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
     testSame("x*=y");
     testSame("x**=y");
     testSame("x.y+=z");
+    testSame("\"a\".length >>= 1;");
+    testSame("[1, 2].length >>= 1;");
   }
 
   @Test
@@ -1696,7 +2095,7 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
 
   @Test
   public void testFoldLeftChildOp() {
-    test("x * Infinity * 2", "x * Infinity");
+    test("x & Infinity & 2", "x & 0");
     testSame("x - Infinity - 2"); // want "x-Infinity"
     testSame("x - 1 + Infinity");
     testSame("x - 2 + 1");
@@ -1725,17 +2124,17 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
 
   @Test
   public void testFoldSimpleArithmeticOp() {
-    testSame("x*NaN");
+    testSame("x|NaN");
     testSame("NaN/y");
     testSame("f(x)-0");
-    testSame("f(x)*1");
-    testSame("1*f(x)");
+    testSame("f(x)|1");
+    testSame("1|f(x)");
     testSame("0+a+b");
     testSame("0-a-b");
     testSame("a+b-0");
-    testSame("(1+x)*NaN");
+    testSame("(1+x)|NaN");
 
-    testSame("(1+f(x))*NaN"); // don't fold side-effects
+    testSame("(1+f(x))|NaN"); // don't fold side-effects
   }
 
   @Test
@@ -1754,6 +2153,7 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
     test("!3", "false");
 
     late = true;
+    disableNormalize();
     testSame("!0");
     testSame("!1");
     test("!3", "false");
@@ -1854,8 +2254,9 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
     // setters by themselves don't provide a definition
     testSame("({}).a");
     testSame("({set a(b) {}}).a");
-    // sets don't hide other definitions.
-    test("({a:1,set a(b) {}}).a", "1");
+    // In ECMAScript, a setter replaces any preceding data property definition, leaving [[Get]] as
+    // undefined.
+    test("({a:1,set a(b) {}}).a", "void 0");
 
     // get is transformed to a call (gets don't have self referential names)
     test("({get a() {}}).a", "(function (){})()");
@@ -1863,16 +2264,38 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
     test("({get a() {},set a(b) {}}).a", "(function (){})()");
 
     // a function remains a function not a call.
-    test("var x = ({a:function(){return 1}}).a",
-         "var x = function(){return 1}");
+    test("var x = ({a:function(){return 1}}).a", "var x = function(){return 1}");
+
+    test("var x = ({ a: 1, set a(v) {} }).a", "var x = void 0");
+    test("var x = ({ a: 1, set ['a'](v) {} }).a", "var x = void 0");
+    test("({ a: 1, ['a'](v) {}, ['a'](w) {} }).a", "(function(w){})");
+    test("({ a: 1, set ['a'](u) {}, ['a'](v) {} }).a", "(function(v){})");
+    testSame("({ [foo()]: 1, a: 1, set a(v) {} }).a");
+    testSame("({ foo: bar(), a: 1, set a(v) {} }).a");
+    test("var x = ({ get a() { return 1; } }).a", "var x = (function() { return 1; })()");
+    test(
+        "var x = ({ get a() { return 1; }, set a(v) {} }).a",
+        "var x = (function() { return 1; })()");
+    test(
+        "var x = ({ get ['a']() { return 1; }, set ['a'](v) {} }).a",
+        "var x = (function() { return 1; })()");
+    test(
+        "var x = ({ get ['a']() { return 1; }, set a(v) {} }).a",
+        "var x = (function() { return 1; })()");
+    test(
+        "var x = ({ get a() { return 1; }, set ['a'](v) {} }).a",
+        "var x = (function() { return 1; })()");
+    test(
+        "var x = ({ a: 1, get a() { return 2; }, set a(v) {} }).a",
+        "var x = (function() { return 2; })()");
+    test("var x = ({ get a() { return 2; }, a: 1, set a(v) {} }).a", "var x = void 0");
 
     test("var x = ({a:1}).a", "var x = 1");
     test("var x = ({a:1, a:2}).a", "var x = 2");
     test("var x = ({a:1, a:foo()}).a", "var x = foo()");
     test("var x = ({a:foo()}).a", "var x = foo()");
 
-    test("function f() { return {a:1, b:2}.a; }",
-         "function f() { return 1; }");
+    test("function f() { return {a:1, b:2}.a; }", "function f() { return 1; }");
 
     // GETELEM is handled the same way.
     test("var x = ({'a':1})['a']", "var x = 1");
@@ -1881,6 +2304,10 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
     test("var a = {['a']:x}['a']", "var a = x");
     test("var a = {['a']:x}?.['a']", "var a = x");
     test("var a = {['a']:x}?.['a'].b", "var a = x.b");
+    test("var a = {a: {b: 1}}?.a?.b", "var a = 1");
+    test("var a = {a: null}?.a?.b", "var a = null?.b");
+    test("var a = {['a']: {b: 1}}?.['a']?.b", "var a = 1");
+    test("var a = {['a']: null}?.['a']?.b", "var a = null?.b");
 
     test("var a = { get ['a']() { return 1; }}['a']", "var a = function() { return 1; }();");
     test("var a = {'a': x, ['a']: y}['a']", "var a = y;");
@@ -1888,7 +2315,7 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
     // Note: it may be useful to fold symbols in the future.
     testSame("var y = Symbol(); var a = {[y]: 3}[y];");
 
-    /**
+    /*
      * We can fold member functions sometimes.
      *
      * <p>Even though they're different from fn expressions and arrow fns, extracting them only
@@ -1902,6 +2329,26 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
     test("var x = {a: 1, a() { 2; }}.a;", "var x = function() { 2; };");
     test("var x = {a() {}, a: 1}.a;", "var x = 1;");
     testSame("var x = {a() {}}.b");
+    // Don't fold non-computed setters.
+    testSame("var x = ({ set a(v) { sideEffect() } }).a;");
+    // Don't fold computed setters.
+    testSame("var x = ({ set ['a'](v) { sideEffect() } }).a;");
+    // Fold computed getters.
+    test("var x = ({ get ['a']() { return 1; } }).a;", "var x = function() { return 1; }();");
+    test(
+        "var x = ({ get ['a']() { return 1; }, set ['a'](v) {} }).a;",
+        "var x = function() { return 1; }();");
+    test(
+        "var x = ({ set ['a'](v) {}, get ['a']() { return 1; } }).a;",
+        "var x = function() { return 1; }();");
+  }
+
+  @Test
+  public void testSetterDefIgnoredInObjectLiteralPropertyFolding() {
+    test("var x = ({ a: 1, set a(v) {} }).a;", "var x = void 0;");
+    test("var x = ({ a: 1, set ['a'](v) {} }).a;", "var x = void 0;");
+    test("var x = ({ a: 1, set b(v) {} }).a;", "var x = 1;");
+    test("var x = ({ set a(v) {}, a: 2 }).a;", "var x = 2;");
   }
 
   @Test
@@ -1909,6 +2356,7 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
     late = false;
     test("({a:x}).a += 1", "({a:x}).a = x + 1");
     late = true;
+    disableNormalize();
     testSame("({a:x}).a += 1");
   }
 
@@ -1933,7 +2381,9 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
   }
 
   @Test
-  public void testFoldObjectLiteral_freeArrowCall_usingEnclosingThis() {
+  public void testFoldObjectLiteral_freeArrowCall_usingEnclosingThis_late() {
+    late = true;
+    disableNormalize();
     test("({a: () => this }).a()", "(() => this)()");
     test("({a: () => this })?.a()", "(() => this)()");
   }
@@ -1969,13 +2419,9 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
   @Test
   public void testTypeBasedFoldConstant() {
     enableTypeCheck();
-    test(
-        "function f(/** number */ x) { x + 1 + 1 + x; }",
-        "function f(/** number */ x) { x + 2 + x; }");
+    testSame("function f(/** number */ x) { x + 1 + 1 + x; }");
 
-    test(
-        "function f(/** boolean */ x) { x + 1 + 1 + x; }",
-        "function f(/** boolean */ x) { x + 2 + x; }");
+    testSame("function f(/** boolean */ x) { x + 1 + 1 + x; }");
 
     testSame("function f(/** null */ x) { var y = true > x; }");
 
@@ -1992,13 +2438,9 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
     enableTypeCheck();
     replaceTypesWithColors();
     disableCompareJsDoc();
-    test(
-        "function f(/** number */ x) { x + 1 + 1 + x; }",
-        "function f(/** number */ x) { x + 2 + x; }");
+    testSame("function f(/** number */ x) { x + 1 + 1 + x; }");
 
-    test(
-        "function f(/** boolean */ x) { x + 1 + 1 + x; }",
-        "function f(/** boolean */ x) { x + 2 + x; }");
+    testSame("function f(/** boolean */ x) { x + 1 + 1 + x; }");
 
     testSame("function f(/** null */ x) { var y = true > x; }");
 
@@ -2022,36 +2464,47 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
     test("var x = {[undefined != true] : 1};", "var x = {[true] : 1};");
     test("let x = false && y;", "let x = false;");
     test("const x = null == undefined", "const x = true");
-    test("var [a, , b] = [false+1, true+1, ![]]", "var [a, , b] = [1, 2, false]");
-    test("var x = () =>  true || x;", "var x = () => true;");
+    test("var [a, , b] = [false+1, true+1, ![]]", "var a; var b; [a, , b] = [1, 2, false]");
+    test("var x = () =>  true || x;", "var x = () => { return true; }");
     test(
         "function foo(x = (1 !== void 0), y) {return x+y;}",
         "function foo(x = true, y) {return x+y;}");
     test(
-        lines(
-            "class Foo {",
-            "  constructor() {this.x = null <= null;}",
-            "}"),
-        lines(
-            "class Foo {",
-            "  constructor() {this.x = true;}",
-            "}"));
-    test(
-        "function foo() {return `${false && y}`}",
-        "function foo() {return `${false}`}");
+        """
+        class Foo {
+          constructor() {this.x = null <= null;}
+        }
+        """,
+        """
+        class Foo {
+          constructor() {this.x = true;}
+        }
+        """);
+    test("function foo() {return `${false && y}`}", "function foo() {return `false`}");
+  }
+
+  @Test
+  public void testES6Features_late() {
+    late = true;
+    disableNormalize();
+
+    test("var [a, , b] = [false+1, true+1, ![]]", "var [a, , b] = [1, 2, false]");
+    test("var x = () =>  true || x;", "var x = () => true;");
   }
 
   @Test
   public void testClassField() {
     test(
-        lines(
-            "class Foo {", //
-            "  x = null <= null;",
-            "}"),
-        lines(
-            "class Foo {", //
-            "  x = true;",
-            "}"));
+        """
+        class Foo {
+          x = null <= null;
+        }
+        """,
+        """
+        class Foo {
+          x = true;
+        }
+        """);
   }
 
   private static final ImmutableList<String> LITERAL_OPERANDS =
@@ -2073,16 +2526,16 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
           "Infinity",
           // TODO(nicksantos): Add more literals
           "-Infinity"
-          //"({})",
+          // "({})",
           // "[]"
-          //"[0]",
-          //"Object",
-          //"(function() {})"
+          // "[0]",
+          // "Object",
+          // "(function() {})"
           );
 
   @Test
   public void testInvertibleOperators() {
-    Map<String, String> inverses =
+    ImmutableMap<String, String> inverses =
         ImmutableMap.<String, String>builder()
             .put("==", "!=")
             .put("===", "!==")
@@ -2093,14 +2546,12 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
             .put("!=", "==")
             .put("!==", "===")
             .buildOrThrow();
-    Set<String> comparators = ImmutableSet.of("<=", "<", ">=", ">");
-    Set<String> equalitors = ImmutableSet.of("==", "===");
-    Set<String> uncomparables = ImmutableSet.of("undefined", "void 0");
-    List<String> operators = ImmutableList.copyOf(inverses.values());
+    ImmutableSet<String> comparators = ImmutableSet.of("<=", "<", ">=", ">");
+    ImmutableSet<String> equalitors = ImmutableSet.of("==", "===");
+    ImmutableSet<String> uncomparables = ImmutableSet.of("undefined", "void 0");
+    ImmutableList<String> operators = ImmutableList.copyOf(inverses.values());
     for (int iOperandA = 0; iOperandA < LITERAL_OPERANDS.size(); iOperandA++) {
-      for (int iOperandB = 0;
-           iOperandB < LITERAL_OPERANDS.size();
-           iOperandB++) {
+      for (int iOperandB = 0; iOperandB < LITERAL_OPERANDS.size(); iOperandB++) {
         for (int iOp = 0; iOp < operators.size(); iOp++) {
           String a = LITERAL_OPERANDS.get(iOperandA);
           String b = LITERAL_OPERANDS.get(iOperandB);
@@ -2109,15 +2560,14 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
 
           // Test invertability.
           if (comparators.contains(op)) {
-              if (uncomparables.contains(a) || uncomparables.contains(b)
-                  || (a.equals("null") && NodeUtil.getStringNumberValue(b) == null)) {
-                assertSameResults(join(a, op, b), "false");
-                assertSameResults(join(a, inverse, b), "false");
-              }
+            if (uncomparables.contains(a)
+                || uncomparables.contains(b)
+                || (a.equals("null") && NodeUtil.getStringNumberValue(b) == null)) {
+              assertSameResults(join(a, op, b), "false");
+              assertSameResults(join(a, inverse, b), "false");
+            }
           } else if (a.equals(b) && equalitors.contains(op)) {
-            if (a.equals("NaN") ||
-                a.equals("Infinity") ||
-                a.equals("-Infinity")) {
+            if (a.equals("NaN") || a.equals("Infinity") || a.equals("-Infinity")) {
               test(join(a, op, b), a.equals("NaN") ? "false" : "true");
             } else {
               assertSameResults(join(a, op, b), "true");
@@ -2134,16 +2584,9 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
   @Test
   public void testCommutativeOperators() {
     late = true;
-    List<String> operators =
-        ImmutableList.of(
-            "==",
-            "!=",
-            "===",
-            "!==",
-            "*",
-            "|",
-            "&",
-            "^");
+    disableNormalize();
+    ImmutableList<String> operators =
+        ImmutableList.of("==", "!=", "===", "!==", "*", "|", "&", "^");
     for (String a : LITERAL_OPERANDS) {
       for (String b : LITERAL_OPERANDS) {
         for (String op : operators) {
@@ -2156,7 +2599,7 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
 
   @Test
   public void testConvertToNumberNegativeInf() {
-    testSame("var x = 3 * (r ? Infinity : -Infinity);");
+    testSame("var x = 3 & (r ? Infinity : -Infinity);");
   }
 
   @Test
@@ -2174,7 +2617,7 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
     // 'x-0' is numeric even if x isn't
     test("var x='a'; x-0-0", "var x='a';x-0");
     foldNumericTypes("0-x", "-x");
-    test("for (var i = 0; i < 5; i++) var x = 0 + i * 1", "for(var i=0; i < 5; i++) var x=i");
+    test("for (var i = 0; i < 5; i++) var x = 0 + i * 1", "var i = 0; for(; i < 5; i++) var x=i");
 
     foldNumericTypes("x*1", "x");
     foldNumericTypes("1*x", "x");
@@ -2207,13 +2650,321 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
     foldBigIntTypes("x/1n", "x");
     foldBigIntTypes("x/0n", "x/0n");
 
-    test("for (var i = 0n; i < 5n; i++) var x = 0n + i * 1n", "for(var i=0n; i < 5n; i++) var x=i");
+    test(
+        "for (var i = 0n; i < 5n; i++) var x = 0n + i * 1n",
+        "var i = 0n; for(; i < 5n; i++) var x=i");
+    test(
+        "for (var i = 0n; i % 2n === 0n; i++) var x = i % 2n",
+        "var i = 0n; for (; i % 2n === 0n; i++) var x = i % 2n");
 
     test("(doSomething(),0n)*1n", "(doSomething(),0n)");
     test("1n*(doSomething(),0n)", "(doSomething(),0n)");
     ignoreWarnings(DiagnosticGroups.CHECK_TYPES);
     testSame("(0n,doSomething())*1n");
     testSame("1n*(0n,doSomething())");
+  }
+
+  @Test
+  public void testAssociativeFoldConstantsWithVariables() {
+    // MUL and ADD should not fold
+    testSame("alert(x * 12 * 20);");
+    testSame("alert(12 * x * 20);");
+    testSame("alert(x + 12 + 20);");
+    testSame("alert(12 + x +  20);");
+
+    test("alert(x & 12 & 20);", "alert(x & 4);");
+    test("alert(12 & x & 20);", "alert(x & 4);");
+  }
+
+  @Test
+  public void testTemplateLiteralConcat() {
+
+    // join at variables
+    test(
+        """
+        const a = `${x}` + `${x}`;
+        """,
+        """
+        const a = `${x}${x}`;
+        """);
+    test(
+        """
+        const a = `${x}${y}` + `${x}${y}`;
+        """,
+        """
+        const a = `${x}${y}${x}${y}`;
+        """);
+
+    // join at variable and string
+    test(
+        """
+        const a = `${x}` + `a${x}`;
+        """,
+        """
+        const a =`${x}a${x}`;
+        """);
+    test(
+        """
+        const a = `${x}` + ` ${x}`;
+        """,
+        """
+        const a =`${x} ${x}`;
+        """);
+
+    // join at string and variable
+    test(
+        """
+        const a = `a${x}b` + `${x}c`;
+        """,
+        """
+        const a = `a${x}b${x}c`;
+        """);
+    test(
+        """
+        const a = `a${x} ` + `${x}b`;
+        """,
+        """
+        const a = `a${x} ${x}b`;
+        """);
+
+    // join at strings
+    test(
+        """
+        const x = 'X';
+        console.log(`a${x}b` + `c${x}d`);
+        """,
+        """
+        const x = 'X';
+        console.log(`a${x}bc${x}d`);
+        """);
+
+    // complex joins
+    test(
+        """
+        const a = `${foo() + bar()}` + `${baz()}`;
+        """,
+        """
+        const a =`${foo() + bar()}${baz()}`;
+        """);
+    test(
+        """
+        console.log(`<h1>${url}</h1>` + `<p>The URL is ${url}.</p>`);
+        """,
+        """
+        console.log(`<h1>${url}</h1><p>The URL is ${url}.</p>`);
+        """);
+    test(
+        """
+        console.log(`${(() => {return url;})()}</h1>` + `<p>The URL is ${url}.</p>`);
+        """,
+        """
+        console.log(`${(() => {return url;})()}</h1><p>The URL is ${url}.</p>`);
+        """);
+
+    // don't fold tagged template literals
+    testSame(
+        """
+        const a = foo`${b}` + `${b}`;
+        """);
+    testSame(
+        """
+        const a = foo`${b}` + bar`${b}`;
+        """);
+    // don't fold when raw strings meet at unescaped $ and {
+    testSame("`${x}$` + `{y}${z}`");
+    testSame("`${x}$` + `{y}`");
+    test("`${x}\\$` + `{y}`", "`${x}\\${y}`");
+    testSame("`${x}\\\\$` + `{y}`");
+  }
+
+  @Test
+  public void testFoldTemplateLiteralSubstitutions() {
+    // Basic substitution
+    test("`a${'b'}c`", "`abc`");
+    // Number substitution
+    test("`a${123}c`", "`a123c`");
+    // Boolean substitution
+    test("`a${true}c`", "`atruec`");
+    test("`a${false}c`", "`afalsec`");
+
+    // Multiple substitutions
+    test("`a${'b'}c${'d'}e`", "`abcde`");
+    // Adjacent substitutions
+    test("`${'a'}${'b'}`", "`ab`");
+    // Empty strings
+    test("`${''}a${''}`", "`a`");
+
+    // Corner cases where it should NOT fold
+    testSame("`a${'`'}c`");
+    testSame("`a${'$'}c`");
+    testSame("`a${'\\\\'}c`");
+    testSame("`a${'\\\\n'}c`");
+    testSame("`a${'\\\\r'}c`");
+    testSame("`${x} ${'$'}${'{'}`"); // specifically tests that $ and { are not folded together
+    test("`$${''}{${''}`", "`$${''}{`");
+    testSame("`$${''}{foo}`");
+    test("`\\$${''}{foo}`", "`\\${foo}`");
+    // These should not fold because \0 followed by a digit is a syntax error in untagged templates.
+    testSame("`\\0${'77'}`");
+    testSame("`\\0${77}`");
+    test("`\\0${'a'}`", "`\\0a` ");
+    test("`\\\\0${'7'}`", "`\\\\07` ");
+    test("`\\0${''}${'7'}`", "`\\0${'7'}`");
+
+    // Tagged template literals should NOT fold
+    testSame("tag`a${'b'}c`");
+
+    // Non-constant substitutions should NOT fold
+    testSame("`a${x}c`");
+    testSame("`a${foo()}c`");
+  }
+
+  @Test
+  public void testFoldAddTemplateLiteralAndConstant() {
+    // String merge
+    test("`a${x}` + 'b'", "`a${x}b` ");
+    test("'a' + `b${x}`", "`ab${x}` ");
+
+    // Number merge
+    test("`a${x}` + 1", "`a${x}1` ");
+    test("1 + `a${x}`", "`1a${x}` ");
+
+    // Boolean merge
+    test("`a${x}` + true", "`a${x}true` ");
+    test("true + `a${x}`", "`truea${x}` ");
+
+    // BigInt merge
+    test("`a${x}` + 10n", "`a${x}10` ");
+
+    // Null/Undefined merge
+    test("`a${x}` + null", "`a${x}null` ");
+    test("`a${x}` + undefined", "`a${x}undefined` ");
+
+    // Nested templates
+    test("`a${x}` + `b` ", "`a${x}b` ");
+    test("`a` + `b${x}` ", "`ab${x}` ");
+
+    // Restricted octal escape
+    testSame("`\\0` + 7");
+    testSame("`\\0` + '7'");
+    test("`\\0a` + '7'", "`\\0a7` ");
+
+    // Safety - special chars should NOT fold
+    testSame("`a${x}` + '$'");
+    testSame("`a${x}` + '{'");
+    testSame("`a${x}` + '`'");
+    testSame("`a${x}` + '\\\\'");
+    testSame("`a${x}` + '\\\\n'");
+
+    // Compound addition
+    test("`a` + `b${x}` + `c` + 'd'", "`ab${x}cd` ");
+  }
+
+  @Test
+  public void
+      testFoldAddTemplateLiterals_validateRawAndCookedStringForSpecialChars_andValidateChildren() {
+    // This is a bit tricky because there are two layers of escaping.
+    // Java sees "\\n" as "(\\)n" so it becomes "\n" for the javascript compiler.
+    // The compiler then interprets this as the special character "\n"
+    test("var x = `${a}\\n` + `\\t${b}`", "var x = `${a}\\n\\t${b}`");
+
+    // getJsRoot() returns the ROOT node for inputs only.
+    // The first child is the SCRIPT node containing the input code.
+    Node script = getLastCompiler().getJsRoot().getFirstChild();
+    Node var = script.getFirstChild();
+    Node name = var.getFirstChild();
+    Node templateLit = name.getFirstChild();
+    assertThat(templateLit.isTemplateLit()).isTrue();
+
+    // TEMPLATELIT should have 5 total children
+    assertThat(templateLit.getChildCount()).isEqualTo(5);
+
+    // Index 0: TEMPLATELIT_STRING ""
+    @SuppressWarnings({"RhinoNodeGetFirstChild", "Simplification"})
+    Node child0 = templateLit.getChildAtIndex(0);
+    assertThat(child0.isTemplateLitString()).isTrue();
+    assertThat(child0.getCookedString()).isEmpty();
+    assertThat(child0.getRawString()).isEmpty();
+
+    // Index 1: SUB a
+    @SuppressWarnings({"RhinoNodeGetSecondChild", "Simplification"})
+    Node child1 = templateLit.getChildAtIndex(1);
+    assertThat(child1.isTemplateLitSub()).isTrue();
+    assertThat(child1.getOnlyChild().isName()).isTrue();
+    assertThat(child1.getOnlyChild().getString()).isEqualTo("a");
+
+    // Index 2: TEMPLATELIT_STRING "\n\t"
+    Node child2 = templateLit.getChildAtIndex(2);
+    assertThat(child2.isTemplateLitString()).isTrue();
+    assertThat(child2.getCookedString()).isEqualTo("\n\t");
+    assertThat(child2.getRawString()).isEqualTo("\\n\\t");
+
+    // Index 3: SUB b
+    Node child3 = templateLit.getChildAtIndex(3);
+    assertThat(child3.isTemplateLitSub()).isTrue();
+    assertThat(child3.getOnlyChild().isName()).isTrue();
+    assertThat(child3.getOnlyChild().getString()).isEqualTo("b");
+
+    // Index 4: TEMPLATELIT_STRING ""
+    Node child4 = templateLit.getChildAtIndex(4);
+    assertThat(child4.isTemplateLitString()).isTrue();
+    assertThat(child4.getCookedString()).isEmpty();
+    assertThat(child4.getRawString()).isEmpty();
+  }
+
+  @Test
+  public void
+      testFoldAddTemplateLiterals_validateRawAndCookedStringForLiteralBackslash_andValidateChildren() {
+    // This is a bit tricky because there are two layers of escaping.
+    // Java sees "\\\\n" as "(\\)(\\)n" so it becomes "\\n" for the javascript compiler.
+    // The compiler then interprets this as "(\\)n" so it becomes "\" followed by
+    // "n" NOT the special character "\n".
+    test(
+        "var x = `${foo()}\\\\` + `n\\t${()=> {return b;}}`",
+        "var x = `${foo()}\\\\n\\t${()=> {return b;}}`");
+
+    // getJsRoot() returns the ROOT node for inputs only.
+    // The first child is the SCRIPT node containing the input code.
+    Node script = getLastCompiler().getJsRoot().getFirstChild();
+    Node var = script.getFirstChild();
+    Node name = var.getFirstChild();
+    Node templateLit = name.getFirstChild();
+    assertThat(templateLit.isTemplateLit()).isTrue();
+
+    // TEMPLATELIT should have 5 children:
+    assertThat(templateLit.getChildCount()).isEqualTo(5);
+
+    // Index 0: TEMPLATELIT_STRING ""
+    @SuppressWarnings({"RhinoNodeGetFirstChild", "Simplification"})
+    Node child0 = templateLit.getChildAtIndex(0);
+    assertThat(child0.isTemplateLitString()).isTrue();
+    assertThat(child0.getCookedString()).isEmpty();
+    assertThat(child0.getRawString()).isEmpty();
+
+    // Index 1: SUB foo()
+    @SuppressWarnings({"RhinoNodeGetSecondChild", "Simplification"})
+    Node child1 = templateLit.getChildAtIndex(1);
+    assertThat(child1.isTemplateLitSub()).isTrue();
+    assertThat(child1.getOnlyChild().isCall()).isTrue();
+    assertThat(child1.getOnlyChild().getOnlyChild().getString()).isEqualTo("foo");
+
+    // Index 2: TEMPLATELIT_STRING "\n\t"
+    Node child2 = templateLit.getChildAtIndex(2);
+    assertThat(child2.isTemplateLitString()).isTrue();
+    assertThat(child2.getCookedString()).isEqualTo("\\n\t");
+    assertThat(child2.getRawString()).isEqualTo("\\\\n\\t");
+
+    // Index 3: SUB ()=> {return b;}
+    Node child3 = templateLit.getChildAtIndex(3);
+    assertThat(child3.isTemplateLitSub()).isTrue();
+    assertThat(child3.getOnlyChild().isFunction()).isTrue();
+    assertThat(child3.getOnlyChild().getFirstChild().getString()).isEmpty();
+
+    // Index 4: TEMPLATELIT_STRING ""
+    Node child4 = templateLit.getChildAtIndex(4);
+    assertThat(child4.isTemplateLitString()).isTrue();
+    assertThat(child4.getCookedString()).isEmpty();
+    assertThat(child4.getRawString()).isEmpty();
   }
 
   private void foldBigIntTypes(String js, String expected) {
@@ -2239,13 +2990,13 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
   }
 
   private void assertSameResults(String exprA, String exprB) {
-    assertWithMessage("Expressions did not fold the same\nexprA: " + exprA + "\nexprB: " + exprB)
+    assertWithMessage("Expressions did not fold the same\nexprA: %s\nexprB: %s", exprA, exprB)
         .that(process(exprB))
         .isEqualTo(process(exprA));
   }
 
   private void assertNotSameResults(String exprA, String exprB) {
-    assertWithMessage("Expressions folded the same\nexprA: " + exprA + "\nexprB: " + exprB)
+    assertWithMessage("Expressions folded the same\nexprA: %s\nexprB: %s", exprA, exprB)
         .that(process(exprA).equals(process(exprB)))
         .isFalse();
   }
@@ -2262,11 +3013,10 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
         ImmutableList.of(SourceFile.fromCode("testcode", js)),
         options);
     Node root = compiler.parseInputs();
+    compiler.setAccessorSummary(AccessorSummary.create(ImmutableMap.of()));
     assertWithMessage(
-            "Unexpected parse error(s): "
-                + Joiner.on("\n").join(compiler.getErrors())
-                + "\nEXPR: "
-                + js)
+            "Unexpected parse error(s): %s\nEXPR: %s",
+            Joiner.on("\n").join(compiler.getErrors()), js)
         .that(root)
         .isNotNull();
     Node externsRoot = root.getFirstChild();
@@ -2275,5 +3025,17 @@ public final class PeepholeFoldConstantsTest extends CompilerTestCase {
       getProcessor(compiler).process(externsRoot, mainRoot);
     }
     return compiler.toSource(mainRoot);
+  }
+
+  @Test
+  public void testFoldOptChain_nonNullReceiver_chainContinues() {
+    // TODO(b/571220152): folding an opt-chain segment start orphans the continuation
+    RuntimeException e =
+        assertThrows(RuntimeException.class, () -> testSame("x = [1, 2, 3]?.length.toString()"));
+    Throwable root = Throwables.getRootCause(e);
+    assertThat(root).isInstanceOf(IllegalStateException.class);
+    assertThat(root)
+        .hasMessageThat()
+        .contains("Start of optional chain node OPTCHAIN_GETPROP is not marked as the start");
   }
 }

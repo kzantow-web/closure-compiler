@@ -31,10 +31,12 @@ import com.google.javascript.jscomp.parsing.parser.Identifiers;
 import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.QualifiedName;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Pattern;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Gathers metadata around modules that is useful for checking imports / requires and creates a
@@ -69,6 +71,15 @@ public final class GatherModuleMetadata implements CompilerPass {
       DiagnosticType.error(
           "JSC_INVALID_REQUIRE_TYPE", "Argument to goog.requireType must be a string.");
 
+  static final DiagnosticType INVALID_REQUIRE_DYNAMIC =
+      DiagnosticType.error(
+          "JSC_INVALID_REQUIRE_DYNAMIC", "Argument to goog.requireDynamic must be a string.");
+
+  static final DiagnosticType INVALID_MAYBE_REQUIRE =
+      DiagnosticType.error(
+          "JSC_INVALID_MAYBE_REQUIRE",
+          "Argument to goog.maybeRequireFrameworkInternalOnlyDoNotCallOrElse must be a string.");
+
   static final DiagnosticType INVALID_SET_TEST_ONLY =
       DiagnosticType.error(
           "JSC_INVALID_SET_TEST_ONLY",
@@ -77,10 +88,18 @@ public final class GatherModuleMetadata implements CompilerPass {
   static final DiagnosticType INVALID_NESTED_LOAD_MODULE =
       DiagnosticType.error("JSC_INVALID_NESTED_LOAD_MODULE", "goog.loadModule cannot be nested.");
 
+  static final DiagnosticType INVALID_TOGGLE_USAGE =
+      DiagnosticType.error("JSC_INVALID_TOGGLE_USAGE", "Invalid toggle usage: {0}");
+
   private static final Node GOOG_PROVIDE = IR.getprop(IR.name("goog"), "provide");
   private static final Node GOOG_MODULE = IR.getprop(IR.name("goog"), "module");
+  private static final Node GOOG_MODULE_GET =
+      IR.getprop(IR.getprop(IR.name("goog"), "module"), "get");
   private static final Node GOOG_REQUIRE = IR.getprop(IR.name("goog"), "require");
   private static final Node GOOG_REQUIRE_TYPE = IR.getprop(IR.name("goog"), "requireType");
+  private static final Node GOOG_MAYBE_REQUIRE =
+      IR.getprop(IR.name("goog"), "maybeRequireFrameworkInternalOnlyDoNotCallOrElse");
+  private static final Node GOOG_REQUIRE_DYNAMIC = IR.getprop(IR.name("goog"), "requireDynamic");
   private static final Node GOOG_SET_TEST_ONLY = IR.getprop(IR.name("goog"), "setTestOnly");
   private static final Node GOOG_MODULE_DECLARELEGACYNAMESPACE =
       IR.getprop(GOOG_MODULE.cloneTree(), "declareLegacyNamespace");
@@ -90,18 +109,20 @@ public final class GatherModuleMetadata implements CompilerPass {
   private static final Node GOOG_MODULE_DECLARNAMESPACE =
       IR.getprop(GOOG_MODULE.cloneTree(), "declareNamespace");
 
+  private static final String TOGGLE_NAME_PREFIX = "TOGGLE_";
+
   /**
    * Map from module path to module. These modules represent files and thus will contain all goog
    * namespaces that are in the file. These are not the same modules in modulesByGoogNamespace.
    */
-  private final Map<String, ModuleMetadata> modulesByPath = new HashMap<>();
+  private final Map<String, ModuleMetadata> modulesByPath = new LinkedHashMap<>();
 
   /**
    * Map from Closure namespace to module. These modules represent just the single namespace and
    * thus each module has only one goog namespace in its {@link ModuleMetadata#googNamespaces()}.
    * These are not the same modules in modulesByPath.
    */
-  private final Map<String, ModuleMetadata> modulesByGoogNamespace = new HashMap<>();
+  private final Map<String, ModuleMetadata> modulesByGoogNamespace = new LinkedHashMap<>();
 
   /** The current module being traversed. */
   private ModuleMetadataBuilder currentModule;
@@ -110,10 +131,10 @@ public final class GatherModuleMetadata implements CompilerPass {
    * The module currentModule is nested under, if any. Modules are expected to be at most two deep
    * (a script and then a goog.loadModule call).
    */
-  private ModuleMetadataBuilder parentModule;
+  private @Nullable ModuleMetadataBuilder parentModule;
 
   /** The call to goog.loadModule we are traversing. */
-  private Node loadModuleCall;
+  private @Nullable Node loadModuleCall;
 
   private final AbstractCompiler compiler;
   private final boolean processCommonJsModules;
@@ -130,13 +151,14 @@ public final class GatherModuleMetadata implements CompilerPass {
 
   private class ModuleMetadataBuilder {
     private boolean ambiguous;
-    private boolean hasModuleBody;
     private Node declaredModuleId;
     private Node declaresLegacyNamespace;
+    private final Node rootNode;
     final ModuleMetadata.Builder metadataBuilder;
     final LinkedHashMultiset<String> googNamespaces = LinkedHashMultiset.create();
 
     ModuleMetadataBuilder(Node rootNode, @Nullable ModulePath path) {
+      this.rootNode = rootNode;
       this.metadataBuilder =
           ModuleMetadata.builder()
               .path(path)
@@ -176,12 +198,14 @@ public final class GatherModuleMetadata implements CompilerPass {
 
     ModuleMetadata build() {
       metadataBuilder.googNamespacesBuilder().addAll(googNamespaces);
+      if (rootNode.isScript() && Es6RewriteModules.isEs6ModuleRoot(rootNode)) {
+        // A script with a non-goog.module MODULE_BODY was either wrapped by
+        // Es6RewriteScriptsToModules (which only wraps scripts with no goog.provide) or parsed by
+        // IRFactory with import/export syntax (setting Node.ES6_MODULE, even if it ambiguously
+        // also contains goog.provide). Treat it as an ES6_MODULE to match Es6RewriteModules.
+        metadataBuilder.moduleType(ModuleType.ES6_MODULE);
+      }
       if (!ambiguous) {
-        if (hasModuleBody && metadataBuilder.moduleType() == ModuleType.SCRIPT) {
-          // A script with no imports or exports, but has a module body, must be an ES module.
-          metadataBuilder.moduleType(ModuleType.ES6_MODULE);
-        }
-
         if (declaredModuleId != null && metadataBuilder.moduleType() != ModuleType.ES6_MODULE) {
           compiler.report(JSError.make(declaredModuleId, DECLARE_MODULE_ID_OUTSIDE_ES6_MODULE));
         }
@@ -196,6 +220,17 @@ public final class GatherModuleMetadata implements CompilerPass {
         }
       }
 
+      ModuleType moduleType = metadataBuilder.moduleType();
+      if (compiler.getOptions().getClassifyTsExportTypes()
+          && rootNode.isScript()
+          && !googNamespaces.isEmpty()
+          && (moduleType == ModuleType.GOOG_PROVIDE
+              || moduleType == ModuleType.GOOG_MODULE
+              || moduleType == ModuleType.LEGACY_GOOG_MODULE)) {
+        metadataBuilder.tsExportTypes(
+            ClosureExportTypeClassifier.classify(rootNode, googNamespaces.elementSet()));
+      }
+
       return metadataBuilder.build();
     }
   }
@@ -204,30 +239,27 @@ public final class GatherModuleMetadata implements CompilerPass {
 
   /** Traverses the AST and build a sets of {@link ModuleMetadata}s. */
   private final class Finder implements NodeTraversal.Callback {
+
+    // Store both names and vars. Strings alone is insufficient to determine whether a name is
+    // actually a toggle module (since it could have been shadowed, or may have been defined in a
+    // different file), but looking up by only vars is much slower. This way we can do a fast name
+    // lookup, followed by a slower var lookup only if the name is known to be a toggle module name.
+    final Set<String> toggleModuleNames = new LinkedHashSet<>();
+    final Set<Var> toggleModules = new LinkedHashSet<>();
+
     @Override
     public boolean shouldTraverse(NodeTraversal t, Node n, Node parent) {
       switch (n.getToken()) {
-        case SCRIPT:
-          enterModule(t, n, t.getInput().getPath());
-          break;
-        case IMPORT:
-        case EXPORT:
-          visitImportOrExport(t, n);
-          break;
-        case CALL:
+        case SCRIPT -> enterModule(t, n, t.getInput().getPath());
+        case IMPORT, EXPORT -> visitImportOrExport(t, n);
+        case CALL -> {
           if (n.isCall() && GOOG_LOADMODULE.matches(n.getFirstChild())) {
             loadModuleCall = n;
             enterModule(t, n, null);
           }
-          break;
-        case MODULE_BODY:
-          currentModule.hasModuleBody = true;
-          break;
-        case DYNAMIC_IMPORT:
-          visitDynamicImport(n);
-          break;
-        default:
-          break;
+        }
+        case DYNAMIC_IMPORT -> visitDynamicImport(n);
+        default -> {}
       }
 
       return true;
@@ -294,22 +326,17 @@ public final class GatherModuleMetadata implements CompilerPass {
       }
 
       switch (n.getToken()) {
-        case SCRIPT:
-          leaveModule();
-          break;
-        case NAME:
-          visitName(t, n);
-          break;
-        case CALL:
+        case SCRIPT -> leaveModule();
+        case NAME -> visitName(t, n);
+        case CALL -> {
           if (loadModuleCall == n) {
             leaveModule();
             loadModuleCall = null;
           } else {
             visitGoogCall(t, n);
           }
-          break;
-        default:
-          break;
+        }
+        default -> {}
       }
     }
 
@@ -325,7 +352,22 @@ public final class GatherModuleMetadata implements CompilerPass {
     }
 
     private void visitName(NodeTraversal t, Node n) {
-      if (!"goog".equals(n.getString())) {
+      String name = n.getString();
+      if (toggleModuleNames.contains(name)) {
+        Var nameVar = t.getScope().getVar(name);
+        if (toggleModules.contains(nameVar)) {
+          Node parent = n.getParent();
+          if (parent.isGetProp()) {
+            addToggle(t, n, parent.getString());
+          } else if (!NodeUtil.isNameDeclaration(parent)) {
+            t.report(
+                n,
+                INVALID_TOGGLE_USAGE,
+                "toggle modules may not be used other than looking up properties");
+          }
+        }
+      }
+      if (!"goog".equals(name)) {
         return;
       }
 
@@ -382,6 +424,7 @@ public final class GatherModuleMetadata implements CompilerPass {
           addNamespace(currentModule, ModuleType.GOOG_PROVIDE, namespace, t, n);
         } else {
           t.report(n, ClosureRewriteModule.INVALID_PROVIDE_NAMESPACE);
+          currentModule.metadataBuilder.usesClosure(false);
         }
       } else if (getprop.matchesQualifiedName(GOOG_MODULE)) {
         currentModule.moduleType(ModuleType.GOOG_MODULE, t, n);
@@ -390,7 +433,24 @@ public final class GatherModuleMetadata implements CompilerPass {
           addNamespace(currentModule, ModuleType.GOOG_MODULE, namespace, t, n);
         } else {
           t.report(n, ClosureRewriteModule.INVALID_MODULE_ID_ARG);
+          currentModule.metadataBuilder.usesClosure(false);
         }
+      } else if (getprop.matchesQualifiedName(GOOG_MODULE_GET)) {
+        // Look for a module named ???$2etoggles and a getprop of .TOGGLE_??? on the call's return
+        if (!n.hasTwoChildren()
+            || !n.getLastChild().isStringLit()
+            || !n.getLastChild().getString().endsWith("$2etoggles")) {
+          return; // only do anything with toggle namespaces
+        }
+        Node parent = n.getParent();
+        if (!parent.isGetProp()) {
+          t.report(
+              n,
+              INVALID_TOGGLE_USAGE,
+              "goog.module.get of toggles module must immediately look up a single toggle");
+          return;
+        }
+        addToggle(t, parent, parent.getString());
       } else if (getprop.matchesQualifiedName(GOOG_MODULE_DECLARELEGACYNAMESPACE)) {
         currentModule.recordDeclareLegacyNamespace(n);
       } else if (getprop.matchesQualifiedName(GOOG_DECLARE_MODULE_ID)
@@ -407,10 +467,35 @@ public final class GatherModuleMetadata implements CompilerPass {
         }
       } else if (getprop.matchesQualifiedName(GOOG_REQUIRE)) {
         if (n.hasTwoChildren() && n.getLastChild().isStringLit()) {
-          currentModule
-              .metadataBuilder
-              .stronglyRequiredGoogNamespacesBuilder()
-              .add(n.getLastChild().getString());
+          String namespace = n.getLastChild().getString();
+          currentModule.metadataBuilder.stronglyRequiredGoogNamespacesBuilder().add(namespace);
+          if (namespace.endsWith("$2etoggles")) {
+            // Track imports of *.toggles.ts, which are rewritten to $2etoggles.
+            Node callParent = n.getParent();
+            Node lhs = callParent.getFirstChild();
+            if (callParent.isDestructuringLhs()) {
+              // const {TOGGLE_foo} = goog.require('foo$2etoggles');
+              for (Node key : lhs.children()) {
+                if (key.isStringKey()) {
+                  addToggle(t, n, key.getString());
+                } else {
+                  t.report(n, INVALID_TOGGLE_USAGE, "must be destructured with string keys");
+                }
+              }
+            } else if (callParent.isName()) {
+              // const fooToggles = goog.require('foo$2etoggles');
+              String name = callParent.getString();
+              Var nameVar = t.getScope().getVar(name);
+              toggleModules.add(nameVar);
+              toggleModuleNames.add(name);
+            } else if (currentModule.metadataBuilder.moduleType() != ModuleType.GOOG_PROVIDE) {
+              // Side-effect toggle-module imports are not allowed, since they don't actually do
+              // anything.  We allow it in `goog.provide()` files because there's no other way to
+              // import, and since toggle modules don't declare a legacy namespace, it's unusable
+              // without a `goog.module.get()` (so we can catch the toggle use there, instead).
+              t.report(n, INVALID_TOGGLE_USAGE, "import must be assigned");
+            }
+          }
         } else {
           t.report(n, INVALID_REQUIRE_NAMESPACE);
         }
@@ -423,12 +508,40 @@ public final class GatherModuleMetadata implements CompilerPass {
         } else {
           t.report(n, INVALID_REQUIRE_TYPE);
         }
+      } else if (getprop.matchesQualifiedName(GOOG_MAYBE_REQUIRE)) {
+        if (n.hasTwoChildren() && n.getLastChild().isStringLit()) {
+          currentModule
+              .metadataBuilder
+              .maybeRequiredGoogNamespacesBuilder()
+              .add(n.getLastChild().getString());
+        } else {
+          t.report(n, INVALID_MAYBE_REQUIRE);
+        }
       } else if (getprop.matchesQualifiedName(GOOG_SET_TEST_ONLY)) {
         if (n.hasOneChild() || (n.hasTwoChildren() && n.getLastChild().isStringLit())) {
           currentModule.metadataBuilder.isTestOnly(true);
         } else {
           t.report(n, INVALID_SET_TEST_ONLY);
         }
+      } else if (getprop.matchesQualifiedName(GOOG_REQUIRE_DYNAMIC)) {
+        if (n.hasTwoChildren() && n.getLastChild().isStringLit()) {
+          currentModule
+              .metadataBuilder
+              .dynamicallyRequiredGoogNamespacesBuilder()
+              .add(n.getLastChild().getString());
+        } else {
+          t.report(n, INVALID_REQUIRE_DYNAMIC);
+        }
+      }
+    }
+
+    /** Record a toggle usage (either a destructured import or a property lookup on a module). */
+    private void addToggle(NodeTraversal t, Node n, String name) {
+      if (name.startsWith(TOGGLE_NAME_PREFIX)) {
+        String toggleName = name.substring(TOGGLE_NAME_PREFIX.length());
+        currentModule.metadataBuilder.readTogglesBuilder().add(toggleName);
+      } else {
+        t.report(n, INVALID_TOGGLE_USAGE, "all toggle names must start with `TOGGLE_`");
       }
     }
 
@@ -472,29 +585,23 @@ public final class GatherModuleMetadata implements CompilerPass {
       currentModule.googNamespaces.add(namespace);
       if (existingType != null) {
         switch (existingType) {
-          case ES6_MODULE:
-          case GOOG_MODULE:
-          case LEGACY_GOOG_MODULE:
-            {
-              DiagnosticType diagnostic =
-                  moduleType.equals(ModuleType.GOOG_PROVIDE)
-                      ? ClosurePrimitiveErrors.DUPLICATE_NAMESPACE_AND_MODULE
-                      : ClosurePrimitiveErrors.DUPLICATE_MODULE;
-              t.report(n, diagnostic, namespace, existingFileSource);
-              return;
-            }
-          case GOOG_PROVIDE:
-            {
-              DiagnosticType diagnostic =
-                  moduleType.equals(ModuleType.GOOG_PROVIDE)
-                      ? ClosurePrimitiveErrors.DUPLICATE_NAMESPACE
-                      : ClosurePrimitiveErrors.DUPLICATE_NAMESPACE_AND_MODULE;
-              t.report(n, diagnostic, namespace, existingFileSource);
-              return;
-            }
-          case COMMON_JS:
-          case SCRIPT:
-            // Fall through, error
+          case ES6_MODULE, GOOG_MODULE, LEGACY_GOOG_MODULE -> {
+            DiagnosticType diagnostic =
+                moduleType.equals(ModuleType.GOOG_PROVIDE)
+                    ? ClosurePrimitiveErrors.DUPLICATE_NAMESPACE_AND_MODULE
+                    : ClosurePrimitiveErrors.DUPLICATE_MODULE;
+            t.report(n, diagnostic, namespace, existingFileSource);
+            return;
+          }
+          case GOOG_PROVIDE -> {
+            DiagnosticType diagnostic =
+                moduleType.equals(ModuleType.GOOG_PROVIDE)
+                    ? ClosurePrimitiveErrors.DUPLICATE_NAMESPACE
+                    : ClosurePrimitiveErrors.DUPLICATE_NAMESPACE_AND_MODULE;
+            t.report(n, diagnostic, namespace, existingFileSource);
+            return;
+          }
+          case COMMON_JS, SCRIPT -> {}
         }
         throw new IllegalStateException("Unexpected module type: " + existingType);
       }
@@ -505,7 +612,11 @@ public final class GatherModuleMetadata implements CompilerPass {
   public void process(Node externs, Node root) {
     NodeTraversal.traverse(compiler, externs, new Finder());
     NodeTraversal.traverse(compiler, root, new Finder());
-    compiler.setModuleMetadataMap(new ModuleMetadataMap(modulesByPath, modulesByGoogNamespace));
+    compiler.setModuleMetadataMap(
+        new ModuleMetadataMap(
+            modulesByPath,
+            modulesByGoogNamespace,
+            /* tsExportTypesClassified= */ compiler.getOptions().getClassifyTsExportTypes()));
   }
 
   // Must match closure/base.js's goog.VALID_MODULE_RE_ & also validates that dotted segments are

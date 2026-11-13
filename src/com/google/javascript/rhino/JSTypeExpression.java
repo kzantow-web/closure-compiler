@@ -49,7 +49,7 @@ import com.google.javascript.rhino.jstype.StaticTypedScope;
 import java.io.Serializable;
 import java.util.Set;
 import java.util.function.Consumer;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * When parsing a jsdoc, a type-annotation string is parsed to a type AST. Somewhat confusingly, we
@@ -79,7 +79,7 @@ public final class JSTypeExpression implements Serializable {
   private final String sourceName;
 
   public JSTypeExpression(Node root, String sourceName) {
-    this.root = root;
+    this.root = (root.getParent() != null) ? root.cloneTree() : root;
     this.sourceName = sourceName;
   }
 
@@ -98,7 +98,7 @@ public final class JSTypeExpression implements Serializable {
    * @param names The set of names to replace in this type expression
    * @return the new root after replacing the names
    */
-  private static Node replaceNames(Node n, Set<String> names) {
+  private static @Nullable Node replaceNames(Node n, Set<String> names) {
     if (n == null) {
       return null;
     }
@@ -107,15 +107,24 @@ public final class JSTypeExpression implements Serializable {
       replaceNames(child, names);
       child = next;
     }
-    if (n.isStringLit() && names.contains(n.getString())) {
+    if (n.isStringLit() && names.contains(baseName(n.getString()))) {
       Node qMark = new Node(Token.QMARK);
-      qMark.addChildrenToBack(n.removeChildren());
+      if (n.hasChildren() && !n.getFirstChild().isBlock()) {
+        // preserve the children of the type expression unless it's a block - a BLOCK child
+        // represents a templatized type Foo<string, number>, and `?` cannot be templatized.
+        qMark.addChildrenToBack(n.removeChildren());
+      }
       if (n.hasParent()) {
         n.replaceWith(qMark);
       }
       return qMark;
     }
     return n;
+  }
+
+  private static final String baseName(String name) {
+    int dotIndex = name.indexOf('.');
+    return dotIndex == -1 ? name : name.substring(0, dotIndex);
   }
 
   /** Returns a list of all type nodes in this type expression. */
@@ -150,24 +159,35 @@ public final class JSTypeExpression implements Serializable {
     if (expr.isOptionalArg() || expr.isVarArgs()) {
       return expr;
     } else {
-      Node equals = new Node(Token.EQUALS, expr.root);
+      Node equals = new Node(Token.EQUALS, expr.root.cloneTree());
       equals.clonePropsFrom(expr.root);
       return new JSTypeExpression(equals, expr.sourceName);
     }
   }
 
-  /** @return Whether this expression denotes an optional {@code @param}. */
+  /** Make the given type expression into an optional type expression, if possible. */
+  public static JSTypeExpression makeVarArgs(JSTypeExpression expr) {
+    if (expr.isOptionalArg() || expr.isVarArgs()) {
+      return expr;
+    } else {
+      Node equals = new Node(Token.ITER_REST, expr.root.cloneTree());
+      equals.clonePropsFrom(expr.root);
+      return new JSTypeExpression(equals, expr.sourceName);
+    }
+  }
+
+  /** Does this expression denote an optional {@code @param}? */
   public boolean isOptionalArg() {
     return root.getToken() == Token.EQUALS;
   }
 
-  /** @return Whether this expression denotes a rest args {@code @param}. */
+  /** Does this expression denote a rest args {@code @param}? */
   public boolean isVarArgs() {
     return root.getToken() == Token.ITER_REST;
   }
 
   /** Evaluates the type expression into a {@code JSType} object. */
-  public JSType evaluate(StaticTypedScope scope, JSTypeRegistry registry) {
+  public JSType evaluate(@Nullable StaticTypedScope scope, JSTypeRegistry registry) {
     JSType type = registry.createTypeFromCommentNode(root, sourceName, scope);
     root.setJSType(type);
     return type;

@@ -26,3 +26,5 @@
 'require es6/object/is';
 'require es6/object/setprototypeof';
 'require es6/object/values';
+'require es6/object/hasOwn';
+'require es6/object/groupby';

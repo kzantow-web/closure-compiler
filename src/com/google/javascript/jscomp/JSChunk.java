@@ -18,12 +18,11 @@ package com.google.javascript.jscomp;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 
-import com.google.common.annotations.GwtIncompatible;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Sets;
 import com.google.javascript.jscomp.deps.DependencyInfo;
 import com.google.javascript.jscomp.deps.SortedDependencies;
 import java.io.IOException;
@@ -33,6 +32,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -41,7 +41,7 @@ import java.util.Set;
  * A JavaScript chunk has a unique name, consists of a list of compiler inputs, and can depend on
  * other chunks.
  */
-public final class JSChunk extends DependencyInfo.Base implements Serializable {
+public final class JSChunk implements Serializable, DependencyInfo {
   // The name of the artificial chunk containing all strong sources when there is no chunk spec.
   // If there is a chunk spec, strong sources go in their respective chunks, and this chunk does
   // not exist.
@@ -59,7 +59,7 @@ public final class JSChunk extends DependencyInfo.Base implements Serializable {
   private final String name;
 
   /** Source code inputs */
-  // non-final for deserilaization
+  // non-final for deserialization
   // CompilerInputs must be explicitly added to the JSChunk again after deserialization
   // A map keyed by the {@code CompilerInput.getName()} to speed up getByName and removeByName.
   private transient Map<String, CompilerInput> inputs = new LinkedHashMap<>();
@@ -109,8 +109,8 @@ public final class JSChunk extends DependencyInfo.Base implements Serializable {
   @Override
   public ImmutableList<Require> getRequires() {
     ImmutableList.Builder<Require> builder = ImmutableList.builder();
-    for (JSChunk m : deps) {
-      builder.add(Require.compilerModule(m.getName()));
+    for (JSChunk chunk : deps) {
+      builder.add(Require.compilerChunk(chunk.getName()));
     }
     return builder.build();
   }
@@ -132,11 +132,12 @@ public final class JSChunk extends DependencyInfo.Base implements Serializable {
   }
 
   @Override
-  public boolean isModule() {
-    // NOTE: The meaning of "module" has changed over time.  A "JsChunk" is
-    // a collection of inputs that are loaded together. A "module" file,
-    // is a CommonJs module, ES6 module, goog.module or other file whose
-    // top level symbols are not in global scope.
+  public boolean isGoogModule() {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public boolean isEs6Module() {
     throw new UnsupportedOperationException();
   }
 
@@ -148,41 +149,28 @@ public final class JSChunk extends DependencyInfo.Base implements Serializable {
   /** Adds a source code input to this chunk. */
   public void add(CompilerInput input) {
     String inputName = input.getName();
-    checkArgument(
-        !inputs.containsKey(inputName), "%s already exist in chunk %s", inputName, this.getName());
-    inputs.put(inputName, input);
-    input.setModule(this);
-  }
-
-  /**
-   * Adds a source code input to this chunk. Call only if the input might already be associated with
-   * a chunk. Otherwise, use add(CompilerInput input).
-   */
-  void addAndOverrideChunk(CompilerInput input) {
-    String inputName = input.getName();
-    checkArgument(
-        !inputs.containsKey(inputName), "%s already exist in chunk %s", inputName, this.getName());
-    inputs.put(inputName, input);
-    input.overrideModule(this);
+    CompilerInput previous = inputs.put(inputName, input);
+    checkState(previous == null, "%s already exist in chunk %s", inputName, this.getName());
+    input.setChunk(this);
   }
 
   /** Adds a dependency on another chunk. */
   public void addDependency(JSChunk dep) {
     checkNotNull(dep);
-    Preconditions.checkState(dep != this, "Cannot add dependency on self", this);
+    Preconditions.checkState(dep != this, "Cannot add dependency on self (%s)", this);
     deps.add(dep);
   }
 
   /** Removes an input from this chunk. */
   public void remove(CompilerInput input) {
-    input.setModule(null);
+    input.setChunk(null);
     inputs.remove(input.getName());
   }
 
   /** Removes all of the inputs from this chunk. */
   public void removeAll() {
     for (CompilerInput input : inputs.values()) {
-      input.setModule(null);
+      input.setChunk(null);
     }
     inputs.clear();
   }
@@ -210,8 +198,7 @@ public final class JSChunk extends DependencyInfo.Base implements Serializable {
    * Returns the transitive closure of dependencies starting from the dependencies of this chunk.
    */
   public Set<JSChunk> getAllDependencies() {
-    // JSChunk uses identity semantics
-    Set<JSChunk> allDeps = Sets.newIdentityHashSet();
+    LinkedHashSet<JSChunk> allDeps = new LinkedHashSet<>();
     allDeps.addAll(deps);
     ArrayDeque<JSChunk> stack = new ArrayDeque<>(deps);
 
@@ -249,8 +236,12 @@ public final class JSChunk extends DependencyInfo.Base implements Serializable {
    *
    * @return A list that may be empty but not null
    */
-  public List<CompilerInput> getInputs() {
+  public ImmutableList<CompilerInput> getInputs() {
     return ImmutableList.copyOf(inputs.values());
+  }
+
+  public Iterable<CompilerInput> getInputsIterable() {
+    return inputs.values();
   }
 
   /** Returns the input with the given name or null if none. */
@@ -327,7 +318,6 @@ public final class JSChunk extends DependencyInfo.Base implements Serializable {
     return index;
   }
 
-  @GwtIncompatible("ObjectinputStream")
   private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
     in.defaultReadObject();
     this.inputs = new LinkedHashMap<>();

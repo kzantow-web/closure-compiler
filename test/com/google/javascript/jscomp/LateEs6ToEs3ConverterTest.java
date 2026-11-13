@@ -15,13 +15,9 @@
  */
 package com.google.javascript.jscomp;
 
-import static com.google.javascript.jscomp.Es6ToEs3Util.CANNOT_CONVERT_YET;
 
-import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableMap;
 import com.google.javascript.jscomp.CompilerOptions.LanguageMode;
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -33,32 +29,46 @@ public final class LateEs6ToEs3ConverterTest extends CompilerTestCase {
   // Sample first script for use when testing non-first scripts
   private static final String SCRIPT1 = "var x;";
 
+  // The pass generates variable names consisting of filepath based uniqueIDs e.g. {@code
+  // $jscomp$templatelit$12345}. Use generic name `TAGGED_TEMPLATE_TMP_VAR` in test sources for
+  // readability.
+  private static final ImmutableMap<String, String> REPLACEMENT_PREFIXES =
+      ImmutableMap.of(
+          "TAGGED_TEMPLATE_TMP_VAR", "$jscomp$templatelit$",
+          "COMP_PROP_VAR", "$jscomp$compprop");
+
   private static final String RUNTIME_STUBS =
-      lines(
-          "/** @const */",
-          "var $jscomp = {};",
-          "$jscomp.createTemplateTagFirstArg = function(arrayStrings) {};",
-          "$jscomp.createTemplateTagFirstArgWithRaw = function(arrayStrings, rawArrayStrings) {};");
+      """
+      /** @const */
+      var $jscomp = {};
+      $jscomp.createTemplateTagFirstArg = function(arrayStrings) {};
+      $jscomp.createTemplateTagFirstArgWithRaw = function(anotherArray, rawArrayStrings) {};
+      """;
 
   public LateEs6ToEs3ConverterTest() {
     super(MINIMAL_EXTERNS + RUNTIME_STUBS);
   }
 
-  @Override
   @Before
-  public void setUp() throws Exception {
-    super.setUp();
+  public void customSetUp() throws Exception {
+    enableNormalize();
     setAcceptedLanguage(LanguageMode.ECMASCRIPT_2015);
     setLanguageOut(LanguageMode.ECMASCRIPT3);
     enableTypeCheck();
     enableTypeInfoValidation();
     replaceTypesWithColors();
     enableMultistageCompilation();
+    setGenericNameReplacements(REPLACEMENT_PREFIXES);
   }
 
   @Override
   protected CompilerPass getProcessor(final Compiler compiler) {
-    return new LateEs6ToEs3Converter(compiler);
+    PhaseOptimizer optimizer = new PhaseOptimizer(compiler, null);
+    optimizer.addOneTimePass(
+        makePassFactory(
+            "injectTranspilationRuntimeLibraries", InjectTranspilationRuntimeLibraries::new));
+    optimizer.addOneTimePass(makePassFactory("lateEs6ToEs3Converter", LateEs6ToEs3Converter::new));
+    return optimizer;
   }
 
   @Test
@@ -73,118 +83,130 @@ public final class LateEs6ToEs3ConverterTest extends CompilerTestCase {
     test(
         externs("/** @type {symbol} */ Symbol.iterator;"),
         srcs("var x = {[Symbol.iterator]: function() { return this; }};"),
-        expected(lines(
-            "var $jscomp$compprop0 = {};",
-            "var x = ($jscomp$compprop0[Symbol.iterator] = function() {return this;},",
-            "         $jscomp$compprop0)")));
+        expected(
+            """
+            var COMP_PROP_VAR$0 = {};
+            var x = (COMP_PROP_VAR$0[Symbol.iterator] = function() {return this;},
+                     COMP_PROP_VAR$0)
+            """));
   }
 
   @Test
   public void testMethodInObject() {
-    test("var obj = { f() {alert(1); } };",
-        "var obj = { f: function() {alert(1); } };");
+    test("var obj = { f() {alert(1); } };", "var obj = { f: function() {alert(1); } };");
 
-    test(
-        "var obj = { f() { alert(1); }, x };",
-        "var obj = { f: function() { alert(1); }, x: x };");
+    test("var obj = { f() { alert(1); }, x };", "var obj = { f: function() { alert(1); }, x: x };");
   }
 
   @Test
   public void testComputedPropertiesWithMethod() {
     test(
         "var obj = { ['f' + 1]: 1, m() {}, ['g' + 1]: 1, };",
-        lines(
-            "var $jscomp$compprop0 = {};",
-            "var obj = ($jscomp$compprop0['f' + 1] = 1,",
-            "  ($jscomp$compprop0.m = function() {}, ",
-            "     ($jscomp$compprop0['g' + 1] = 1, $jscomp$compprop0)));"));
+        """
+        var COMP_PROP_VAR$0 = {};
+        var obj = (COMP_PROP_VAR$0['f' + 1] = 1,
+          (COMP_PROP_VAR$0.m = function() {},
+             (COMP_PROP_VAR$0['g' + 1] = 1, COMP_PROP_VAR$0)));
+        """);
   }
 
   @Test
   public void testComputedProperties() {
     test(
         "var obj = { ['f' + 1] : 1, ['g' + 1] : 1 };",
-        lines(
-            "var $jscomp$compprop0 = {};",
-            "var obj = ($jscomp$compprop0['f' + 1] = 1,",
-            "  ($jscomp$compprop0['g' + 1] = 1, $jscomp$compprop0));"));
+        """
+        var COMP_PROP_VAR$0 = {};
+        var obj = (COMP_PROP_VAR$0['f' + 1] = 1,
+          (COMP_PROP_VAR$0['g' + 1] = 1, COMP_PROP_VAR$0));
+        """);
 
     test(
         "var obj = { ['f'] : 1};",
-        lines(
-            "var $jscomp$compprop0 = {};",
-            "var obj = ($jscomp$compprop0['f'] = 1,",
-            "  $jscomp$compprop0);"));
+        """
+        var COMP_PROP_VAR$0 = {};
+        var obj = (COMP_PROP_VAR$0['f'] = 1,
+          COMP_PROP_VAR$0);
+        """);
 
     test(
         "var o = { ['f'] : 1}; var p = { ['g'] : 1};",
-        lines(
-            "var $jscomp$compprop0 = {};",
-            "var o = ($jscomp$compprop0['f'] = 1,",
-            "  $jscomp$compprop0);",
-            "var $jscomp$compprop1 = {};",
-            "var p = ($jscomp$compprop1['g'] = 1,",
-            "  $jscomp$compprop1);"));
+        """
+        var COMP_PROP_VAR$0 = {};
+        var o = (COMP_PROP_VAR$0['f'] = 1,
+          COMP_PROP_VAR$0);
+        var COMP_PROP_VAR$1 = {};
+        var p = (COMP_PROP_VAR$1['g'] = 1,
+          COMP_PROP_VAR$1);
+        """);
 
     test(
         "({['f' + 1] : 1})",
-        lines(
-            "var $jscomp$compprop0 = {};",
-            "($jscomp$compprop0['f' + 1] = 1,",
-            "  $jscomp$compprop0)"));
+        """
+        var COMP_PROP_VAR$0 = {};
+        (COMP_PROP_VAR$0['f' + 1] = 1,
+          COMP_PROP_VAR$0)
+        """);
 
     test(
         "({'a' : 2, ['f' + 1] : 1})",
-        lines(
-            "var $jscomp$compprop0 = {};",
-            "($jscomp$compprop0['a'] = 2,",
-            "  ($jscomp$compprop0['f' + 1] = 1, $jscomp$compprop0));"));
+        """
+        var COMP_PROP_VAR$0 = {};
+        (COMP_PROP_VAR$0['a'] = 2,
+          (COMP_PROP_VAR$0['f' + 1] = 1, COMP_PROP_VAR$0));
+        """);
 
     test(
         "({['f' + 1] : 1, 'a' : 2})",
-        lines(
-            "var $jscomp$compprop0 = {};",
-            "($jscomp$compprop0['f' + 1] = 1,",
-            "  ($jscomp$compprop0['a'] = 2, $jscomp$compprop0));"));
+        """
+        var COMP_PROP_VAR$0 = {};
+        (COMP_PROP_VAR$0['f' + 1] = 1,
+          (COMP_PROP_VAR$0['a'] = 2, COMP_PROP_VAR$0));
+        """);
 
-    test("({'a' : 1, ['f' + 1] : 1, 'b' : 1})",
-        lines(
-        "var $jscomp$compprop0 = {};",
-        "($jscomp$compprop0['a'] = 1,",
-        "  ($jscomp$compprop0['f' + 1] = 1, ($jscomp$compprop0['b'] = 1, $jscomp$compprop0)));"
-    ));
+    test(
+        "({'a' : 1, ['f' + 1] : 1, 'b' : 1})",
+        """
+        var COMP_PROP_VAR$0 = {};
+        (COMP_PROP_VAR$0['a'] = 1,
+          (COMP_PROP_VAR$0['f' + 1] = 1, (COMP_PROP_VAR$0['b'] = 1, COMP_PROP_VAR$0)));
+        """);
 
     test(
         "({'a' : x++, ['f' + x++] : 1, 'b' : x++})",
-        lines(
-            "var $jscomp$compprop0 = {};",
-            "($jscomp$compprop0['a'] = x++, ($jscomp$compprop0['f' + x++] = 1,",
-            "  ($jscomp$compprop0['b'] = x++, $jscomp$compprop0)))"));
+        """
+        var COMP_PROP_VAR$0 = {};
+        (COMP_PROP_VAR$0['a'] = x++, (COMP_PROP_VAR$0['f' + x++] = 1,
+          (COMP_PROP_VAR$0['b'] = x++, COMP_PROP_VAR$0)))
+        """);
 
     test(
         "({a : x++, ['f' + x++] : 1, b : x++})",
-        lines(
-            "var $jscomp$compprop0 = {};",
-            "($jscomp$compprop0.a = x++, ($jscomp$compprop0['f' + x++] = 1,",
-            "  ($jscomp$compprop0.b = x++, $jscomp$compprop0)))"));
+        """
+        var COMP_PROP_VAR$0 = {};
+        (COMP_PROP_VAR$0.a = x++, (COMP_PROP_VAR$0['f' + x++] = 1,
+          (COMP_PROP_VAR$0.b = x++, COMP_PROP_VAR$0)))
+        """);
 
     test(
         "({a, ['f' + 1] : 1})",
-        lines(
-            "var $jscomp$compprop0 = {};",
-            "  ($jscomp$compprop0.a = a, ($jscomp$compprop0['f' + 1] = 1, $jscomp$compprop0))"));
+        """
+        var COMP_PROP_VAR$0 = {};
+          (COMP_PROP_VAR$0.a = a, (COMP_PROP_VAR$0['f' + 1] = 1, COMP_PROP_VAR$0))
+        """);
 
     test(
         "({['f' + 1] : 1, a})",
-        lines(
-            "var $jscomp$compprop0 = {};",
-            "  ($jscomp$compprop0['f' + 1] = 1, ($jscomp$compprop0.a = a, $jscomp$compprop0))"));
+        """
+        var COMP_PROP_VAR$0 = {};
+          (COMP_PROP_VAR$0['f' + 1] = 1, (COMP_PROP_VAR$0.a = a, COMP_PROP_VAR$0))
+        """);
 
     test(
         "var obj = { [foo]() {}}",
-        lines(
-            "var $jscomp$compprop0 = {};",
-            "var obj = ($jscomp$compprop0[foo] = function(){}, $jscomp$compprop0)"));
+        """
+        var COMP_PROP_VAR$0 = {};
+        var obj = (COMP_PROP_VAR$0[foo] = function(){}, COMP_PROP_VAR$0)
+        """);
   }
 
   @Test
@@ -192,24 +214,28 @@ public final class LateEs6ToEs3ConverterTest extends CompilerTestCase {
     setLanguageOut(LanguageMode.ECMASCRIPT5);
 
     testSame("var obj = {get latest () {return undefined;}}");
-    testSame("var obj = {set latest (str) {}}");
+    testSame("var obj = {set latest (strParam) {}}");
     test(
         "var obj = {'a' : 2, get l () {return null;}, ['f' + 1] : 1}",
-        lines(
-            "var $jscomp$compprop0 = {get l () {return null;}};",
-            "var obj = ($jscomp$compprop0['a'] = 2,",
-            "  ($jscomp$compprop0['f' + 1] = 1, $jscomp$compprop0));"));
+        """
+        var COMP_PROP_VAR$0 = {get l () {return null;}};
+        var obj = (COMP_PROP_VAR$0['a'] = 2, (COMP_PROP_VAR$0['f' + 1] = 1, COMP_PROP_VAR$0));
+        """);
     test(
-        "var obj = {['a' + 'b'] : 2, set l (str) {}}",
-        lines(
-            "var $jscomp$compprop0 = {set l (str) {}};",
-            "var obj = ($jscomp$compprop0['a' + 'b'] = 2, $jscomp$compprop0);"));
+        "var obj = {['a' + 'b'] : 2, set l (strParam) {}}",
+        """
+        var COMP_PROP_VAR$0 = {set l (strParam) {}};
+        var obj = (COMP_PROP_VAR$0['a' + 'b'] = 2, COMP_PROP_VAR$0);
+        """);
   }
 
   @Test
   public void testComputedPropCannotConvert() {
-    testError("var o = { get [foo]() {}}", CANNOT_CONVERT_YET);
-    testError("var o = { set [foo](val) {}}", CANNOT_CONVERT_YET);
+    testError(
+        "var o = { get [foo]() {}}", ReportUntranspilableFeatures.UNTRANSPILABLE_FEATURE_PRESENT);
+    testError(
+        "var o = { set [foo](val) {}}",
+        ReportUntranspilableFeatures.UNTRANSPILABLE_FEATURE_PRESENT);
   }
 
   @Test
@@ -253,39 +279,41 @@ public final class LateEs6ToEs3ConverterTest extends CompilerTestCase {
    * uniqueID in them. This uniqueID is obfucated by using a generic name `TAGGED_TEMPLATE_TMP_VAR`
    * here that gets replaced by the runtime-computed uniqueID before test execution.
    */
+  // TODO(b/538150835): Do not mark property tagged template calls as FREE_CALL in
+  // Es6TemplateLiterals
   @Test
   public void testTaggedTemplateLiteral_singleScript() {
-    taggedTemplateLiteralTestRunner(
-        srcs("tag``"),
-        expected(
-            lines(
-                "/** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =",
-                "    $jscomp.createTemplateTagFirstArg(['']);",
-                "tag(TAGGED_TEMPLATE_TMP_VAR$0);")));
+    test(
+        "tag``",
+        """
+        /** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =
+            $jscomp.createTemplateTagFirstArg(['']);
+        tag(TAGGED_TEMPLATE_TMP_VAR$0);
+        """);
 
-    taggedTemplateLiteralTestRunner(
-        srcs("tag`${hello} world`"),
-        expected(
-            lines(
-                "/** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =",
-                "    $jscomp.createTemplateTagFirstArg(['', ' world']);",
-                "tag(TAGGED_TEMPLATE_TMP_VAR$0, hello);")));
+    test(
+        "tag`${hello} world`",
+        """
+        /** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =
+            $jscomp.createTemplateTagFirstArg(['', ' world']);
+        tag(TAGGED_TEMPLATE_TMP_VAR$0, hello);
+        """);
 
-    taggedTemplateLiteralTestRunner(
-        srcs("tag`${hello} ${world}`"),
-        expected(
-            lines(
-                "/** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 = ",
-                "    $jscomp.createTemplateTagFirstArg(['', ' ', '']);",
-                "tag(TAGGED_TEMPLATE_TMP_VAR$0, hello, world);")));
+    test(
+        "tag`${hello} ${world}`",
+        """
+        /** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =
+            $jscomp.createTemplateTagFirstArg(['', ' ', '']);
+        tag(TAGGED_TEMPLATE_TMP_VAR$0, hello, world);
+        """);
 
-    taggedTemplateLiteralTestRunner(
-        srcs("tag`\"`"),
-        expected(
-            lines(
-                "/** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =",
-                "    $jscomp.createTemplateTagFirstArg(['\"']);",
-                "tag(TAGGED_TEMPLATE_TMP_VAR$0);")));
+    test(
+        "tag`\"`",
+        """
+        /** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =
+            $jscomp.createTemplateTagFirstArg(['"']);
+        tag(TAGGED_TEMPLATE_TMP_VAR$0);
+        """);
 
     // The cooked string and the raw string are different.
     // Note that this test is tricky to read, because any escape sequences will be escaped twice.
@@ -299,55 +327,65 @@ public final class LateEs6ToEs3ConverterTest extends CompilerTestCase {
     //     \\\t      ->   \<tab character>   -> <tab character> (length: 1)
     //     \\\\t     ->   \\t                -> \t              (length: 2)
     //
-    taggedTemplateLiteralTestRunner(
-        srcs("tag`a\\tb`"),
-        expected(
-            lines(
-                "/** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =",
-                "    $jscomp.createTemplateTagFirstArgWithRaw(['a\\tb'],['a\\\\tb']);",
-                "tag(TAGGED_TEMPLATE_TMP_VAR$0);")));
+    test(
+        "tag`a\\tb`",
+        """
+        /** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =
+            $jscomp.createTemplateTagFirstArgWithRaw(['a\\tb'],['a\\\\tb']);
+        tag(TAGGED_TEMPLATE_TMP_VAR$0);
+        """);
 
-    taggedTemplateLiteralTestRunner(
-        srcs("tag()`${hello} world`"),
-        expected(
-            lines(
-                "/** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 = ",
-                "    $jscomp.createTemplateTagFirstArg(['', ' world']);",
-                "tag()(TAGGED_TEMPLATE_TMP_VAR$0, hello);")));
+    test(
+        "tag()`${hello} world`",
+        """
+        /** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =
+            $jscomp.createTemplateTagFirstArg(['', ' world']);
+        tag()(TAGGED_TEMPLATE_TMP_VAR$0, hello);
+        """);
 
-    taggedTemplateLiteralTestRunner(
+    test(
         externs(RUNTIME_STUBS, "var a = {}; a.b;"),
         srcs("a.b`${hello} world`"),
         expected(
-            lines(
-                "/** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =",
-                "    $jscomp.createTemplateTagFirstArg(['', ' world']);",
-                "a.b(TAGGED_TEMPLATE_TMP_VAR$0, hello);")));
+            """
+            /** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =
+                $jscomp.createTemplateTagFirstArg(['', ' world']);
+            a.b(TAGGED_TEMPLATE_TMP_VAR$0, hello);
+            """));
 
+    test(
+        externs(RUNTIME_STUBS, "var a = {}; var b; a[b];"),
+        srcs("a[b]`${hello} world`"),
+        expected(
+            """
+            /** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =
+                $jscomp.createTemplateTagFirstArg(['', ' world']);
+            a[b](TAGGED_TEMPLATE_TMP_VAR$0, hello);
+            """));
     // https://github.com/google/closure-compiler/issues/1299
-    taggedTemplateLiteralTestRunner(
-        srcs("tag`<p class=\"foo\">${x}</p>`"),
-        expected(
-            lines(
-                "/** @noinline */ var TAGGED_TEMPLATE_TMP_VAR" + "$0 =",
-                "    $jscomp.createTemplateTagFirstArg(['<p class=\"foo\">','</p>']);",
-                "tag(TAGGED_TEMPLATE_TMP_VAR$0, x);")));
-    taggedTemplateLiteralTestRunner(
-        srcs("tag`<p class='foo'>${x}</p>`"),
-        expected(
-            lines(
-                "/** @noinline */ var TAGGED_TEMPLATE_TMP_VAR" + "$0 =",
-                "    $jscomp.createTemplateTagFirstArg(['<p class=\\'foo\\'>','</p>']);",
-                "tag(TAGGED_TEMPLATE_TMP_VAR$0, x);")));
+    test(
+        "tag`<p class=\"foo\">${x}</p>`",
+        """
+        /** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =
+            $jscomp.createTemplateTagFirstArg(['<p class="foo">','</p>']);
+        tag(TAGGED_TEMPLATE_TMP_VAR$0, x);
+        """);
+    test(
+        "tag`<p class='foo'>${x}</p>`",
+        """
+        /** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =
+            $jscomp.createTemplateTagFirstArg(['<p class=\\'foo\\'>','</p>']);
+        tag(TAGGED_TEMPLATE_TMP_VAR$0, x);
+        """);
 
     // invalid escape sequences result in undefined cooked string
-    taggedTemplateLiteralTestRunner(
-        srcs("tag`\\unicode`"),
-        expected(
-            lines(
-                "/** @noinline */ var TAGGED_TEMPLATE_TMP_VAR" + "$0 =",
-                "    $jscomp.createTemplateTagFirstArgWithRaw([void 0],['\\\\unicode']);",
-                "tag(TAGGED_TEMPLATE_TMP_VAR$0);")));
+    test(
+        "tag`\\unicode`",
+        """
+        /** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =
+            $jscomp.createTemplateTagFirstArgWithRaw([void 0],['\\\\unicode']);
+        tag(TAGGED_TEMPLATE_TMP_VAR$0);
+        """);
   }
 
   /**
@@ -356,39 +394,57 @@ public final class LateEs6ToEs3ConverterTest extends CompilerTestCase {
    */
   @Test
   public void testTaggedTemplateLiteral_insertPosition_singleScript() {
-    taggedTemplateLiteralTestRunner(
+    test(
         externs(""), // clear the default externs which contain the runtime stubs
-        srcs(lines(RUNTIME_STUBS, "var a = {};", "tag``; var b;")),
+        srcs(
+            RUNTIME_STUBS
+                + """
+                var a = {};
+                tag``; var b;
+                """),
         expected(
-            lines(
-                RUNTIME_STUBS,
-                "/** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =",
-                "    $jscomp.createTemplateTagFirstArg(['']);",
-                "var a = {};",
-                "tag(TAGGED_TEMPLATE_TMP_VAR$0);",
-                "var b;")));
+            RUNTIME_STUBS
+                + """
+                /** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =
+                    $jscomp.createTemplateTagFirstArg(['']);
+                var a = {};
+                tag(TAGGED_TEMPLATE_TMP_VAR$0);
+                var b;
+                """));
 
-    taggedTemplateLiteralTestRunner(
+    test(
         externs(""), // clear the default externs which contain the runtime stubs
-        srcs(lines(RUNTIME_STUBS, "var a = {};", "function foo() {tag``;}")),
+        srcs(
+            RUNTIME_STUBS
+                + """
+                var a = {};
+                function foo() {tag``;}
+                """),
         expected(
-            lines(
-                RUNTIME_STUBS,
-                "/** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =",
-                "    $jscomp.createTemplateTagFirstArg(['']);",
-                "var a = {};",
-                "function foo() {tag(TAGGED_TEMPLATE_TMP_VAR$0);}")));
+            RUNTIME_STUBS
+                + """
+                /** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =
+                    $jscomp.createTemplateTagFirstArg(['']);
+                var a = {};
+                function foo() {tag(TAGGED_TEMPLATE_TMP_VAR$0);}
+                """));
 
-    taggedTemplateLiteralTestRunner(
+    test(
         externs(""), // clear the default externs which contain the runtime stubs
-        srcs(lines(RUNTIME_STUBS, "var a = {};", "function foo() {function bar() {tag``;}}")),
+        srcs(
+            RUNTIME_STUBS
+                + """
+                var a = {};
+                function foo() {function bar() {tag``;}}
+                """),
         expected(
-            lines(
-                RUNTIME_STUBS,
-                "/** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =",
-                "    $jscomp.createTemplateTagFirstArg(['']);",
-                "var a = {};",
-                "function foo() {function bar() {tag(TAGGED_TEMPLATE_TMP_VAR$0);}}")));
+            RUNTIME_STUBS
+                + """
+                /** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =
+                    $jscomp.createTemplateTagFirstArg(['']);
+                var a = {};
+                function foo() {function bar() {tag(TAGGED_TEMPLATE_TMP_VAR$0);}}
+                """));
   }
 
   /**
@@ -397,94 +453,99 @@ public final class LateEs6ToEs3ConverterTest extends CompilerTestCase {
    */
   @Test
   public void testTaggedTemplateLiteral_insertPosition_multipleScripts() {
-    taggedTemplateLiteralTestRunner(
-        externs(""), // clear the default externs which contain the runtime stubs
-        srcs(lines(RUNTIME_STUBS, SCRIPT1), lines("var a = {};", "tag``; var b;")),
-        expected(
-            lines(RUNTIME_STUBS, SCRIPT1),
-            lines(
-                "/** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =",
-                "    $jscomp.createTemplateTagFirstArg(['']);",
-                "var a = {};",
-                "tag(TAGGED_TEMPLATE_TMP_VAR$0); var b;")));
-
-    taggedTemplateLiteralTestRunner(
-        externs(""), // clear the default externs which contain the runtime stubs
-        srcs(lines(RUNTIME_STUBS, SCRIPT1), lines("var a = {};", "function foo() {tag``;}")),
-        expected(
-            lines(RUNTIME_STUBS, SCRIPT1),
-            lines(
-                "/** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =",
-                "    $jscomp.createTemplateTagFirstArg(['']);",
-                "var a = {};",
-                "function foo() {tag(TAGGED_TEMPLATE_TMP_VAR$0);}")));
-
-    taggedTemplateLiteralTestRunner(
+    test(
         externs(""), // clear the default externs which contain the runtime stubs
         srcs(
-            lines(SCRIPT1, RUNTIME_STUBS),
-            lines("var a = {};", "function foo() {function bar() {tag``;}}")),
+            RUNTIME_STUBS + SCRIPT1,
+            """
+            var a = {};
+            tag``; var b;
+            """),
         expected(
-            lines(SCRIPT1, RUNTIME_STUBS),
-            lines(
-                "/** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =",
-                "    $jscomp.createTemplateTagFirstArg(['']);",
-                "var a = {};",
-                "function foo() {function bar() {tag(TAGGED_TEMPLATE_TMP_VAR$0);}}")));
+            RUNTIME_STUBS + SCRIPT1,
+            """
+            /** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =
+                $jscomp.createTemplateTagFirstArg(['']);
+            var a = {};
+            tag(TAGGED_TEMPLATE_TMP_VAR$0); var b;
+            """));
+
+    test(
+        externs(""), // clear the default externs which contain the runtime stubs
+        srcs(
+            RUNTIME_STUBS + SCRIPT1,
+            """
+            var a = {};
+            function foo() {tag``;}
+            """),
+        expected(
+            RUNTIME_STUBS + SCRIPT1,
+            """
+            /** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =
+                $jscomp.createTemplateTagFirstArg(['']);
+            var a = {};
+            function foo() {tag(TAGGED_TEMPLATE_TMP_VAR$0);}
+            """));
+
+    test(
+        externs(""), // clear the default externs which contain the runtime stubs
+        srcs(
+            SCRIPT1 + RUNTIME_STUBS,
+            """
+            var a = {};
+            function foo() {function bar() {tag``;}}
+            """),
+        expected(
+            SCRIPT1 + RUNTIME_STUBS,
+            """
+            /** @noinline */ var TAGGED_TEMPLATE_TMP_VAR$0 =
+                $jscomp.createTemplateTagFirstArg(['']);
+            var a = {};
+            function foo() {function bar() {tag(TAGGED_TEMPLATE_TMP_VAR$0);}}
+            """));
   }
 
-  /** Runs the tagged template literal test with externs. */
-  private void taggedTemplateLiteralTestRunner(Externs externs, Sources inputs, Expected outputs) {
-    Expected exp = replaceVarNamesInExpectedFiles(inputs, outputs);
-    test(externs, inputs, exp);
+
+  @Test
+  public void testComputedPropertyInLoopHeader() {
+    test(
+        "for (; {[foo]: bar}; ) {}",
+        """
+        var COMP_PROP_VAR$0;
+        for (; (COMP_PROP_VAR$0 = {}, (COMP_PROP_VAR$0[foo] = bar, COMP_PROP_VAR$0)); ) {}
+        """);
+
+    test(
+        "while ({[foo]: bar}) {}",
+        """
+        var COMP_PROP_VAR$0;
+        for (; (COMP_PROP_VAR$0 = {}, (COMP_PROP_VAR$0[foo] = bar, COMP_PROP_VAR$0)); ) {}
+        """);
+
+    test(
+        "do {} while ({[foo]: bar});",
+        """
+        var COMP_PROP_VAR$0;
+        do {} while ((COMP_PROP_VAR$0 = {}, (COMP_PROP_VAR$0[foo] = bar, COMP_PROP_VAR$0)));
+        """);
   }
 
-  /** Runs the tagged template literal test. */
-  private void taggedTemplateLiteralTestRunner(Sources inputs, Expected outputs) {
-    Expected exp = replaceVarNamesInExpectedFiles(inputs, outputs);
-    test(inputs, exp);
-  }
-
-  /**
-   * Helper to replace the generic name `TAGGED_TEMPLATE_TMP_VAR` in each of the expected test
-   * output files with the calculated uniqueID hashString based on the corresponding test's input
-   * file.
-   *
-   * <p>The vars created during tagged template literal transpilation have have a filePath based
-   * uniqueID in them. This uniqueID is obfucated by using a generic name `TAGGED_TEMPLATE_TMP_VAR`
-   * in the test sources. This function replaces that generic name by the runtime-computed uniqueID
-   * before test execution.
-   */
-  private static Expected replaceVarNamesInExpectedFiles(Sources inputs, Expected outputs) {
-    int inLength = ((FlatSources) inputs).sources.size();
-    int outLength = outputs.expected.size();
-    Preconditions.checkArgument(inLength == outLength);
-
-    List<SourceFile> updatedOutputs = new ArrayList<>();
-    for (int i = 0; i < inLength; i++) {
-      SourceFile inputScript = ((FlatSources) inputs).sources.get(i);
-      SourceFile outputScript = outputs.expected.get(i);
-
-      int fileHashCode = inputScript.getName().hashCode();
-      String fileHashString = (fileHashCode < 0) ? ("m" + -fileHashCode) : ("" + fileHashCode);
-      String expectedCode = "";
-      String expectedCodeFileName = outputScript.getName();
-      try {
-        expectedCode = outputScript.getCode();
-      } catch (IOException e) {
-        new RuntimeException("Read error: " + expectedCodeFileName);
-      }
-      expectedCode =
-          expectedCode.replace("TAGGED_TEMPLATE_TMP_VAR", "$jscomp$templatelit$" + fileHashString);
-      updatedOutputs.add(SourceFile.fromCode(expectedCodeFileName, expectedCode));
-    }
-    return expected(updatedOutputs);
+  @Test
+  public void testComputedPropertyInLoopBody() {
+    test(
+        "while (true) { var x = {[foo]: bar}; }",
+        """
+        for (; true;) {
+          var COMP_PROP_VAR$0 = {};
+          var x = (COMP_PROP_VAR$0[foo] = bar, COMP_PROP_VAR$0);
+        }
+        """);
   }
 
   @Test
   public void testUnicodeEscapes() {
-    test("var \\u{73} = \'\\u{2603}\'", "var s = \'\u2603\'");  // ☃
-    test("var \\u{63} = \'\\u{1f42a}\'", "var c = \'\uD83D\uDC2A\'");  // 🐪
+    test("var \\u{73} = \'\\u{2603}\'", "var s = \'\u2603\'"); // ☃
+    test("var \\u{63} = \'\\u{1f42a}\'", "var c = \'\uD83D\uDC2A\'"); // 🐪
     test("var str = `begin\\u{2026}end`", "var str = 'begin\\u2026end'");
   }
 }

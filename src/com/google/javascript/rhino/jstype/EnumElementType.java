@@ -42,6 +42,7 @@ package com.google.javascript.rhino.jstype;
 import com.google.javascript.jscomp.base.Tri;
 import com.google.javascript.rhino.ErrorReporter;
 import com.google.javascript.rhino.Node;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The type of individual elements of an enum type (see {@link EnumType}).
@@ -86,7 +87,7 @@ public final class EnumElementType extends ObjectType {
   }
 
   @Override
-  public HasPropertyKind getPropertyKind(String propertyName, boolean autobox) {
+  public HasPropertyKind getPropertyKind(Property.Key propertyName, boolean autobox) {
     return primitiveType.getPropertyKind(propertyName, autobox);
   }
 
@@ -115,6 +116,11 @@ public final class EnumElementType extends ObjectType {
   @Override
   public boolean matchesObjectContext() {
     return primitiveType.matchesObjectContext();
+  }
+
+  @Override
+  public boolean matchesSymbolContext() {
+    return primitiveType.matchesSymbolContext();
   }
 
   @Override
@@ -151,7 +157,7 @@ public final class EnumElementType extends ObjectType {
   @Override
   int recursionUnsafeHashCode() {
     if (!this.hasReferenceName()) {
-      /**
+      /*
        * TODO(nickreid): Apparently this can happen if the l-value the enum is assinged to is not a
        * qname. Fortunatly, this whole thing should become redundant once equality cannot be checked
        * before resolution.
@@ -187,24 +193,24 @@ public final class EnumElementType extends ObjectType {
   }
 
   @Override
-  boolean defineProperty(String propertyName, JSType type,
-      boolean inferred, Node propertyNode) {
+  boolean defineProperty(
+      Property.Key propertyName, JSType type, boolean inferred, Node propertyNode) {
     // nothing
     return true;
   }
 
   @Override
-  public ObjectType getImplicitPrototype() {
+  public @Nullable ObjectType getImplicitPrototype() {
     return null;
   }
 
   @Override
-  protected JSType findPropertyTypeWithoutConsideringTemplateTypes(String propertyName) {
+  protected JSType findPropertyTypeWithoutConsideringTemplateTypes(Property.Key propertyName) {
     return primitiveType.findPropertyType(propertyName);
   }
 
   @Override
-  public FunctionType getConstructor() {
+  public @Nullable FunctionType getConstructor() {
     // TODO(b/147236174): This should always return null.
     return primitiveObjectType == null ? null : primitiveObjectType.getConstructor();
   }
@@ -234,7 +240,7 @@ public final class EnumElementType extends ObjectType {
    * which kind-of-sort-of makes sense, because an EnumElementType is a union of instances of a
    * type.
    */
-  static JSType getGreatestSubtype(EnumElementType element, JSType that) {
+  static @Nullable JSType getGreatestSubtype(EnumElementType element, JSType that) {
     // This method is implemented as a static because we don't want polymorphism. Ideally all the
     // `greatestSubtype` code would be in one place. Until then, using static calls minimizes
     // confusion.

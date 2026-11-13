@@ -19,14 +19,15 @@ package com.google.javascript.jscomp;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 
-import com.google.common.collect.HashMultimap;
+import com.google.common.collect.ImmutableList;
 import com.google.javascript.jscomp.ControlFlowGraph.Branch;
 import com.google.javascript.jscomp.MaybeReachingVariableUse.ReachingUses;
 import com.google.javascript.jscomp.graph.DiGraph.DiGraphEdge;
 import com.google.javascript.jscomp.graph.GraphNode;
 import com.google.javascript.jscomp.graph.LatticeElement;
+import com.google.javascript.rhino.HamtPMap;
 import com.google.javascript.rhino.Node;
-import java.util.Collection;
+import com.google.javascript.rhino.PMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -104,7 +105,7 @@ class MaybeReachingVariableUse extends DataFlowAnalysis<Node, ReachingUses> {
    */
   static final class ReachingUses implements LatticeElement {
     // Maps variables to all their uses that are upward exposed at the current cfgNode.
-    final HashMultimap<Var, Node> mayUseMap = HashMultimap.create();
+    private PMap<Var, PMap<Node, Node>> mayUsePMap = HamtPMap.empty();
 
     public ReachingUses() {}
 
@@ -114,18 +115,62 @@ class MaybeReachingVariableUse extends DataFlowAnalysis<Node, ReachingUses> {
      * @param other The constructed object is a replicated copy of this element.
      */
     public ReachingUses(ReachingUses other) {
-      this.mayUseMap.putAll(other.mayUseMap);
+      mayUsePMap = other.mayUsePMap;
+    }
+
+    public Iterable<Node> get(Var v) {
+      PMap<Node, Node> uses = this.mayUsePMap.get(v);
+      return uses != null ? uses.keys() : ImmutableList.of();
+    }
+
+    public void removeAll(Var v) {
+      mayUsePMap = mayUsePMap.minus(v);
+    }
+
+    public void put(Var v, Node n) {
+      var values = mayUsePMap.get(v);
+      if (values == null) {
+        values = HamtPMap.empty();
+      }
+      var newValues = values.plus(n, n);
+      if (newValues != values) {
+        mayUsePMap = mayUsePMap.plus(v, newValues);
+      }
+    }
+
+    public void join(ReachingUses other) {
+      mayUsePMap =
+          mayUsePMap.reconcile(
+              other.mayUsePMap,
+              (Var var, PMap<Node, Node> thisVal, PMap<Node, Node> thatVal) -> {
+                if (thisVal == null) {
+                  return thatVal;
+                }
+                if (thatVal == null) {
+                  return thisVal;
+                }
+                // The PMap as a set with the key and value pair have the same value.
+                return thisVal.reconcile(thatVal, (node, unused1, unused2) -> node);
+              });
     }
 
     @Override
     public boolean equals(Object other) {
-      return (other instanceof ReachingUses)
-          && ((ReachingUses) other).mayUseMap.equals(this.mayUseMap);
+      return (other instanceof ReachingUses reachingUses)
+          && reachingUses.mayUsePMap.equivalent(this.mayUsePMap, ReachingUses::equalMaps);
+    }
+
+    private static boolean equalMaps(PMap<Node, Node> map1, PMap<Node, Node> map2) {
+      return map1 == map2 || map1.equivalent(map2, ReachingUses::equalNodes);
+    }
+
+    private static boolean equalNodes(Node n1, Node n2) {
+      return n1 == n2;
     }
 
     @Override
     public int hashCode() {
-      return mayUseMap.hashCode();
+      throw new UnsupportedOperationException("the hashcode of this object is not stable");
     }
   }
 
@@ -141,7 +186,7 @@ class MaybeReachingVariableUse extends DataFlowAnalysis<Node, ReachingUses> {
 
     @Override
     public void joinFlow(ReachingUses uses) {
-      this.result.mayUseMap.putAll(uses.mayUseMap);
+      this.result.join(uses);
     }
 
     @Override
@@ -215,12 +260,10 @@ class MaybeReachingVariableUse extends DataFlowAnalysis<Node, ReachingUses> {
    */
   private void computeMayUse(Node n, Node cfgNode, ReachingUses output, boolean conditional) {
     switch (n.getToken()) {
-      case BLOCK:
-      case ROOT:
-      case FUNCTION:
+      case BLOCK, ROOT, FUNCTION -> {
         return;
-
-      case NAME:
+      }
+      case NAME -> {
         if (NodeUtil.isLhsByDestructuring(n)) {
           if (!conditional) {
             removeFromUseIfLocal(n.getString(), output);
@@ -229,18 +272,13 @@ class MaybeReachingVariableUse extends DataFlowAnalysis<Node, ReachingUses> {
           addToUseIfLocal(n.getString(), cfgNode, output);
         }
         return;
-
-      case WHILE:
-      case DO:
-      case IF:
-      case FOR:
+      }
+      case WHILE, DO, IF, FOR -> {
         Node condExpr = NodeUtil.getConditionExpression(n);
         computeMayUse(condExpr, cfgNode, output, conditional);
         return;
-
-      case FOR_IN:
-      case FOR_OF:
-      case FOR_AWAIT_OF:
+      }
+      case FOR_IN, FOR_OF, FOR_AWAIT_OF -> {
         // for(x in y) {...}
         Node lhs = n.getFirstChild();
         Node rhs = lhs.getNext();
@@ -250,24 +288,18 @@ class MaybeReachingVariableUse extends DataFlowAnalysis<Node, ReachingUses> {
             lhs = lhs.getFirstChild(); // for (let [x] of obj) {...}
           }
         }
-        if (lhs.isName() && !conditional) {
-          removeFromUseIfLocal(lhs.getString(), output);
-        } else if (lhs.isDestructuringPattern()) {
+        if (lhs.isDestructuringPattern()) {
           computeMayUse(lhs, cfgNode, output, true);
         }
         computeMayUse(rhs, cfgNode, output, conditional);
         return;
-
-      case AND:
-      case OR:
-      case COALESCE:
-      case OPTCHAIN_GETPROP:
-      case OPTCHAIN_GETELEM:
+      }
+      case AND, OR, COALESCE, OPTCHAIN_GETPROP, OPTCHAIN_GETELEM -> {
         computeMayUse(n.getLastChild(), cfgNode, output, /* conditional= */ true);
         computeMayUse(n.getFirstChild(), cfgNode, output, conditional);
         return;
-
-      case OPTCHAIN_CALL:
+      }
+      case OPTCHAIN_CALL -> {
         // As args are evaluated in AST order, we traverse in reverse AST order for backward
         // dataflow analysis.
         for (Node c = n.getLastChild(); c != n.getFirstChild(); c = c.getPrevious()) {
@@ -275,18 +307,16 @@ class MaybeReachingVariableUse extends DataFlowAnalysis<Node, ReachingUses> {
         }
         computeMayUse(n.getFirstChild(), cfgNode, output, conditional);
         return;
-
-      case HOOK:
+      }
+      case HOOK -> {
         computeMayUse(n.getLastChild(), cfgNode, output, /* conditional= */ true);
         computeMayUse(n.getSecondChild(), cfgNode, output, /* conditional= */ true);
         computeMayUse(n.getFirstChild(), cfgNode, output, conditional);
         return;
-
-      case VAR:
-      case LET:
-      case CONST:
+      }
+      case VAR, LET, CONST -> {
         Node varName = n.getFirstChild();
-        checkState(n.hasChildren(), "AST should be normalized", n);
+        checkState(n.hasChildren(), "AST should be normalized (%s)", n);
 
         if (varName.isDestructuringLhs()) {
           // Note: since destructuring is evaluated in reverse AST order, we traverse the first
@@ -300,8 +330,8 @@ class MaybeReachingVariableUse extends DataFlowAnalysis<Node, ReachingUses> {
           }
         } // else var name declaration with no initial value
         return;
-
-      case DEFAULT_VALUE:
+      }
+      case DEFAULT_VALUE -> {
         if (n.getFirstChild().isDestructuringPattern()) {
           computeMayUse(n.getFirstChild(), cfgNode, output, conditional);
           computeMayUse(n.getSecondChild(), cfgNode, output, true);
@@ -315,9 +345,8 @@ class MaybeReachingVariableUse extends DataFlowAnalysis<Node, ReachingUses> {
           computeMayUse(n.getSecondChild(), cfgNode, output, true);
           computeMayUse(n.getFirstChild(), cfgNode, output, conditional);
         }
-        break;
-
-      default:
+      }
+      default -> {
         if (NodeUtil.isAssignmentOp(n) && n.getFirstChild().isName()) {
           checkState(!NodeUtil.isLogicalAssignmentOp(n));
           Node name = n.getFirstChild();
@@ -344,6 +373,7 @@ class MaybeReachingVariableUse extends DataFlowAnalysis<Node, ReachingUses> {
             computeMayUse(c, cfgNode, output, conditional);
           }
         }
+      }
     }
   }
 
@@ -357,7 +387,7 @@ class MaybeReachingVariableUse extends DataFlowAnalysis<Node, ReachingUses> {
       return;
     }
     if (!escaped.contains(var)) {
-      use.mayUseMap.put(var, node);
+      use.put(var, node);
     }
   }
 
@@ -371,7 +401,7 @@ class MaybeReachingVariableUse extends DataFlowAnalysis<Node, ReachingUses> {
       return;
     }
     if (!escaped.contains(var)) {
-      use.mayUseMap.removeAll(var);
+      use.removeAll(var);
     }
   }
 
@@ -384,10 +414,10 @@ class MaybeReachingVariableUse extends DataFlowAnalysis<Node, ReachingUses> {
    * @param defNode the control flow graph node that may assign a value to {@code name}
    * @return the list of upward exposed uses of the variable {@code name} at defNode.
    */
-  Collection<Node> getUses(String name, Node defNode) {
+  Iterable<Node> getUses(String name, Node defNode) {
     GraphNode<Node, Branch> n = getCfg().getNode(defNode);
     checkNotNull(n);
     LinearFlowState<ReachingUses> state = n.getAnnotation();
-    return state.getOut().mayUseMap.get(allVarsInFn.get(name));
+    return state.getOut().get(allVarsInFn.get(name));
   }
 }

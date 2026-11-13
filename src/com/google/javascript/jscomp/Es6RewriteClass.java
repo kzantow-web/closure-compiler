@@ -18,12 +18,15 @@ package com.google.javascript.jscomp;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.javascript.jscomp.AstFactory.type;
-import static com.google.javascript.jscomp.Es6ToEs3Util.cannotConvert;
+import static com.google.javascript.jscomp.TranspilationUtil.cannotConvert;
+import static java.util.Objects.requireNonNull;
 
-import com.google.auto.value.AutoValue;
+import com.google.auto.value.AutoBuilder;
 import com.google.common.base.Preconditions;
+import com.google.javascript.jscomp.CompilerOptions.Es6SubclassTranspilation;
 import com.google.javascript.jscomp.colors.Color;
 import com.google.javascript.jscomp.colors.StandardColors;
+import com.google.javascript.jscomp.js.RuntimeJsLibManager.JsLibField;
 import com.google.javascript.jscomp.parsing.parser.FeatureSet;
 import com.google.javascript.jscomp.parsing.parser.FeatureSet.Feature;
 import com.google.javascript.rhino.IR;
@@ -34,36 +37,38 @@ import com.google.javascript.rhino.StaticScope;
 import com.google.javascript.rhino.Token;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** Converts ES6 classes to valid ES5 or ES3 code. */
 public final class Es6RewriteClass implements NodeTraversal.Callback, CompilerPass {
   private static final FeatureSet features =
       FeatureSet.BARE_MINIMUM.with(
-          Feature.CLASSES,
-          Feature.CLASS_EXTENDS,
-          Feature.CLASS_GETTER_SETTER,
-          Feature.NEW_TARGET,
-          Feature.SUPER);
+          Feature.CLASSES, Feature.CLASS_GETTER_SETTER, Feature.NEW_TARGET, Feature.SUPER);
 
-  // This function is defined in js/es6/util/inherits.js
-  static final String INHERITS = "$jscomp.inherits";
+  static final DiagnosticType CONSTRUCTOR_PRIMITIVE_RETURN =
+      DiagnosticType.error(
+          "JSC_CONSTRUCTOR_PRIMITIVE_RETURN",
+          "Class constructors may only return an object or undefined");
 
   private final AbstractCompiler compiler;
   private final AstFactory astFactory;
   private final Es6ConvertSuperConstructorCalls convertSuperConstructorCalls;
   private final StaticScope transpilationNamespace;
+  private final JsLibField jscompInherits;
 
-  public Es6RewriteClass(AbstractCompiler compiler) {
+  public Es6RewriteClass(
+      AbstractCompiler compiler, Es6SubclassTranspilation es6SubclassTranspilation) {
     this.compiler = compiler;
     this.astFactory = compiler.createAstFactory();
     this.transpilationNamespace = compiler.getTranspilationNamespace();
-    this.convertSuperConstructorCalls = new Es6ConvertSuperConstructorCalls(compiler);
+    this.convertSuperConstructorCalls =
+        new Es6ConvertSuperConstructorCalls(compiler, es6SubclassTranspilation);
+    this.jscompInherits = compiler.getRuntimeJsLibManager().getJsLibField("$jscomp.inherits");
   }
 
   @Override
   public void process(Node externs, Node root) {
-    // TODO(b/171853310): This tranpilation should be turned off in externs
+    // TODO(b/171853310): This transpilation should be turned off in externs
     TranspilationPasses.processTranspile(compiler, externs, features, this);
     TranspilationPasses.processTranspile(compiler, root, features, this);
     // Super constructor calls are done all at once as a separate step largely for historical
@@ -71,23 +76,23 @@ public final class Es6RewriteClass implements NodeTraversal.Callback, CompilerPa
     // have an invalid AST state between passes.
     // TODO(bradfordcsmith): It would probably be more readable and efficient to merge the super
     //     constructor rewriting logic into this class.
+    // The code here only creates the GlobalNamespace object which is very cheap. The expensive
+    // building of global namespace happens inside es6ConvertSuperConstructorCalls pass.
     convertSuperConstructorCalls.setGlobalNamespace(new GlobalNamespace(compiler, externs, root));
-    TranspilationPasses.processTranspile(compiler, root, features, convertSuperConstructorCalls);
-    TranspilationPasses.maybeMarkFeaturesAsTranspiledAway(compiler, features);
+    NodeTraversal.traverse(compiler, root, convertSuperConstructorCalls);
+    TranspilationPasses.maybeMarkFeaturesAsTranspiledAway(compiler, root, features);
   }
 
   @Override
   public boolean shouldTraverse(NodeTraversal t, Node n, Node parent) {
     switch (n.getToken()) {
-      case GETTER_DEF:
-      case SETTER_DEF:
+      case GETTER_DEF, SETTER_DEF -> {
         if (FeatureSet.ES3.contains(compiler.getOptions().getOutputFeatureSet())) {
           cannotConvert(compiler, n, "ES5 getters/setters (consider using --language_out=ES5)");
           return false;
         }
-        break;
-      default:
-        break;
+      }
+      default -> {}
     }
     return true;
   }
@@ -121,16 +126,16 @@ public final class Es6RewriteClass implements NodeTraversal.Callback, CompilerPa
     }
     if (metadata.hasSuperClass()) {
       checkState(
-          metadata.getSuperClassNameNode().isQualifiedName(),
-          "Expected Es6RewriteClassExtendsExpressions to make all extends clauses into qualified"
-              + " names, found %s",
-          metadata.getSuperClassNameNode());
+          metadata.superClassNameNode().isQualifiedName(),
+          "Expected Es6NormalizeClasses to make all extends clauses into qualified  names, found"
+              + " %s",
+          metadata.superClassNameNode());
     }
 
     Preconditions.checkState(
-        NodeUtil.isStatement(metadata.getInsertionPoint().getNode()),
+        NodeUtil.isStatement(metadata.insertionPoint().getNode()),
         "insertion point must be a statement: %s",
-        metadata.getInsertionPoint().getNode());
+        metadata.insertionPoint().getNode());
 
     Node constructor = null;
     // Process all members of the class
@@ -143,22 +148,25 @@ public final class Es6RewriteClass implements NodeTraversal.Callback, CompilerPa
           || (member.isGetterDef() || member.isSetterDef())) {
         visitNonMethodMember(member, metadata);
       } else if (NodeUtil.isEs6ConstructorMemberFunctionDef(member)) {
+        if (!classNode.isFromExterns()) {
+          reportPrimitiveReturns(member.getFirstChild());
+        }
         constructor = member.removeFirstChild().setColor(classNode.getColor());
-        if (!metadata.isAnonymous()) {
+        if (!metadata.anonymous()) {
           // Turns class Foo { constructor: function() {} } into function Foo() {},
           // i.e. attaches the name to the ctor function.
-          constructor.getFirstChild().replaceWith(metadata.getClassNameNode().cloneNode());
+          constructor.getFirstChild().replaceWith(metadata.classNameNode().cloneNode());
         }
       } else if (member.isEmpty()) {
         // Do nothing.
       } else {
         Preconditions.checkState(
             member.isMemberFunctionDef() || member.isComputedProp(),
-            "Unexpected class member:",
+            "Unexpected class member: (%s)",
             member);
         Preconditions.checkState(
             !member.getBooleanProp(Node.COMPUTED_PROP_VARIABLE),
-            "Member variables should have been transpiled earlier:",
+            "Member variables should have been transpiled earlier: (%s)",
             member);
         visitMethod(member, metadata);
       }
@@ -168,29 +176,8 @@ public final class Es6RewriteClass implements NodeTraversal.Callback, CompilerPa
         constructor,
         "Es6RewriteClasses expects all classes to have (possibly synthetic) constructors");
 
-    if (metadata.getDefinePropertiesObjForPrototype().hasChildren()) {
-      Node definePropsCall =
-          IR.exprResult(
-              astFactory.createCall(
-                  createObjectDotDefineProperties(),
-                  type(metadata.getClassPrototypeNode()),
-                  metadata.getClassPrototypeNode().cloneTree(),
-                  metadata.getDefinePropertiesObjForPrototype()));
-      definePropsCall.srcrefTreeIfMissing(classNode);
-      metadata.insertNodeAndAdvance(definePropsCall);
-    }
-
-    if (metadata.getDefinePropertiesObjForClass().hasChildren()) {
-      Node definePropsCall =
-          IR.exprResult(
-              astFactory.createCall(
-                  createObjectDotDefineProperties(),
-                  type(metadata.getFullClassNameNode()),
-                  metadata.getFullClassNameNode().cloneTree(),
-                  metadata.getDefinePropertiesObjForClass()));
-      definePropsCall.srcrefTreeIfMissing(classNode);
-      metadata.insertNodeAndAdvance(definePropsCall);
-    }
+    flushDefinePropertiesForPrototype(metadata, classNode);
+    flushDefinePropertiesForClass(metadata, classNode);
 
     JSDocInfo classJSDoc = NodeUtil.getBestJSDocInfo(classNode);
     JSDocInfo.Builder newInfo = JSDocInfo.Builder.maybeCopyFrom(classJSDoc);
@@ -202,11 +189,11 @@ public final class Es6RewriteClass implements NodeTraversal.Callback, CompilerPa
         Node inheritsCall =
             IR.exprResult(
                     astFactory.createCall(
-                        astFactory.createQName(this.transpilationNamespace, INHERITS),
+                        astFactory.createQName(this.transpilationNamespace, jscompInherits),
                         type(StandardColors.NULL_OR_VOID),
-                        metadata.getFullClassNameNode().cloneTree(),
-                        metadata.getSuperClassNameNode().cloneTree()))
-                .srcrefTreeIfMissing(metadata.getSuperClassNameNode());
+                        metadata.fullClassNameNode().cloneTree(),
+                        metadata.superClassNameNode().cloneTree()))
+                .srcrefTreeIfMissing(metadata.superClassNameNode());
         inheritsCall.insertAfter(enclosingStatement);
       }
     }
@@ -215,7 +202,7 @@ public final class Es6RewriteClass implements NodeTraversal.Callback, CompilerPa
 
     if (NodeUtil.isStatement(classNode)) {
       constructor.getFirstChild().setString("");
-      Node ctorVar = IR.let(metadata.getClassNameNode().cloneNode(), constructor);
+      Node ctorVar = IR.let(metadata.classNameNode().cloneNode(), constructor);
       ctorVar.srcrefTreeIfMissing(classNode);
       classNode.replaceWith(ctorVar);
       NodeUtil.addFeatureToScript(t.getCurrentScript(), Feature.LET_DECLARATIONS, compiler);
@@ -246,6 +233,34 @@ public final class Es6RewriteClass implements NodeTraversal.Callback, CompilerPa
     t.reportCodeChange();
   }
 
+  /**
+   * Reports an error for each primitive value returned from a class constructor. A native class
+   * constructor ignores such a value in a base class and throws a TypeError in a derived class
+   * (ES2022 § 10.2.2). After transpilation the constructor is a plain function, so a subclass's
+   * {@code Base.call(this) || this} can evaluate to the value, and a derived class constructor
+   * returns the new object instead of throwing.
+   *
+   * <p>Only side-effect-free primitive values ({@link NodeUtil#isImmutableValue}) are recognized,
+   * except {@code undefined}, which both kinds of constructor may return. A computed return value
+   * would need a runtime check in every constructor.
+   */
+  private void reportPrimitiveReturns(Node constructor) {
+    // TODO(b/573571176): A derived constructor that returns `undefined`, explicitly or by reaching
+    // the end of its body, before calling `super()` must throw a ReferenceError.
+    NodeUtil.visitPostOrder(
+        NodeUtil.getFunctionBody(constructor),
+        n -> {
+          if (n.isReturn()
+              && n.hasChildren()
+              && NodeUtil.isImmutableValue(n.getFirstChild())
+              && NodeUtil.getKnownValueType(n.getFirstChild()) != NodeUtil.ValueType.VOID) {
+            compiler.report(JSError.make(n, CONSTRUCTOR_PRIMITIVE_RETURN));
+          }
+        },
+        // A `return` in a nested function belongs to that function.
+        n -> !n.isFunction());
+  }
+
   private Node createObjectDotDefineProperties() {
     return astFactory.createJSCompDotGlobalAccess(
         this.transpilationNamespace, "Object.defineProperties");
@@ -256,28 +271,88 @@ public final class Es6RewriteClass implements NodeTraversal.Callback, CompilerPa
         this.transpilationNamespace, "Object.defineProperty");
   }
 
-  /** @param member A getter or setter */
+  private void flushDefinePropertiesForPrototype(
+      ClassDeclarationMetadata metadata, Node srcrefNode) {
+    if (metadata.definePropertiesObjForPrototype().hasChildren()) {
+      Node definePropsCall =
+          IR.exprResult(
+              astFactory.createCall(
+                  createObjectDotDefineProperties(),
+                  type(metadata.classPrototypeNode()),
+                  metadata.classPrototypeNode().cloneTree(),
+                  metadata.definePropertiesObjForPrototype()));
+      definePropsCall.srcrefTreeIfMissing(srcrefNode);
+      metadata.insertNodeAndAdvance(definePropsCall);
+      metadata.resetDefinePropertiesObjForPrototype(astFactory);
+    }
+  }
+
+  private void flushDefinePropertiesForClass(ClassDeclarationMetadata metadata, Node srcrefNode) {
+    if (metadata.definePropertiesObjForClass().hasChildren()) {
+      Node definePropsCall =
+          IR.exprResult(
+              astFactory.createCall(
+                  createObjectDotDefineProperties(),
+                  type(metadata.fullClassNameNode()),
+                  metadata.fullClassNameNode().cloneTree(),
+                  metadata.definePropertiesObjForClass()));
+      definePropsCall.srcrefTreeIfMissing(srcrefNode);
+      metadata.insertNodeAndAdvance(definePropsCall);
+      metadata.resetDefinePropertiesObjForClass(astFactory);
+    }
+  }
+
+  private void flushPendingDefineProperties(
+      ClassDeclarationMetadata metadata, boolean isStatic, Node srcrefNode) {
+    if (isStatic) {
+      flushDefinePropertiesForClass(metadata, srcrefNode);
+    } else {
+      flushDefinePropertiesForPrototype(metadata, srcrefNode);
+    }
+  }
+
+  /**
+   * @param member A getter or setter
+   */
   private void addToDefinePropertiesObject(ClassDeclarationMetadata metadata, Node member) {
     Preconditions.checkArgument(!member.isComputedProp());
     Node obj =
         member.isStaticMember()
-            ? metadata.getDefinePropertiesObjForClass()
-            : metadata.getDefinePropertiesObjForPrototype();
+            ? metadata.definePropertiesObjForClass()
+            : metadata.definePropertiesObjForPrototype();
     Node prop = NodeUtil.getFirstPropMatchingKey(obj, member.getString());
+    String accessorKind = member.isGetterDef() ? "get" : "set";
+    if (prop != null && NodeUtil.getFirstPropMatchingKey(prop, accessorKind) != null) {
+      flushPendingDefineProperties(metadata, member.isStaticMember(), member);
+      obj =
+          member.isStaticMember()
+              ? metadata.definePropertiesObjForClass()
+              : metadata.definePropertiesObjForPrototype();
+      prop = null;
+    }
     if (prop == null) {
       prop = createPropertyDescriptor();
-      Node stringKey = astFactory.createStringKey(member.getString(), prop);
-      if (member.isQuotedString()) {
-        stringKey.putBooleanProp(Node.QUOTED_PROP, true);
+      if (member.getString().equals("__proto__")) {
+        Node stringKey =
+            astFactory.createComputedProperty(astFactory.createString("__proto__"), prop);
+        obj.addChildToBack(stringKey);
+        Node scriptNode = NodeUtil.getEnclosingScript(member);
+        if (scriptNode != null) {
+          NodeUtil.addFeatureToScript(scriptNode, Feature.COMPUTED_PROPERTIES, compiler);
+        }
+      } else {
+        Node stringKey = astFactory.createStringKey(member.getString(), prop);
+        if (member.isQuotedStringKey()) {
+          stringKey.putBooleanProp(Node.QUOTED_PROP, true);
+        }
+        obj.addChildToBack(stringKey);
       }
-      obj.addChildToBack(stringKey);
     }
 
     Node function = member.getLastChild();
     JSDocInfo info = NodeUtil.getBestJSDocInfo(function);
 
-    Node stringKey =
-        astFactory.createStringKey(member.isGetterDef() ? "get" : "set", function.detach());
+    Node stringKey = astFactory.createStringKey(accessorKind, function.detach());
     stringKey.setJSDocInfo(info);
     prop.addChildToBack(stringKey);
     prop.srcrefTreeIfMissing(member);
@@ -285,10 +360,12 @@ public final class Es6RewriteClass implements NodeTraversal.Callback, CompilerPa
 
   /** Appends an Object.defineProperty call defining the given computed getter or setter */
   private void extractComputedProperty(Node computedMember, ClassDeclarationMetadata metadata) {
+    flushPendingDefineProperties(metadata, computedMember.isStaticMember(), computedMember);
+
     Node owner =
         computedMember.isStaticMember()
-            ? metadata.getFullClassNameNode()
-            : metadata.getClassPrototypeNode();
+            ? metadata.fullClassNameNode()
+            : metadata.classPrototypeNode();
     Node property = computedMember.removeFirstChild();
     Node propertyValue = computedMember.removeFirstChild();
 
@@ -335,11 +412,11 @@ public final class Es6RewriteClass implements NodeTraversal.Callback, CompilerPa
     checkState(!member.isComputedProp(), member);
     // Add stub declarations of static properties so that they are not broken by property collapsing
 
-    Map<String, ClassProperty> membersToDeclare = metadata.getClassMembersToDeclare();
+    Map<String, ClassProperty> membersToDeclare = metadata.classMembersToDeclare();
     ClassProperty.Builder builder = ClassProperty.builder();
     String memberName = member.getString();
 
-    if (member.isQuotedString()) {
+    if (member.isQuotedStringKey()) {
       builder.kind(ClassProperty.PropertyKind.QUOTED_PROPERTY);
     } else {
       builder.kind(ClassProperty.PropertyKind.NORMAL_PROPERTY);
@@ -358,6 +435,8 @@ public final class Es6RewriteClass implements NodeTraversal.Callback, CompilerPa
    * constructor are not handled here.
    */
   private void visitMethod(Node member, ClassDeclarationMetadata metadata) {
+    flushPendingDefineProperties(metadata, member.isStaticMember(), member);
+
     Node qualifiedMemberAccess = getQualifiedMemberAccess(member, metadata);
     Node method = member.getLastChild().detach();
 
@@ -388,10 +467,10 @@ public final class Es6RewriteClass implements NodeTraversal.Callback, CompilerPa
    * like property collapsing recognize the properties' existence.
    */
   private void addTypeDeclarations(ClassDeclarationMetadata metadata, Node insertionPoint) {
-    for (ClassProperty property : metadata.getClassMembersToDeclare().values()) {
+    for (ClassProperty property : metadata.classMembersToDeclare().values()) {
       Node declaration =
-          property.getDeclaration(astFactory, metadata.getFullClassNameNode().cloneTree());
-      declaration.srcrefTreeIfMissing(metadata.getClassNameNode());
+          property.getDeclaration(astFactory, metadata.fullClassNameNode().cloneTree());
+      declaration.srcrefTreeIfMissing(metadata.classNameNode());
       declaration.insertAfter(insertionPoint);
       insertionPoint = declaration;
     }
@@ -407,8 +486,8 @@ public final class Es6RewriteClass implements NodeTraversal.Callback, CompilerPa
   private Node getQualifiedMemberAccess(Node member, ClassDeclarationMetadata metadata) {
     Node context =
         member.isStaticMember()
-            ? metadata.getFullClassNameNode().cloneTree()
-            : metadata.getClassPrototypeNode().cloneTree();
+            ? metadata.fullClassNameNode().cloneTree()
+            : metadata.classPrototypeNode().cloneTree();
 
     context.makeNonIndexableRecursive();
     if (member.isComputedProp()) {
@@ -429,8 +508,18 @@ public final class Es6RewriteClass implements NodeTraversal.Callback, CompilerPa
         astFactory.createStringKey("enumerable", astFactory.createBoolean(true)));
   }
 
-  @AutoValue
-  abstract static class ClassProperty {
+  /**
+   * @param propertyKey The name of this ClassProperty for NORMAL_PROPERTY, the string value of this
+   *     property if QUOTED_PROPERTY, or the qualified name of the computed property.
+   */
+  record ClassProperty(
+      String propertyKey, PropertyKind kind, JSDocInfo jsDocInfo, @Nullable Color propertyType) {
+    ClassProperty {
+      requireNonNull(propertyKey, "propertyKey");
+      requireNonNull(kind, "kind");
+      requireNonNull(jsDocInfo, "jsDocInfo");
+    }
+
     enum PropertyKind {
       /**
        * Any kind of quoted property, which can include numeric properties that we treated as
@@ -473,19 +562,6 @@ public final class Es6RewriteClass implements NodeTraversal.Callback, CompilerPa
     }
 
     /**
-     * The name of this ClassProperty for NORMAL_PROPERTY, the string value of this property if
-     * QUOTED_PROPERTY, or the qualified name of the computed property.
-     */
-    abstract String propertyKey();
-
-    abstract PropertyKind kind();
-
-    abstract JSDocInfo jsDocInfo();
-
-    @Nullable
-    abstract Color propertyType();
-
-    /**
      * Returns an EXPR_RESULT node that declares this property on the given node.
      *
      * <p>Examples:
@@ -503,19 +579,18 @@ public final class Es6RewriteClass implements NodeTraversal.Callback, CompilerPa
      *     always be a new node, as this method will insert it into the returned EXPR_RESULT.
      */
     final Node getDeclaration(AstFactory astFactory, Node toDeclareOn) {
-      Node decl = null;
 
-      switch (kind()) {
-        case QUOTED_PROPERTY:
-          decl = astFactory.createGetElem(toDeclareOn, astFactory.createString(propertyKey()));
-          break;
-        case COMPUTED_PROPERTY:
-          // No need to declare computed properties as they're unaffected by property collapsing
-          throw new UnsupportedOperationException(this.toString());
-        case NORMAL_PROPERTY:
-          decl = astFactory.createGetProp(toDeclareOn, propertyKey(), type(propertyType()));
-          break;
-      }
+      Node decl =
+          switch (kind()) {
+            case QUOTED_PROPERTY ->
+                astFactory.createGetElem(toDeclareOn, astFactory.createString(propertyKey()));
+            case COMPUTED_PROPERTY ->
+                // No need to declare computed properties as they're unaffected by property
+                // collapsing
+                throw new UnsupportedOperationException(this.toString());
+            case NORMAL_PROPERTY ->
+                astFactory.createGetProp(toDeclareOn, propertyKey(), type(propertyType()));
+          };
 
       decl.setJSDocInfo(jsDocInfo());
       decl = astFactory.exprResult(decl);
@@ -523,10 +598,10 @@ public final class Es6RewriteClass implements NodeTraversal.Callback, CompilerPa
     }
 
     static Builder builder() {
-      return new AutoValue_Es6RewriteClass_ClassProperty.Builder();
+      return new AutoBuilder_Es6RewriteClass_ClassProperty_Builder();
     }
 
-    @AutoValue.Builder
+    @AutoBuilder
     abstract static class Builder {
       abstract Builder propertyKey(String value);
 
@@ -547,53 +622,106 @@ public final class Es6RewriteClass implements NodeTraversal.Callback, CompilerPa
    *
    * <p>Note that this class is NOT deeply immutable! Don't use it in a Map. The AutoValue(.Builder)
    * is just used to simplify creating instances.
+   *
+   * @param insertionPoint A statement node. Transpiled methods etc of the class are inserted after
+   *     this node.
+   * @param definePropertiesObjForPrototype An object literal node that will be used in a call to
+   *     Object.defineProperties, to add getters and setters to the prototype.
+   * @param definePropertiesObjForClass An object literal node that will be used in a call to
+   *     Object.defineProperties, to add getters and setters to the class.
+   * @param classMembersToDeclare Property declarations to be added to the class
+   * @param fullClassNameNode The fully qualified name of the class, as a cloneable node. May come
+   *     from the class itself or the LHS of an assignment.
+   * @param classPrototypeNode The fully qualified name of this class, plus ".prototype", as a
+   *     cloneable node with type information as needed.
+   * @param anonymous Whether the constructor function in the output should be anonymous.
    */
-  @AutoValue
-  abstract static class ClassDeclarationMetadata {
-    /** A statement node. Transpiled methods etc of the class are inserted after this node. */
-    abstract InsertionPoint getInsertionPoint();
+  static final class ClassDeclarationMetadata {
+    private final InsertionPoint insertionPoint;
+    private Node definePropertiesObjForPrototype;
+    private Node definePropertiesObjForClass;
+    private final Map<String, ClassProperty> classMembersToDeclare;
+    private final Node fullClassNameNode;
+    private final Node classPrototypeNode;
+    private final boolean anonymous;
+    private final Node classNameNode;
+    private final Node superClassNameNode;
 
-    /**
-     * An object literal node that will be used in a call to Object.defineProperties, to add getters
-     * and setters to the prototype.
-     */
-    abstract Node getDefinePropertiesObjForPrototype();
+    ClassDeclarationMetadata(
+        InsertionPoint insertionPoint,
+        Node definePropertiesObjForPrototype,
+        Node definePropertiesObjForClass,
+        Map<String, ClassProperty> classMembersToDeclare,
+        Node fullClassNameNode,
+        Node classPrototypeNode,
+        boolean anonymous,
+        Node classNameNode,
+        Node superClassNameNode) {
+      this.insertionPoint = requireNonNull(insertionPoint, "insertionPoint");
+      this.definePropertiesObjForPrototype =
+          requireNonNull(definePropertiesObjForPrototype, "definePropertiesObjForPrototype");
+      this.definePropertiesObjForClass =
+          requireNonNull(definePropertiesObjForClass, "definePropertiesObjForClass");
+      this.classMembersToDeclare = requireNonNull(classMembersToDeclare, "classMembersToDeclare");
+      this.fullClassNameNode = requireNonNull(fullClassNameNode, "fullClassNameNode");
+      this.classPrototypeNode = requireNonNull(classPrototypeNode, "classPrototypeNode");
+      this.classNameNode = requireNonNull(classNameNode, "classNameNode");
+      this.superClassNameNode = requireNonNull(superClassNameNode, "superClassNameNode");
+      this.anonymous = anonymous;
+    }
 
-    /**
-     * An object literal node that will be used in a call to Object.defineProperties, to add getters
-     * and setters to the class.
-     */
-    abstract Node getDefinePropertiesObjForClass();
+    InsertionPoint insertionPoint() {
+      return insertionPoint;
+    }
 
-    // Property declarations to be added to the class
-    abstract Map<String, ClassProperty> getClassMembersToDeclare();
+    Node definePropertiesObjForPrototype() {
+      return definePropertiesObjForPrototype;
+    }
 
-    /**
-     * The fully qualified name of the class, as a cloneable node. May come from the class itself or
-     * the LHS of an assignment.
-     */
-    abstract Node getFullClassNameNode();
+    void resetDefinePropertiesObjForPrototype(AstFactory astFactory) {
+      this.definePropertiesObjForPrototype =
+          astFactory.createObjectLit(type(this.fullClassNameNode));
+    }
 
-    /**
-     * The fully qualified name of this class, plus ".prototype", as a cloneable node with type
-     * information as needed.
-     */
-    abstract Node getClassPrototypeNode();
+    Node definePropertiesObjForClass() {
+      return definePropertiesObjForClass;
+    }
 
-    /** Whether the constructor function in the output should be anonymous. */
-    abstract boolean isAnonymous();
+    void resetDefinePropertiesObjForClass(AstFactory astFactory) {
+      this.definePropertiesObjForClass = astFactory.createObjectLit(type(this.fullClassNameNode));
+    }
 
-    abstract Node getClassNameNode();
+    Map<String, ClassProperty> classMembersToDeclare() {
+      return classMembersToDeclare;
+    }
 
-    abstract Node getSuperClassNameNode();
+    Node fullClassNameNode() {
+      return fullClassNameNode;
+    }
 
-    @AutoValue.Builder
+    Node classPrototypeNode() {
+      return classPrototypeNode;
+    }
+
+    boolean anonymous() {
+      return anonymous;
+    }
+
+    Node classNameNode() {
+      return classNameNode;
+    }
+
+    Node superClassNameNode() {
+      return superClassNameNode;
+    }
+
+    @AutoBuilder
     abstract static class Builder {
       abstract Builder setInsertionPoint(InsertionPoint insertionPoint);
 
       abstract Builder setFullClassNameNode(Node fullClassNameNode);
 
-      abstract Node getFullClassNameNode();
+      abstract Node fullClassNameNode();
 
       abstract Builder setClassMembersToDeclare(Map<String, ClassProperty> classMembersToDeclare);
 
@@ -613,20 +741,11 @@ public final class Es6RewriteClass implements NodeTraversal.Callback, CompilerPa
     }
 
     public static Builder builder() {
-      return new AutoValue_Es6RewriteClass_ClassDeclarationMetadata.Builder()
+      return new AutoBuilder_Es6RewriteClass_ClassDeclarationMetadata_Builder()
           .setClassMembersToDeclare(new LinkedHashMap<>());
     }
 
-    /**
-     * Creates an instance for a class statement or a class expression in a simple assignment or var
-     * statement with a qualified name. In any other case, returns null.
-     */
-    @Nullable
-    static ClassDeclarationMetadata create(Node classNode, Node parent) {
-      return create(classNode, parent, AstFactory.createFactoryWithoutTypes());
-    }
-
-    private static ClassDeclarationMetadata create(
+    private static @Nullable ClassDeclarationMetadata create(
         Node classNode, Node parent, AstFactory astFactory) {
       Node classNameNode = classNode.getFirstChild();
       Node superClassNameNode = classNameNode.getNext();
@@ -672,20 +791,20 @@ public final class Es6RewriteClass implements NodeTraversal.Callback, CompilerPa
       }
 
       // TODO(sdh): are these types safe?
-      AstFactory.Type classType = type(builder.getFullClassNameNode());
+      AstFactory.Type classType = type(builder.fullClassNameNode());
       builder.setClassPrototypeNode(
-          astFactory.createPrototypeAccess(builder.getFullClassNameNode().cloneTree()));
+          astFactory.createPrototypeAccess(builder.fullClassNameNode().cloneTree()));
       builder.setDefinePropertiesObjForClass(astFactory.createObjectLit(classType));
       builder.setDefinePropertiesObjForPrototype(astFactory.createObjectLit(classType));
       return builder.build();
     }
 
     void insertNodeAndAdvance(Node newNode) {
-      getInsertionPoint().insertNodeAndAdvance(newNode);
+      insertionPoint().insertNodeAndAdvance(newNode);
     }
 
     boolean hasSuperClass() {
-      return !getSuperClassNameNode().isEmpty();
+      return !superClassNameNode().isEmpty();
     }
   }
 

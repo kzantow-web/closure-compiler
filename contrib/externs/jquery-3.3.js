@@ -1675,6 +1675,12 @@ jQuery.Promise.prototype.promise = function(target) {};
 jQuery.Promise.prototype.state = function() {};
 
 /**
+ * @override
+ * @return {!IteratorLike<*>}
+ */
+jQuery.prototype[Symbol.iterator] = function() {};
+
+/**
  * @param {function()} doneCallbacks
  * @param {function()=} failCallbacks
  * @param {function()=} progressCallbacks

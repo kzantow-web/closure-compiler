@@ -116,7 +116,7 @@ public final class JSTypeResolver {
    * capturing all new types.
    */
   void addUnresolved(JSType captured) {
-    /**
+    /*
      * This method exists to make it easier to debug the source of unresolved types in the future.
      *
      * <p>In theory we should be able to capture all types using `resolveIfClosed`, but this way we
@@ -146,14 +146,8 @@ public final class JSTypeResolver {
     checkState(identical(captured, expected), "Captured %s; Expected %s", captured, expected);
 
     switch (this.state) {
-      case CLOSED:
-      case CLOSING:
-        this.doResolve(captured);
-        break;
-
-      case OPEN:
-        this.resolutionQueue.addLast(captured);
-        break;
+      case CLOSED, CLOSING -> this.doResolve(captured);
+      case OPEN -> this.resolutionQueue.addLast(captured);
     }
   }
 

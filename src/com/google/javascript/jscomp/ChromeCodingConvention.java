@@ -15,19 +15,15 @@
  */
 package com.google.javascript.jscomp;
 
-import com.google.common.collect.ImmutableCollection;
-import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.Immutable;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.NominalTypeBuilder;
+import com.google.javascript.rhino.QualifiedName;
 import com.google.javascript.rhino.jstype.FunctionType;
 
-/**
- * Coding convention used by the Chrome team to compile Chrome's JS.
- */
+/** Coding convention used by the Chrome team to compile Chrome's JS. */
 @Immutable
 public final class ChromeCodingConvention extends CodingConventions.Proxy {
-  private final ImmutableSet<String> indirectlyDeclaredProperties;
 
   public ChromeCodingConvention() {
     this(CodingConventions.getDefault());
@@ -35,16 +31,15 @@ public final class ChromeCodingConvention extends CodingConventions.Proxy {
 
   public ChromeCodingConvention(CodingConvention wrapped) {
     super(wrapped);
-    indirectlyDeclaredProperties = new ImmutableSet.Builder<String>()
-        .add("instance_", "getInstance")
-        .addAll(wrapped.getIndirectlyDeclaredProperties())
-        .build();
   }
+
+  private static final QualifiedName CR_ADD_SINGLETON_GETTER =
+      QualifiedName.of("cr.addSingletonGetter");
 
   @Override
   public String getSingletonGetterClassName(Node callNode) {
     Node callArg = callNode.getFirstChild();
-    if (!callArg.matchesQualifiedName("cr.addSingletonGetter") || !callNode.hasTwoChildren()) {
+    if (!CR_ADD_SINGLETON_GETTER.matches(callArg) || !callNode.hasTwoChildren()) {
       return super.getSingletonGetterClassName(callNode);
     }
     return callArg.getNext().getQualifiedName();
@@ -55,10 +50,5 @@ public final class ChromeCodingConvention extends CodingConventions.Proxy {
     Node defSite = classType.constructor().getSource();
     classType.declareConstructorProperty("getInstance", getterType, defSite);
     classType.declareConstructorProperty("instance_", classType.instance(), defSite);
-  }
-
-  @Override
-  public ImmutableCollection<String> getIndirectlyDeclaredProperties() {
-    return indirectlyDeclaredProperties;
   }
 }

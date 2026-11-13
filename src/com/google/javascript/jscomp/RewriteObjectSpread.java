@@ -40,17 +40,20 @@ public final class RewriteObjectSpread implements NodeTraversal.Callback, Compil
 
   private final AstFactory astFactory;
   private final StaticScope namespace;
+  private final boolean useJscompAssign;
 
   public RewriteObjectSpread(AbstractCompiler compiler) {
     this.compiler = compiler;
     this.astFactory = compiler.createAstFactory();
     this.namespace = this.compiler.getTranspilationNamespace();
+    this.useJscompAssign =
+        !this.compiler.getOptions().getOutputFeatureSet().contains(FeatureSet.ES2015);
   }
 
   @Override
   public void process(Node externs, Node root) {
     TranspilationPasses.processTranspile(compiler, root, transpiledFeatures, this);
-    TranspilationPasses.maybeMarkFeaturesAsTranspiledAway(compiler, transpiledFeatures);
+    TranspilationPasses.maybeMarkFeaturesAsTranspiledAway(compiler, root, transpiledFeatures);
   }
 
   @Override
@@ -61,11 +64,8 @@ public final class RewriteObjectSpread implements NodeTraversal.Callback, Compil
   @Override
   public void visit(NodeTraversal t, Node n, Node parent) {
     switch (n.getToken()) {
-      case OBJECTLIT:
-        visitObject(n);
-        break;
-      default:
-        break;
+      case OBJECTLIT -> visitObject(n);
+      default -> {}
     }
   }
 
@@ -86,10 +86,13 @@ public final class RewriteObjectSpread implements NodeTraversal.Callback, Compil
   private void visitObjectWithSpread(Node obj) {
     checkArgument(obj.isObjectLit());
 
-    // Add an empty target object literal so changes made by Object.assign will not affect any other
-    // variables.
+    // Add an empty target object literal so changes made by Object.assign / $jscomp.assign will
+    // not affect any other variables.
     Node result =
-        astFactory.createObjectDotAssignCall(namespace, type(obj), astFactory.createObjectLit());
+        useJscompAssign
+            ? astFactory.createJscompAssignCall(namespace, type(obj), astFactory.createObjectLit())
+            : astFactory.createObjectDotAssignCall(
+                namespace, type(obj), astFactory.createObjectLit());
 
     // An indicator whether the current last thing in the param list is an object literal to which
     // properties may be added.  Initialized to null since nothing should be added to the empty

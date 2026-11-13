@@ -143,50 +143,59 @@ public final class ConvertToDottedPropertiesTest extends CompilerTestCase {
 
     // test static keyword
     test(
-        lines(
-            "class C {", //
-            "'m'(){}",
-            "['n'](){}",
-            "static 'x' = 0;",
-            "static ['y'] = 1;}"),
-        lines(
-            "class C {", //
-            "m(){}",
-            "n(){}",
-            "static x = 0;",
-            "static y= 1;}"));
+        """
+        class C {
+        'm'(){}
+        ['n'](){}
+        static 'x' = 0;
+        static ['y'] = 1;}
+        """,
+        """
+        class C {
+        m(){}
+        n(){}
+        static x = 0;
+        static y= 1;}
+        """);
     test(
-        lines(
-            "window[\"MyClass\"] = class {", //
-            "static [\"Register\"](){}",
-            "};"),
-        lines(
-            "window.MyClass = class {", //
-            "static Register(){}",
-            "};"));
+        """
+        window["MyClass"] = class {
+        static ["Register"](){}
+        };
+        """,
+        """
+        window.MyClass = class {
+        static Register(){}
+        };
+        """);
     test(
-        lines(
-            "class C { ",
-            "'method'(){} ",
-            "async ['method1'](){}",
-            "*['method2'](){}",
-            "static ['smethod'](){}",
-            "static async ['smethod1'](){}",
-            "static *['smethod2'](){}}"),
-        lines(
-            "class C {",
-            "method(){}",
-            "async method1(){}",
-            "*method2(){}",
-            "static smethod(){}",
-            "static async smethod1(){}",
-            "static *smethod2(){}}"));
+        """
+        class C {
+        'method'(){}
+        async ['method1'](){}
+        *['method2'](){}
+        static ['smethod'](){}
+        static async ['smethod1'](){}
+        static *['smethod2'](){}}
+        """,
+        """
+        class C {
+        method(){}
+        async method1(){}
+        *method2(){}
+        static smethod(){}
+        static async smethod1(){}
+        static *smethod2(){}}
+        """);
 
     testSame("const o = {[fn()]: 0}");
     testSame("const test1 = {[0]:87};");
     testSame("const test1 = {['default']:87};");
     testSame("class C { ['constructor']() {} }");
     testSame("class C { ['constructor'] = 0 }");
+    testSame("const o = {['__proto__']: v};");
+    test("class C { ['__proto__']() {} }", "class C { __proto__() {} }");
+    test("class C { ['__proto__'] = 0; }", "class C { __proto__ = 0; }");
   }
 
   @Test
@@ -200,12 +209,78 @@ public final class ConvertToDottedPropertiesTest extends CompilerTestCase {
 
     test("const opt2 = window?.a['b'];", "const opt2 = window?.a.b;");
     test(
-        lines(
-            "const chain =",
-            "window['a'].x.y.b.x.y['c'].x.y?.d.x.y['e'].x.y",
-            "['f-f'].x.y?.['g-g'].x.y?.['h'].x.y['i'].x.y;"),
-        lines(
-            "const chain = window.a.x.y.b.x.y.c.x.y?.d.x.y.e.x.y",
-            "['f-f'].x.y?.['g-g'].x.y?.h.x.y.i.x.y;"));
+        """
+        const chain =
+        window['a'].x.y.b.x.y['c'].x.y?.d.x.y['e'].x.y
+        ['f-f'].x.y?.['g-g'].x.y?.['h'].x.y['i'].x.y;
+        """,
+        """
+        const chain = window.a.x.y.b.x.y.c.x.y?.d.x.y.e.x.y
+        ['f-f'].x.y?.['g-g'].x.y?.h.x.y.i.x.y;
+        """);
+  }
+
+  @Test
+  public void testClassPrivateProp_notPrivateProp_computedProp() {
+    testSame("const x = {['#notAPrivateProp']: 1}");
+  }
+
+  @Test
+  public void testClassPrivateProp_notPrivateProp_computedFieldDef() {
+    testSame("class C {['#notAPrivateProp'] = 1}");
+  }
+
+  @Test
+  public void testClassPrivateProp_notPrivateProp_getterDef() {
+    testSame("const x = {get '#notAPrivateProp'() {}}");
+    testSame("class C {get '#notAPrivateProp'() {}}");
+  }
+
+  @Test
+  public void testClassPrivateProp_notPrivateProp_setterDef() {
+    testSame("const x = {set '#notAPrivateProp'(x) {}}");
+    testSame("class C {set '#notAPrivateProp'(x) {}}");
+  }
+
+  @Test
+  public void testClassPrivateProp_notPrivateProp_stringKey() {
+    testSame("const x = {'#notAPrivateProp': 1}");
+  }
+
+  @Test
+  public void testClassPrivateProp_notPrivateProp_optchainGetelem() {
+    testSame("x?.['#notAPrivateProp']");
+  }
+
+  @Test
+  public void testClassPrivateProp_notPrivateProp_getelem() {
+    testSame("x['#notAPrivateProp']");
+  }
+
+  @Test
+  public void testUninitializedComputedField() {
+    test("class C { ['x']; }", "class C { x; }");
+  }
+
+  @Test
+  public void testUninitializedQuotedField() {
+    test("class C { 'x'; }", "class C { x; }");
+  }
+
+  @Test
+  public void testUninitializedStaticComputedField() {
+    test("class C { static ['x']; }", "class C { static x; }");
+  }
+
+  @Test
+  public void testUninitializedStaticQuotedField() {
+    test("class C { static 'x'; }", "class C { static x; }");
+  }
+
+  @Test
+  public void testUninitializedComputedField_notConverted() {
+    testSame("class C { ['constructor']; }");
+    testSame("class C { ['default']; }");
+    testSame("class C { ['#notAPrivateProp']; }");
   }
 }

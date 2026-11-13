@@ -58,7 +58,7 @@ class Denormalize implements CompilerPass, NodeTraversal.Callback, Behavior {
   public void process(Node externs, Node root) {
     NodeTraversal.traverse(compiler, root, this);
     // Don't inline the VAR declaration if this compilation involves old-style ctemplates.
-    if (compiler.getOptions().syntheticBlockStartMarker == null) {
+    if (compiler.getOptions().getSyntheticBlockStartMarker() == null) {
       (new ReferenceCollector(compiler, this, new SyntacticScopeCreator(compiler))).process(root);
     }
   }
@@ -234,58 +234,30 @@ class Denormalize implements CompilerPass, NodeTraversal.Callback, Behavior {
   }
 
   private Token getAssignOpFromOp(Node n) {
-    switch (n.getToken()) {
-      case BITOR:
-        return Token.ASSIGN_BITOR;
-      case BITXOR:
-        return Token.ASSIGN_BITXOR;
-      case BITAND:
-        return Token.ASSIGN_BITAND;
-      case LSH:
-        return Token.ASSIGN_LSH;
-      case RSH:
-        return Token.ASSIGN_RSH;
-      case URSH:
-        return Token.ASSIGN_URSH;
-      case ADD:
-        return Token.ASSIGN_ADD;
-      case SUB:
-        return Token.ASSIGN_SUB;
-      case MUL:
-        return Token.ASSIGN_MUL;
-      case EXPONENT:
-        return Token.ASSIGN_EXPONENT;
-      case DIV:
-        return Token.ASSIGN_DIV;
-      case MOD:
-        return Token.ASSIGN_MOD;
-      case OR:
-        return Token.ASSIGN_OR;
-      case AND:
-        return Token.ASSIGN_AND;
-      case COALESCE:
-        return Token.ASSIGN_COALESCE;
-      default:
-        throw new IllegalStateException("Unexpected operator: " + n);
-    }
+    return switch (n.getToken()) {
+      case BITOR -> Token.ASSIGN_BITOR;
+      case BITXOR -> Token.ASSIGN_BITXOR;
+      case BITAND -> Token.ASSIGN_BITAND;
+      case LSH -> Token.ASSIGN_LSH;
+      case RSH -> Token.ASSIGN_RSH;
+      case URSH -> Token.ASSIGN_URSH;
+      case ADD -> Token.ASSIGN_ADD;
+      case SUB -> Token.ASSIGN_SUB;
+      case MUL -> Token.ASSIGN_MUL;
+      case EXPONENT -> Token.ASSIGN_EXPONENT;
+      case DIV -> Token.ASSIGN_DIV;
+      case MOD -> Token.ASSIGN_MOD;
+      case OR -> Token.ASSIGN_OR;
+      case AND -> Token.ASSIGN_AND;
+      case COALESCE -> Token.ASSIGN_COALESCE;
+      default -> throw new IllegalStateException("Unexpected operator: " + n);
+    };
   }
 
   private boolean hasCorrespondingAssignmentOp(Node n) {
-    switch (n.getToken()) {
-      case BITOR:
-      case BITXOR:
-      case BITAND:
-      case LSH:
-      case RSH:
-      case URSH:
-      case ADD:
-      case SUB:
-      case MUL:
-      case DIV:
-      case MOD:
-        return true;
-      default:
-        return false;
-    }
+    return switch (n.getToken()) {
+      case BITOR, BITXOR, BITAND, LSH, RSH, URSH, ADD, SUB, MUL, DIV, MOD -> true;
+      default -> false;
+    };
   }
 }

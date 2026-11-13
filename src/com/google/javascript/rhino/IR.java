@@ -46,6 +46,7 @@ import com.google.common.base.Preconditions;
 import java.math.BigInteger;
 import java.util.Arrays;
 import java.util.List;
+import org.jspecify.annotations.Nullable;
 
 /**
  * An AST construction helper class
@@ -80,7 +81,7 @@ public class IR {
   public static Node function(Node name, Node params, Node body) {
     checkState(name.isName());
     checkState(params.isParamList());
-    checkState(body.isBlock());
+    checkState(body.isBlock() || body.isEmpty());
     return new Node(Token.FUNCTION, name, params, body);
   }
 
@@ -112,14 +113,12 @@ public class IR {
   }
 
   public static Node block() {
-    Node block = new Node(Token.BLOCK);
-    return block;
+    return new Node(Token.BLOCK);
   }
 
   public static Node block(Node stmt) {
     checkState(mayBeStatement(stmt), "Block node cannot contain %s", stmt.getToken());
-    Node block = new Node(Token.BLOCK, stmt);
-    return block;
+    return new Node(Token.BLOCK, stmt);
   }
 
   public static Node block(Node... stmts) {
@@ -146,8 +145,7 @@ public class IR {
 
   public static Node script() {
     // TODO(johnlenz): finish setting up the SCRIPT node
-    Node block = new Node(Token.SCRIPT);
-    return block;
+    return new Node(Token.SCRIPT);
   }
 
   public static Node script(Node... stmts) {
@@ -218,11 +216,7 @@ public class IR {
     return new Node(Token.RETURN, expr);
   }
 
-  public static Node yield() {
-    return new Node(Token.YIELD);
-  }
-
-  public static Node yield(Node expr) {
+  public static Node yieldNode(Node expr) {
     checkState(mayBeExpression(expr));
     return new Node(Token.YIELD, expr);
   }
@@ -287,9 +281,11 @@ public class IR {
   public static Node switchNode(Node cond, Node... cases) {
     checkState(mayBeExpression(cond));
     Node switchNode = new Node(Token.SWITCH, cond);
+    Node switchBody = new Node(Token.SWITCH_BODY);
+    switchNode.addChildToBack(switchBody);
     for (Node caseNode : cases) {
       checkState(caseNode.isCase() || caseNode.isDefaultCase());
-      switchNode.addChildToBack(caseNode);
+      switchBody.addChildToBack(caseNode);
     }
     return switchNode;
   }
@@ -311,8 +307,7 @@ public class IR {
     // TODO(johnlenz): additional validation here.
     checkState(name.isLabelName());
     checkState(mayBeStatement(stmt));
-    Node block = new Node(Token.LABEL, name, stmt);
-    return block;
+    return new Node(Token.LABEL, name, stmt);
   }
 
   public static Node labelName(String name) {
@@ -414,6 +409,9 @@ public class IR {
   public static Node startOptChainGetprop(Node target, String prop) {
     checkState(mayBeExpression(target), target);
     Node optChainGetProp = Node.newString(Token.OPTCHAIN_GETPROP, prop);
+    if (Node.isPrivateName(prop)) {
+      optChainGetProp.setPrivateIdentifier();
+    }
     optChainGetProp.addChildToBack(target);
     optChainGetProp.setIsOptionalChainStart(true);
     return optChainGetProp;
@@ -422,6 +420,9 @@ public class IR {
   public static Node continueOptChainGetprop(Node target, String prop) {
     checkState(mayBeExpression(target), target);
     Node optChainGetProp = Node.newString(Token.OPTCHAIN_GETPROP, prop);
+    if (Node.isPrivateName(prop)) {
+      optChainGetProp.setPrivateIdentifier();
+    }
     optChainGetProp.addChildToBack(target);
     optChainGetProp.setIsOptionalChainStart(false);
     return optChainGetProp;
@@ -430,6 +431,9 @@ public class IR {
   public static Node getprop(Node target, String prop) {
     checkState(mayBeExpression(target));
     Node getprop = Node.newString(Token.GETPROP, prop);
+    if (Node.isPrivateName(prop)) {
+      getprop.setPrivateIdentifier();
+    }
     getprop.addChildToBack(target);
     return getprop;
   }
@@ -590,6 +594,16 @@ public class IR {
     return binaryOp(Token.ASSIGN_COALESCE, expr1, expr2);
   }
 
+  /** "&" */
+  public static Node bitwiseAnd(Node expr1, Node expr2) {
+    return binaryOp(Token.BITAND, expr1, expr2);
+  }
+
+  /** ">>" */
+  public static Node rightShift(Node expr1, Node expr2) {
+    return binaryOp(Token.RSH, expr1, expr2);
+  }
+
   // TODO(johnlenz): the rest of the ops
 
   // literals
@@ -597,16 +611,13 @@ public class IR {
     Node objectlit = new Node(Token.OBJECTLIT);
     for (Node propdef : propdefs) {
       switch (propdef.getToken()) {
-        case STRING_KEY:
-        case MEMBER_FUNCTION_DEF:
-        case GETTER_DEF:
-        case SETTER_DEF:
-
-        case OBJECT_SPREAD:
-        case COMPUTED_PROP:
-          break;
-        default:
-          throw new IllegalStateException("Unexpected OBJECTLIT child: " + propdef);
+        case STRING_KEY,
+            MEMBER_FUNCTION_DEF,
+            GETTER_DEF,
+            SETTER_DEF,
+            OBJECT_SPREAD,
+            COMPUTED_PROP -> {}
+        default -> throw new IllegalStateException("Unexpected OBJECTLIT child: " + propdef);
       }
 
       objectlit.addChildToBack(propdef);
@@ -679,7 +690,7 @@ public class IR {
   }
 
   public static Node stringKey(String s, Node value) {
-    checkState(mayBeExpression(value) || value.isDefaultValue());
+    checkState(mayBeExpression(value) || value.isDefaultValue() || value.isObjectPattern());
     Node stringKey = stringKey(s);
     stringKey.addChildToFront(value);
     return stringKey;
@@ -689,6 +700,20 @@ public class IR {
     Node k = stringKey(s, value);
     k.putBooleanProp(Node.QUOTED_PROP, true);
     return k;
+  }
+
+  public static Node templateLiteral() {
+    return new Node(Token.TEMPLATELIT);
+  }
+
+  public static Node templateLiteralString(@Nullable String cooked, String raw) {
+    return Node.newTemplateLitString(cooked, raw);
+  }
+
+  public static Node templateLiteralSubstitution(Node child) {
+    var sub = new Node(Token.TEMPLATELIT_SUB);
+    sub.addChildToBack(child);
+    return sub;
   }
 
   public static Node iterRest(Node target) {
@@ -779,6 +804,10 @@ public class IR {
     return new Node(Token.IMPORT_META);
   }
 
+  public static Node newTarget() {
+    return new Node(Token.NEW_TARGET);
+  }
+
   // helper methods
 
   private static Node binaryOp(Token token, Node expr1, Node expr2) {
@@ -804,39 +833,37 @@ public class IR {
    * It isn't possible to always determine if a detached node is a expression, so make a best guess.
    */
   private static boolean mayBeStatementNoReturn(Node n) {
-    switch (n.getToken()) {
-      case EMPTY:
-      case FUNCTION:
-        // EMPTY and FUNCTION are used both in expression and statement
-        // contexts
-        return true;
-
-      case BLOCK:
-      case BREAK:
-      case CLASS:
-      case CONST:
-      case CONTINUE:
-      case DEBUGGER:
-      case DO:
-      case EXPR_RESULT:
-      case FOR:
-      case FOR_IN:
-      case FOR_OF:
-      case FOR_AWAIT_OF:
-      case IF:
-      case LABEL:
-      case LET:
-      case SWITCH:
-      case THROW:
-      case TRY:
-      case VAR:
-      case WHILE:
-      case WITH:
-        return true;
-
-      default:
-        return false;
-    }
+    return switch (n.getToken()) {
+      case EMPTY, FUNCTION ->
+          // EMPTY and FUNCTION are used both in expression and statement
+          // contexts
+          true;
+      case BLOCK,
+          BREAK,
+          CLASS,
+          CONST,
+          CONTINUE,
+          DEBUGGER,
+          DO,
+          ENUM,
+          EXPR_RESULT,
+          FOR,
+          FOR_IN,
+          FOR_OF,
+          FOR_AWAIT_OF,
+          IF,
+          INTERFACE,
+          LABEL,
+          LET,
+          SWITCH,
+          THROW,
+          TRY,
+          VAR,
+          WHILE,
+          WITH ->
+          true;
+      default -> false;
+    };
   }
 
   /**
@@ -853,96 +880,92 @@ public class IR {
    * It isn't possible to always determine if a detached node is a expression, so make a best guess.
    */
   public static boolean mayBeExpression(Node n) {
-    switch (n.getToken()) {
-      case FUNCTION:
-      case CLASS:
-        // FUNCTION and CLASS are used both in expression and statement
-        // contexts.
-        return true;
-
-      case ADD:
-      case AND:
-      case ARRAYLIT:
-      case ASSIGN:
-      case ASSIGN_BITOR:
-      case ASSIGN_BITXOR:
-      case ASSIGN_BITAND:
-      case ASSIGN_LSH:
-      case ASSIGN_RSH:
-      case ASSIGN_URSH:
-      case ASSIGN_ADD:
-      case ASSIGN_SUB:
-      case ASSIGN_MUL:
-      case ASSIGN_EXPONENT:
-      case ASSIGN_DIV:
-      case ASSIGN_MOD:
-      case ASSIGN_OR:
-      case ASSIGN_AND:
-      case ASSIGN_COALESCE:
-      case AWAIT:
-      case BIGINT:
-      case BITAND:
-      case BITOR:
-      case BITNOT:
-      case BITXOR:
-      case CALL:
-      case CAST:
-      case COALESCE:
-      case COMMA:
-      case DEC:
-      case DELPROP:
-      case DIV:
-      case DYNAMIC_IMPORT:
-      case EQ:
-      case EXPONENT:
-      case FALSE:
-      case GE:
-      case GETPROP:
-      case GETELEM:
-      case GT:
-      case HOOK:
-      case IMPORT_META:
-      case IN:
-      case INC:
-      case INSTANCEOF:
-      case LE:
-      case LSH:
-      case LT:
-      case MOD:
-      case MUL:
-      case NAME:
-      case NE:
-      case NEG:
-      case NEW:
-      case NEW_TARGET:
-      case NOT:
-      case NUMBER:
-      case NULL:
-      case OBJECTLIT:
-      case OPTCHAIN_CALL:
-      case OPTCHAIN_GETELEM:
-      case OPTCHAIN_GETPROP:
-      case OR:
-      case POS:
-      case REGEXP:
-      case RSH:
-      case SHEQ:
-      case SHNE:
-      case STRINGLIT:
-      case SUB:
-      case SUPER:
-      case TEMPLATELIT:
-      case TAGGED_TEMPLATELIT:
-      case THIS:
-      case TYPEOF:
-      case TRUE:
-      case URSH:
-      case VOID:
-      case YIELD:
-        return true;
-
-      default:
-        return false;
-    }
+    return switch (n.getToken()) {
+      case FUNCTION, CLASS ->
+          // FUNCTION and CLASS are used both in expression and statement
+          // contexts.
+          true;
+      case ADD,
+          AND,
+          ARRAYLIT,
+          ASSIGN,
+          ASSIGN_BITOR,
+          ASSIGN_BITXOR,
+          ASSIGN_BITAND,
+          ASSIGN_LSH,
+          ASSIGN_RSH,
+          ASSIGN_URSH,
+          ASSIGN_ADD,
+          ASSIGN_SUB,
+          ASSIGN_MUL,
+          ASSIGN_EXPONENT,
+          ASSIGN_DIV,
+          ASSIGN_MOD,
+          ASSIGN_OR,
+          ASSIGN_AND,
+          ASSIGN_COALESCE,
+          AWAIT,
+          BIGINT,
+          BITAND,
+          BITOR,
+          BITNOT,
+          BITXOR,
+          CALL,
+          CAST,
+          COALESCE,
+          COMMA,
+          DEC,
+          DELPROP,
+          DIV,
+          DYNAMIC_IMPORT,
+          EQ,
+          EXPONENT,
+          FALSE,
+          GE,
+          GETPROP,
+          GETELEM,
+          GT,
+          HOOK,
+          IMPORT_META,
+          IN,
+          INC,
+          INSTANCEOF,
+          LE,
+          LSH,
+          LT,
+          MOD,
+          MUL,
+          NAME,
+          NE,
+          NEG,
+          NEW,
+          NEW_TARGET,
+          NOT,
+          NUMBER,
+          NULL,
+          OBJECTLIT,
+          OPTCHAIN_CALL,
+          OPTCHAIN_GETELEM,
+          OPTCHAIN_GETPROP,
+          OR,
+          POS,
+          REGEXP,
+          RSH,
+          SHEQ,
+          SHNE,
+          STRINGLIT,
+          SUB,
+          SUPER,
+          TEMPLATELIT,
+          TAGGED_TEMPLATELIT,
+          THIS,
+          TYPEOF,
+          TRUE,
+          URSH,
+          VOID,
+          YIELD ->
+          true;
+      default -> false;
+    };
   }
 }

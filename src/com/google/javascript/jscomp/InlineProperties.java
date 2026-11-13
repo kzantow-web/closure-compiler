@@ -25,9 +25,10 @@ import com.google.javascript.jscomp.colors.ColorRegistry;
 import com.google.javascript.jscomp.colors.StandardColors;
 import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.Node;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
+import org.jspecify.annotations.Nullable;
 
 /**
  * InlineProperties attempts to find references to properties that are known to be constants and
@@ -46,7 +47,7 @@ final class InlineProperties implements CompilerPass {
   private final ColorRegistry registry;
 
   private static class PropertyInfo {
-    PropertyInfo(Color color, Node value) {
+    PropertyInfo(@Nullable Color color, @Nullable Node value) {
       this.color = color;
       this.value = value;
     }
@@ -57,7 +58,7 @@ final class InlineProperties implements CompilerPass {
 
   private static final PropertyInfo INVALIDATED = new PropertyInfo(null, null);
 
-  private final Map<String, PropertyInfo> props = new HashMap<>();
+  private final Map<String, PropertyInfo> props = new LinkedHashMap<>();
 
   InlineProperties(AbstractCompiler compiler) {
     this.compiler = compiler;
@@ -127,7 +128,22 @@ final class InlineProperties implements CompilerPass {
         invalidatingPropRef = true;
       } else if (n.isMemberFieldDef()) {
         propName = n.getString();
-        invalidatingPropRef = !maybeRecordCandidateClassFieldDefinition(n);
+        if (n.hasChildren()) {
+          // class field with initialization
+          invalidatingPropRef = !maybeRecordCandidateClassFieldDefinition(n);
+        } else {
+          // class field with no initialization
+          invalidatingPropRef = true;
+        }
+      } else if (n.isCall()
+          && compiler.getCodingConvention().isPropertyRenameFunction(n.getFirstChild())
+          && n.hasMoreThanOneChild()
+          && n.getSecondChild().isStringLit()) {
+        // JSCompiler_renameProperty('foo', obj) and goog.reflect.objectProperty name `foo` for
+        // reflective access, so `foo` may be written without a GETPROP, e.g. by
+        // `obj[JSCompiler_renameProperty('foo', obj)] = value`.
+        propName = n.getSecondChild().getString();
+        invalidatingPropRef = true;
       } else {
         return;
       }
@@ -138,10 +154,12 @@ final class InlineProperties implements CompilerPass {
       }
     }
 
-    /** @return Whether this is a valid definition for a candidate class field. */
+    /**
+     * @return Whether this is a valid definition for a candidate class field.
+     */
     private boolean maybeRecordCandidateClassFieldDefinition(Node n) {
       checkState(n.isMemberFieldDef(), n);
-      Node src = n.getFirstChild();
+      Node value = n.getFirstChild();
       String propName = n.getString();
       Node classNode = n.getGrandparent();
       final Color c;
@@ -156,10 +174,12 @@ final class InlineProperties implements CompilerPass {
                 : Color.createUnion(possibleInstances);
       }
 
-      return maybeStoreCandidateValue(c, propName, src);
+      return maybeStoreCandidateValue(c, propName, value);
     }
 
-    /** @return Whether this is a valid definition for a candidate property. */
+    /**
+     * @return Whether this is a valid definition for a candidate property.
+     */
     private boolean maybeRecordCandidateGetpropDefinition(NodeTraversal t, Node n, Node parent) {
       checkState(n.isGetProp() && parent.isAssign(), n);
       Node src = n.getFirstChild();

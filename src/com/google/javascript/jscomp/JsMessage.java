@@ -16,23 +16,26 @@
 
 package com.google.javascript.jscomp;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.util.Objects.requireNonNull;
 
-import com.google.auto.value.AutoValue;
-import com.google.common.annotations.GwtIncompatible;
-import com.google.common.base.Ascii;
+import com.google.common.base.CaseFormat;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import com.google.javascript.jscomp.parsing.parser.util.format.SimpleFormat;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import com.google.errorprone.annotations.InlineMe;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import javax.annotation.Nullable;
+import java.util.regex.Pattern;
+import org.jspecify.annotations.Nullable;
 
 /**
  * A representation of a translatable message in JavaScript source code.
@@ -47,109 +50,201 @@ import javax.annotation.Nullable;
  *     .setDesc("A welcome message")
  *     .build();
  * </pre>
+ *
+ * @param getSourceName Gets the message's sourceName.
+ * @param getKey Gets the message's key, or name (e.g. {@code "MSG_HELLO"}).
+ * @param getId Gets the message's id, or name (e.g. {@code "92430284230902938293"}).
+ * @param getParts Gets a read-only list of the parts of this message. Each part is either a {@link
+ *     String} or a {@link PlaceholderReference}.
+ * @param getAlternateId Gets the message's alternate ID (e.g. {@code "92430284230902938293"}), if
+ *     available. This will be used if a translation for `id` is not available.
+ * @param getDesc Gets the description associated with this message, intended to help translators,
+ *     or null if this message has no description.
+ * @param getMeaning Gets the meaning annotated to the message, intended to force different
+ *     translations.
+ * @param jsPlaceholderNames Gets a set of the registered placeholders in this message in
+ *     lowerCamelCase format.
+ *     <p>This is the format used in `goog.getMsg()` declarations.
+ * @param canonicalPlaceholderNames Gets a set of the registered placeholders in this message in
+ *     UPPER_SNAKE_CASE format.
+ *     <p>This is the format stored into XMB / XTB files and used in `declareIcuTemplate()
+ *     declarations.
  */
-@AutoValue
-public abstract class JsMessage {
+public record JsMessage(
+    @Nullable String getSourceName,
+    String getKey,
+    boolean isAnonymous,
+    boolean isExternal,
+    String getId,
+    ImmutableList<Part> getParts,
+    ImmutableMap<GrammaticalGenderCase, ImmutableList<Part>> getGenderedMessagesMap,
+    @Nullable String getAlternateId,
+    @Nullable String getDesc,
+    @Nullable String getMeaning,
+    ImmutableMap<String, String> getPlaceholderNameToExampleMap,
+    ImmutableMap<String, String> getPlaceholderNameToOriginalCodeMap,
+    ImmutableSet<String> jsPlaceholderNames,
+    ImmutableSet<String> canonicalPlaceholderNames) {
+  public JsMessage {
+    requireNonNull(getKey, "getKey");
+    requireNonNull(getId, "getId");
+    requireNonNull(getParts, "getParts");
+    requireNonNull(getPlaceholderNameToExampleMap, "getPlaceholderNameToExampleMap");
+    requireNonNull(getPlaceholderNameToOriginalCodeMap, "getPlaceholderNameToOriginalCodeMap");
+    requireNonNull(jsPlaceholderNames, "jsPlaceholderNames");
+    requireNonNull(canonicalPlaceholderNames, "canonicalPlaceholderNames");
+  }
 
-  private static final String PH_JS_PREFIX = "{$";
-  private static final String PH_JS_SUFFIX = "}";
+  public static final String PH_JS_PREFIX = "{$";
+  public static final String PH_JS_SUFFIX = "}";
+
+  /** Enum for grammatical gender cases. */
+  public enum GrammaticalGenderCase {
+    MASCULINE,
+    FEMININE,
+    NEUTER,
+    OTHER,
+  }
 
   /**
    * Thrown when parsing a message string into parts fails because of a misformatted place holder.
    */
   public static final class PlaceholderFormatException extends Exception {
 
-    public PlaceholderFormatException() {}
+    public PlaceholderFormatException(String msg) {
+      super(msg);
+    }
   }
-
-  /**
-   * Message style that could be used for JS code parsing. The enum order is from most relaxed to
-   * most restricted.
-   */
-  public enum Style {
-    LEGACY, // All legacy code is completely OK
-    RELAX, // You allowed to use legacy code but it would be reported as warn
-    CLOSURE; // Any legacy code is prohibited
-  }
-
-  private static final String MESSAGE_REPRESENTATION_FORMAT = "{$%s}";
-
-  /** Gets the message's sourceName. */
-  @Nullable
-  public abstract String getSourceName();
-
-  /** Gets the message's key, or name (e.g. {@code "MSG_HELLO"}). */
-  public abstract String getKey();
-
-  public abstract boolean isAnonymous();
-
-  public abstract boolean isExternal();
-
-  /** Gets the message's id, or name (e.g. {@code "92430284230902938293"}). */
-  public abstract String getId();
-
-  /**
-   * Gets a read-only list of the parts of this message. Each part is either a {@link String} or a
-   * {@link PlaceholderReference}.
-   */
-  public abstract ImmutableList<CharSequence> getParts();
-
-  /**
-   * Gets the message's alternate ID (e.g. {@code "92430284230902938293"}), if available. This will
-   * be used if a translation for `id` is not available.
-   */
-  @Nullable
-  public abstract String getAlternateId();
-
-  /**
-   * Gets the description associated with this message, intended to help translators, or null if
-   * this message has no description.
-   */
-  @Nullable
-  public abstract String getDesc();
-
-  /** Gets the meaning annotated to the message, intended to force different translations. */
-  @Nullable
-  public abstract String getMeaning();
-
-  /**
-   * Gets whether this message should be hidden from volunteer translators (to reduce the chances of
-   * a new feature leak).
-   */
-  public abstract boolean isHidden();
-
-  /**
-   * Gets a list of the parts of this message. Each part is either a {@link String} or a {@link
-   * PlaceholderReference}.
-   *
-   * @deprecated use {@link #getParts()}} instead
-   */
-  @Deprecated
-  public final ImmutableList<CharSequence> parts() {
-    return getParts();
-  }
-
-  public abstract ImmutableMap<String, String> getPlaceholderNameToExampleMap();
-
-  public abstract ImmutableMap<String, String> getPlaceholderNameToOriginalCodeMap();
-
-  /** Gets a set of the registered placeholders in this message. */
-  public abstract ImmutableSet<String> placeholders();
 
   public String getPlaceholderOriginalCode(PlaceholderReference placeholderReference) {
-    return getPlaceholderNameToOriginalCodeMap().getOrDefault(placeholderReference.getName(), "-");
+    return getPlaceholderNameToOriginalCodeMap()
+        .getOrDefault(placeholderReference.storedPlaceholderName(), "-");
   }
 
   public String getPlaceholderExample(PlaceholderReference placeholderReference) {
-    return getPlaceholderNameToExampleMap().getOrDefault(placeholderReference.getName(), "-");
+    return getPlaceholderNameToExampleMap()
+        .getOrDefault(placeholderReference.storedPlaceholderName(), "-");
   }
 
-  /** Returns a String containing the original message text. */
-  @Override
-  public final String toString() {
+  public ImmutableList<Part> getGenderedMessageParts(GrammaticalGenderCase genderCase) {
+    if (getGenderedMessagesMap().isEmpty()) {
+      throw new UnsupportedOperationException(
+          "Message does not contain grammatical gendered variants.");
+    }
+    return getGenderedMessagesMap().get(genderCase);
+  }
+
+  /** Gets the list of grammatical gender cases for the message. */
+  public ImmutableList<GrammaticalGenderCase> getGenderedMessageVariants() {
+    return getGenderedMessagesMap().keySet().asList();
+  }
+
+  /**
+   * Returns a single string representing the message.
+   *
+   * <p>In the returned string all placeholders are joined with the literal string parts in the form
+   * "literal string part {$jsPlaceholderName} more literal string", which is how placeholders are
+   * represented in `goog.getMsg()` text strings.
+   *
+   * <p>If the message has gendered variants, the returned string will be a multiline string with
+   * each line containing the grammatical gender case, followed by its message.
+   *
+   * @throws UnsupportedOperationException if the message has gendered variants.
+   */
+  public String asJsMessageString() {
+    if (!getGenderedMessagesMap().isEmpty()) {
+      throw new UnsupportedOperationException(
+          "asJsMessageString() is not supported for messages with gendered variants. Please provide"
+              + " a grammatical gender case as an argument.");
+    }
     StringBuilder sb = new StringBuilder();
-    for (CharSequence p : getParts()) {
-      sb.append(p.toString());
+    for (Part p : getParts()) {
+      if (p.isPlaceholder()) {
+        sb.append(PH_JS_PREFIX).append(p.getJsPlaceholderName()).append(PH_JS_SUFFIX);
+      } else {
+        sb.append(p.getString());
+      }
+    }
+
+    return sb.toString();
+  }
+
+  /**
+   * Overloaded method that returns a single string representing the message for a given gender
+   * case.
+   *
+   * <p>In the returned string all placeholders are joined with the literal string parts in the form
+   * "literal string part {$jsPlaceholderName} more literal string", which is how placeholders are
+   * represented in `goog.getMsg()` text strings.
+   *
+   * @param genderCase the grammatical gender case for which to return the message string.
+   * @throws IllegalArgumentException if the message does not have a message for the given gender
+   *     case.
+   */
+  public String asJsMessageString(GrammaticalGenderCase genderCase) {
+    if (!getGenderedMessagesMap().containsKey(genderCase)) {
+      throw new IllegalArgumentException("No message for grammtical gender case: " + genderCase);
+    }
+    StringBuilder sb = new StringBuilder();
+    for (Part p : getGenderedMessagesMap().get(genderCase)) {
+      if (p.isPlaceholder()) {
+        sb.append(PH_JS_PREFIX).append(p.getJsPlaceholderName()).append(PH_JS_SUFFIX);
+      } else {
+        sb.append(p.getString());
+      }
+    }
+    return sb.toString();
+  }
+
+  /**
+   * Returns a single string representing the message.
+   *
+   * <p>In the returned string all placeholders are joined with the literal string parts in the form
+   * "literal string part {CANONICAL_PLACEHOLDER_NAME} more literal string", which is how
+   * placeholders are represented in ICU messages.
+   *
+   * @throws UnsupportedOperationException if the message has gendered variants.
+   */
+  public final String asIcuMessageString() {
+    if (!getGenderedMessagesMap().isEmpty()) {
+      throw new UnsupportedOperationException(
+          "asIcuMessageString() is not supported for messages with gendered variants. Please"
+              + " provide a grammatical gender case as an argument.");
+    }
+    StringBuilder sb = new StringBuilder();
+    for (Part p : getParts()) {
+      if (p.isPlaceholder()) {
+        sb.append('{').append(p.getCanonicalPlaceholderName()).append('}');
+      } else {
+        sb.append(p.getString());
+      }
+    }
+    return sb.toString();
+  }
+
+  /**
+   * Overloaded method that returns a single string representing the message for a given gender
+   * case.
+   *
+   * <p>In the returned string all placeholders are joined with the literal string parts in the form
+   * "literal string part {CANONICAL_PLACEHOLDER_NAME} more literal string", which is how
+   * placeholders are represented in ICU messages.
+   *
+   * @param genderCase the grammatical gender case for which to return the message string.
+   * @throws IllegalArgumentException if the message does not have a message for the given gender
+   *     case.
+   */
+  public final String asIcuMessageString(GrammaticalGenderCase genderCase) {
+    if (!getGenderedMessagesMap().containsKey(genderCase)) {
+      throw new IllegalArgumentException("No message for grammtical gender case: " + genderCase);
+    }
+    StringBuilder sb = new StringBuilder();
+    for (Part p : getGenderedMessagesMap().get(genderCase)) {
+      if (p.isPlaceholder()) {
+        sb.append('{').append(p.getCanonicalPlaceholderName()).append('}');
+      } else {
+        sb.append(p.getString());
+      }
     }
     return sb.toString();
   }
@@ -158,43 +253,216 @@ public abstract class JsMessage {
    * @return false iff the message is represented by empty string.
    */
   public final boolean isEmpty() {
-    for (CharSequence part : getParts()) {
-      if (part.length() > 0) {
-        return false;
+    if (getGenderedMessagesMap().isEmpty()) {
+      for (Part part : getParts()) {
+        if (part.isPlaceholder() || part.getString().length() > 0) {
+          return false;
+        }
+      }
+    } else {
+      for (ImmutableList<Part> parts : getGenderedMessagesMap().values()) {
+        for (Part part : parts) {
+          if (part.isPlaceholder() || part.getString().length() > 0) {
+            return false;
+          }
+        }
       }
     }
 
     return true;
   }
 
+  /** Represents part of a message. */
+  public interface Part {
+    /** True for placeholders, false for literal string parts. */
+    boolean isPlaceholder();
+
+    /**
+     * Gets the name of the placeholder as it would appear in JS code.
+     *
+     * <p>In JS code placeholders are in lower camel case with zero or more trailing numeric
+     * suffixes (e.g. myPlaceholderName_123_456).
+     *
+     * @return the name for a placeholder
+     * @throws UnsupportedOperationException if this is not a {@link PlaceholderReference}.
+     */
+    String getJsPlaceholderName();
+
+    /**
+     * Gets the name of the placeholder as it would appear in XMB or XTB files, and also the form it
+     * takes when generating message IDs.
+     *
+     * <p>This format is UPPER_SNAKE_CASE.
+     *
+     * @return the name for a placeholder
+     * @throws UnsupportedOperationException if this is not a {@link PlaceholderReference}.
+     */
+    String getCanonicalPlaceholderName();
+
+    /**
+     * Gets the literal string for this message part.
+     *
+     * @return the literal string for {@link StringPart}.
+     * @throws UnsupportedOperationException if this is not a {@link StringPart}.
+     */
+    String getString();
+  }
+
+  /** Represents a literal string part of a message. */
+  public record StringPart(String string) implements Part {
+    public StringPart {
+      requireNonNull(string, "string");
+    }
+
+    @InlineMe(replacement = "this.string()")
+    @Override
+    public String getString() {
+      return string();
+    }
+
+    public static StringPart create(String str) {
+      return new StringPart(str);
+    }
+
+    @Override
+    public boolean isPlaceholder() {
+      return false;
+    }
+
+    @Override
+    public String getJsPlaceholderName() {
+      throw new UnsupportedOperationException(String.format("not a placeholder: '%s'", string()));
+    }
+
+    @Override
+    public String getCanonicalPlaceholderName() {
+      throw new UnsupportedOperationException(String.format("not a placeholder: '%s'", string()));
+    }
+  }
+
+  /**
+   * In JS code we expect placeholder names to be lowerCamelCase with an optional _123_456 suffix.
+   */
+  private static final Pattern JS_PLACEHOLDER_NAME_RE = Pattern.compile("[a-z][a-zA-Z\\d]*[_\\d]*");
+
+  /**
+   * Returns whether a string is nonempty, begins with a lowercase letter, and contains only digits
+   * and underscores after the first underscore.
+   */
+  public static boolean isLowerCamelCaseWithNumericSuffixes(String input) {
+    return JS_PLACEHOLDER_NAME_RE.matcher(input).matches();
+  }
+
+  /**
+   * Converts the given string from upper-underscore case to lower-camel case, preserving numeric
+   * suffixes. For example: "NAME" -> "name" "A4_LETTER" -> "a4Letter" "START_SPAN_1_23" ->
+   * "startSpan_1_23".
+   */
+  public static String toLowerCamelCaseWithNumericSuffixes(String input) {
+    // Determine where the numeric suffixes begin
+    int suffixStart = input.length();
+    while (suffixStart > 0) {
+      char ch = '\0';
+      int numberStart = suffixStart;
+      while (numberStart > 0) {
+        ch = input.charAt(numberStart - 1);
+        if (Character.isDigit(ch)) {
+          numberStart--;
+        } else {
+          break;
+        }
+      }
+      if ((numberStart > 0) && (numberStart < suffixStart) && (ch == '_')) {
+        suffixStart = numberStart - 1;
+      } else {
+        break;
+      }
+    }
+
+    if (suffixStart == input.length()) {
+      return CaseFormat.UPPER_UNDERSCORE.to(CaseFormat.LOWER_CAMEL, input);
+    } else {
+      return CaseFormat.UPPER_UNDERSCORE.to(CaseFormat.LOWER_CAMEL, input.substring(0, suffixStart))
+          + input.substring(suffixStart);
+    }
+  }
+
+  /**
+   * In XMB and XTB files we expect the placeholder name to be in UPPER_SNAKE_CASE with optional
+   * _123_456 suffix.
+   *
+   * <p>This pattern will allow alpha sections after numeric sections (e.g. NOT_A_1234_VALID_NAME),
+   * but it is still probably good enough, since these name are usually automatically generated from
+   * the JS formatted lowerCamelCase_with_optional_12_34 names.
+   *
+   * <p>The pattern also allows leading and trailing underscores. There are known cases of messages
+   * containing those.
+   */
+  private static final Pattern CANONICAL_PLACEHOLDER_NAME_RE = Pattern.compile("[A-Z\\d_]*");
+
+  /** Is the name in the canonical format for placeholder names in XTB and XMB files. */
+  public static boolean isCanonicalPlaceholderNameFormat(String name) {
+    return CANONICAL_PLACEHOLDER_NAME_RE.matcher(name).matches();
+  }
+
   /** A reference to a placeholder in a translatable message. */
-  @AutoValue
-  public abstract static class PlaceholderReference implements CharSequence {
+  public record PlaceholderReference(String storedPlaceholderName, boolean canonicalFormat)
+      implements Part {
+    public PlaceholderReference {
+      requireNonNull(storedPlaceholderName, "storedPlaceholderName");
+    }
 
-    static PlaceholderReference create(String name) {
-      return new AutoValue_JsMessage_PlaceholderReference(name);
+    @InlineMe(replacement = "this.storedPlaceholderName()")
+    public String getStoredPlaceholderName() {
+      return storedPlaceholderName();
+    }
+
+    @InlineMe(replacement = "this.canonicalFormat()")
+    public boolean isCanonicalFormat() {
+      return canonicalFormat();
+    }
+
+    static PlaceholderReference createForJsName(String name) {
+      checkArgument(
+          isLowerCamelCaseWithNumericSuffixes(name),
+          "invalid JS placeholder name format: '%s'",
+          name);
+      return new PlaceholderReference(name, /* canonicalFormat= */ false);
+    }
+
+    public static PlaceholderReference createForCanonicalName(String name) {
+      checkArgument(
+          isCanonicalPlaceholderNameFormat(name),
+          "not a canonical placeholder name format: '%s'",
+          name);
+      return new PlaceholderReference(name, /* canonicalFormat= */ true);
     }
 
     @Override
-    public int length() {
-      return getName().length();
+    public boolean isPlaceholder() {
+      return true;
     }
 
     @Override
-    public char charAt(int index) {
-      return getName().charAt(index);
+    public String getJsPlaceholderName() {
+      final String storedPlaceholderName = storedPlaceholderName();
+      return canonicalFormat()
+          ? toLowerCamelCaseWithNumericSuffixes(storedPlaceholderName)
+          : storedPlaceholderName;
     }
 
     @Override
-    public CharSequence subSequence(int start, int end) {
-      return getName().subSequence(start, end);
+    public String getCanonicalPlaceholderName() {
+      final String storedPlaceholderName = storedPlaceholderName();
+      return canonicalFormat()
+          ? storedPlaceholderName
+          : CaseFormat.LOWER_CAMEL.to(CaseFormat.UPPER_UNDERSCORE, storedPlaceholderName);
     }
 
-    public abstract String getName();
-
     @Override
-    public final String toString() {
-      return SimpleFormat.format(MESSAGE_REPRESENTATION_FORMAT, getName());
+    public String getString() {
+      throw new UnsupportedOperationException(
+          String.format("not a string part: '%s'", getJsPlaceholderName()));
     }
   }
 
@@ -205,56 +473,31 @@ public abstract class JsMessage {
    * <p>This implementation correctly processes unnamed messages and creates a key for them that
    * looks like {@code MSG_<fingerprint value>};.
    */
-  @GwtIncompatible("java.util.regex")
   public static final class Builder {
 
-    // Allow arbitrary suffixes to allow for local variable disambiguation.
-    private static final String MSG_EXTERNAL_PREFIX = "MSG_EXTERNAL_";
-
-    /**
-     * @return an external message id or null if this is not an external message identifier
-     */
-    private static String getExternalMessageId(String identifier) {
-      if (identifier.startsWith(MSG_EXTERNAL_PREFIX)) {
-        int start = MSG_EXTERNAL_PREFIX.length();
-        int end = start;
-        for (; end < identifier.length(); end++) {
-          char c = identifier.charAt(end);
-          if (c > '9' || c < '0') {
-            break;
-          }
-        }
-        if (end > start) {
-          return identifier.substring(start, end);
-        }
-      }
-      return null;
-    }
-
-    private String key;
+    private @Nullable String key = null;
 
     private String meaning;
 
     private String desc;
-    private boolean hidden;
+    private boolean isAnonymous = false;
+    private boolean isExternal = false;
 
-    private String alternateId;
+    private @Nullable String id;
+    private @Nullable String alternateId;
 
-    private final List<CharSequence> parts = new ArrayList<>();
-    private final Set<String> placeholders = new LinkedHashSet<>();
+    private final List<Part> parts = new ArrayList<>();
+    private final Map<GrammaticalGenderCase, List<Part>> genderedMessageMap = new LinkedHashMap<>();
+    // Placeholder names in JS code format (lowerCamelCase),
+    // which is used for `goog.getMsg()` messages
+    private final Set<String> jsPlaceholderNames = new LinkedHashSet<>();
+    // Placeholder names in canonical format (UPPER_SNAKE_CASE)
+    // which is used in XMB / XTB files and `declareIcuTemplate()` messages.
+    private final Set<String> canonicalPlaceholderNames = new LinkedHashSet<>();
     private ImmutableMap<String, String> placeholderNameToExampleMap = ImmutableMap.of();
     private ImmutableMap<String, String> placeholderNameToOriginalCodeMap = ImmutableMap.of();
 
     private String sourceName;
-
-    public Builder() {
-      this(null);
-    }
-
-    /** Creates an instance. */
-    public Builder(String key) {
-      this.key = key;
-    }
 
     /** Gets the message's key (e.g. {@code "MSG_HELLO"}). */
     public String getKey() {
@@ -265,6 +508,7 @@ public abstract class JsMessage {
      * @param key a key that should uniquely identify this message; typically it is the message's
      *     name (e.g. {@code "MSG_HELLO"}).
      */
+    @CanIgnoreReturnValue
     public Builder setKey(String key) {
       this.key = key;
       return this;
@@ -273,82 +517,129 @@ public abstract class JsMessage {
     /**
      * @param sourceName The message's sourceName.
      */
+    @CanIgnoreReturnValue
     public Builder setSourceName(String sourceName) {
       this.sourceName = sourceName;
       return this;
     }
 
-    public Builder setMsgText(String msgText) throws PlaceholderFormatException {
-      checkState(this.parts.isEmpty(), "cannot parse msg text after adding parts");
-      parseMsgTextIntoParts(msgText);
+    @CanIgnoreReturnValue
+    public Builder appendPart(Part part) {
+      checkNotNull(part);
+      parts.add(part);
+      if (part.isPlaceholder()) {
+        jsPlaceholderNames.add(part.getJsPlaceholderName());
+        canonicalPlaceholderNames.add(part.getCanonicalPlaceholderName());
+      }
       return this;
     }
 
-    private void parseMsgTextIntoParts(String msgText) throws PlaceholderFormatException {
-      while (true) {
-        int phBegin = msgText.indexOf(PH_JS_PREFIX);
-        if (phBegin < 0) {
-          // Just a string literal
-          appendStringPart(msgText);
-          return;
-        } else {
-          if (phBegin > 0) {
-            // A string literal followed by a placeholder
-            appendStringPart(msgText.substring(0, phBegin));
-          }
-
-          // A placeholder. Find where it ends
-          int phEnd = msgText.indexOf(PH_JS_SUFFIX, phBegin);
-          if (phEnd < 0) {
-            throw new PlaceholderFormatException();
-          }
-
-          String phName = msgText.substring(phBegin + PH_JS_PREFIX.length(), phEnd);
-          appendPlaceholderReference(phName);
-          int nextPos = phEnd + PH_JS_SUFFIX.length();
-          if (nextPos < msgText.length()) {
-            // Iterate on the rest of the message value
-            msgText = msgText.substring(nextPos);
-          } else {
-            // The message is parsed
-            return;
-          }
-        }
+    @CanIgnoreReturnValue
+    public Builder appendParts(List<Part> parts) {
+      for (Part part : parts) {
+        appendPart(part);
       }
+      return this;
     }
 
-    /** Appends a placeholder reference to the message */
-    public Builder appendPlaceholderReference(String name) {
-      checkNotNull(name, "Placeholder name could not be null");
-      parts.add(PlaceholderReference.create(name));
-      placeholders.add(name);
+    /**
+     * Appends a placeholder reference to the message.
+     *
+     * @param name placeholder name in the format used in JS code (lowerCamelCaseWithOptional_12_34)
+     */
+    @CanIgnoreReturnValue
+    public Builder appendJsPlaceholderReference(String name) {
+      checkNotNull(name, "Placeholder name must not be null");
+      parts.add(PlaceholderReference.createForJsName(name));
+      jsPlaceholderNames.add(name);
+      return this;
+    }
+
+    /**
+     * Overloaded method that appends a placeholder reference to the corresponding gendered message.
+     *
+     * @param name placeholder name in the format used in JS code (lowerCamelCaseWithOptional_12_34)
+     */
+    @CanIgnoreReturnValue
+    public Builder appendJsPlaceholderReference(GrammaticalGenderCase genderCase, String name) {
+      checkNotNull(name, "Placeholder name must not be null");
+      genderedMessageMap.get(genderCase).add(PlaceholderReference.createForJsName(name));
+      jsPlaceholderNames.add(name);
+      return this;
+    }
+
+    /**
+     * Appends a placeholder reference to the message.
+     *
+     * @param name placeholder name in the format used in XML files (UPPER_SNAKE_CASE_12_34)
+     */
+    @CanIgnoreReturnValue
+    public Builder appendCanonicalPlaceholderReference(String name) {
+      checkNotNull(name, "Placeholder name must not be null");
+      final PlaceholderReference placeholder = PlaceholderReference.createForCanonicalName(name);
+      parts.add(placeholder);
+      jsPlaceholderNames.add(placeholder.getJsPlaceholderName());
+      return this;
+    }
+
+    /**
+     * Overloaded method that appends a placeholder reference to the corresponding gendered message.
+     *
+     * @param name placeholder name in the format used in XML files (UPPER_SNAKE_CASE_12_34)
+     */
+    @CanIgnoreReturnValue
+    public Builder appendCanonicalPlaceholderReference(
+        GrammaticalGenderCase genderCase, String name) {
+      checkNotNull(name, "Placeholder name must not be null");
+      final PlaceholderReference placeholder = PlaceholderReference.createForCanonicalName(name);
+      genderedMessageMap.get(genderCase).add(placeholder);
+      jsPlaceholderNames.add(placeholder.getJsPlaceholderName());
       return this;
     }
 
     /** Appends a translatable string literal to the message. */
+    @CanIgnoreReturnValue
     public Builder appendStringPart(String part) {
-      checkNotNull(part, "String part of the message could not be null");
-      parts.add(part);
+      checkNotNull(part, "String part of the message must not be null");
+      parts.add(StringPart.create(part));
       return this;
     }
 
-    /** Returns the message registered placeholders */
-    public Set<String> getPlaceholders() {
-      return placeholders;
+    /**
+     * Overloaded method that appends a translatable string literal to the corresponding gendered
+     * message.
+     */
+    @CanIgnoreReturnValue
+    public Builder appendStringPart(GrammaticalGenderCase genderCase, String part) {
+      checkNotNull(genderCase, "Grammatical gender case must not be null");
+      checkNotNull(part, "String part of the message must not be null");
+      genderedMessageMap.get(genderCase).add(StringPart.create(part));
+      return this;
     }
 
+    /** Adds a gendered message key to genderedMessageParts map. */
+    @CanIgnoreReturnValue
+    public Builder addGenderedMessageKey(GrammaticalGenderCase part) {
+      checkNotNull(part, "Gendered message key must not be null");
+      genderedMessageMap.put(part, new ArrayList<>());
+      return this;
+    }
+
+    @CanIgnoreReturnValue
     public Builder setPlaceholderNameToExampleMap(Map<String, String> map) {
       this.placeholderNameToExampleMap = ImmutableMap.copyOf(map);
       return this;
     }
 
+    @CanIgnoreReturnValue
     public Builder setPlaceholderNameToOriginalCodeMap(Map<String, String> map) {
       this.placeholderNameToOriginalCodeMap = ImmutableMap.copyOf(map);
       return this;
     }
 
     /** Sets the description of the message, which helps translators. */
-    public Builder setDesc(String desc) {
+    @CanIgnoreReturnValue
+    public Builder setDesc(@Nullable String desc) {
       this.desc = desc;
       return this;
     }
@@ -357,20 +648,35 @@ public abstract class JsMessage {
      * Sets the programmer-specified meaning of this message, which forces this message to translate
      * differently.
      */
-    public Builder setMeaning(String meaning) {
+    @CanIgnoreReturnValue
+    public Builder setMeaning(@Nullable String meaning) {
       this.meaning = meaning;
       return this;
     }
 
     /** Sets the alternate message ID, to be used if the primary ID is not yet translated. */
-    public Builder setAlternateId(String alternateId) {
+    @CanIgnoreReturnValue
+    public Builder setAlternateId(@Nullable String alternateId) {
       this.alternateId = alternateId;
       return this;
     }
 
-    /** Sets whether the message should be hidden from volunteer translators. */
-    public Builder setIsHidden(boolean hidden) {
-      this.hidden = hidden;
+    @CanIgnoreReturnValue
+    public Builder setIsAnonymous(boolean isAnonymous) {
+      this.isAnonymous = isAnonymous;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder setId(String id) {
+      checkState(this.id == null, "id already set to '%s': cannot change it to '%s'", this.id, id);
+      this.id = id;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder setIsExternalMsg(boolean isExternalMsg) {
+      this.isExternal = isExternalMsg;
       return this;
     }
 
@@ -379,79 +685,48 @@ public abstract class JsMessage {
       return !parts.isEmpty();
     }
 
-    public List<CharSequence> getParts() {
+    /** Gets whether the message has gendered variants. */
+    public boolean hasGenderedVariants() {
+      return !genderedMessageMap.isEmpty();
+    }
+
+    public List<Part> getParts() {
       return parts;
     }
 
     public JsMessage build() {
-      return build(null);
-    }
-
-    public JsMessage build(IdGenerator idGenerator) {
-      boolean isAnonymous = false;
-      boolean isExternal = false;
-      String id = null;
-
-      if (getKey() == null) {
-        // Before constructing a message we need to change unnamed messages name
-        // to the unique one.
-        key = JsMessageVisitor.MSG_PREFIX + fingerprint(getParts());
-        isAnonymous = true;
-      }
-
-      if (!isAnonymous) {
-        String externalId = getExternalMessageId(key);
-        if (externalId != null) {
-          isExternal = true;
-          id = externalId;
-        }
-      }
-
-      if (!isExternal) {
-        String defactoMeaning = meaning != null ? meaning : key;
-        // handle prefix from ScopedAliases pass
-        if (JsMessageVisitor.isScopedAliasesPrefix(defactoMeaning)) {
-          defactoMeaning = JsMessageVisitor.removeScopedAliasesPrefix(defactoMeaning);
-        }
-        id = idGenerator == null ? defactoMeaning : idGenerator.generateId(defactoMeaning, parts);
-      }
+      checkNotNull(key, "key has not been set");
+      checkNotNull(id, "id has not been set");
+      checkState(!isExternal || !isAnonymous, "a message cannot be both anonymous and external");
 
       // An alternate ID that points to itself is a no-op, so just omit it.
       if ((alternateId != null) && alternateId.equals(id)) {
         alternateId = null;
       }
 
-      return new AutoValue_JsMessage(
+      ImmutableMap.Builder<GrammaticalGenderCase, ImmutableList<Part>>
+          immutableGenderedPartsBuilder = ImmutableMap.builder();
+      for (Map.Entry<GrammaticalGenderCase, List<Part>> entry : genderedMessageMap.entrySet()) {
+        immutableGenderedPartsBuilder.put(entry.getKey(), ImmutableList.copyOf(entry.getValue()));
+      }
+      ImmutableMap<GrammaticalGenderCase, ImmutableList<Part>> immutableGenderedMessageMap =
+          immutableGenderedPartsBuilder.buildOrThrow();
+
+      return new JsMessage(
           sourceName,
           key,
           isAnonymous,
           isExternal,
           id,
           ImmutableList.copyOf(parts),
+          immutableGenderedMessageMap,
           alternateId,
           desc,
           meaning,
-          hidden,
           placeholderNameToExampleMap,
           placeholderNameToOriginalCodeMap,
-          ImmutableSet.copyOf(placeholders));
-    }
-
-    /**
-     * Generates a compact uppercase alphanumeric text representation of a 63-bit fingerprint of the
-     * content parts of a message.
-     */
-    private static String fingerprint(List<CharSequence> messageParts) {
-      StringBuilder sb = new StringBuilder();
-      for (CharSequence part : messageParts) {
-        if (part instanceof JsMessage.PlaceholderReference) {
-          sb.append(part.toString());
-        } else {
-          sb.append(part);
-        }
-      }
-      long nonnegativeHash = Long.MAX_VALUE & Hash.hash64(sb.toString());
-      return Ascii.toUpperCase(Long.toString(nonnegativeHash, 36));
+          ImmutableSet.copyOf(jsPlaceholderNames),
+          ImmutableSet.copyOf(canonicalPlaceholderNames));
     }
   }
 
@@ -532,7 +807,7 @@ public abstract class JsMessage {
      * @param seed the seed
      * @return 64 bit hash value
      */
-    private static long hash64(byte[] value, int offset, int length, long seed) {
+    private static long hash64(byte @Nullable [] value, int offset, int length, long seed) {
       long a = CONSTANT64;
       long b = a;
       long c = seed;
@@ -726,6 +1001,6 @@ public abstract class JsMessage {
      *     we will just use a fingerprint of the message.
      * @param messageParts The parts of the message, including the main message text.
      */
-    String generateId(String meaning, List<CharSequence> messageParts);
+    String generateId(String meaning, List<Part> messageParts);
   }
 }

@@ -16,14 +16,14 @@
 package com.google.javascript.jscomp.modules;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static java.util.Objects.requireNonNull;
 
-import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.javascript.jscomp.NodeUtil;
 import com.google.javascript.jscomp.modules.Binding.CreatedBy;
 import com.google.javascript.rhino.Node;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Handles creating an {@link Import} from goog.require(Type) or goog.forwardDeclare.
@@ -34,24 +34,28 @@ final class ClosureRequireProcessor {
   private final Node nameDeclaration;
   private final CreatedBy requireKind;
 
-  /** Represents a goog.require(Type) or goog.forwardDeclare */
-  @AutoValue
-  abstract static class Require {
-    /** The name local to the module with the require; e.g. `b` in `const b = goog.require('a');` */
-    abstract String localName();
-    /** An {@link Import} containing all metadata about this require */
-    abstract Import importRecord();
-    /** Whether this is a goog.require, goog.requireType, or goog.forwardDeclare */
-    abstract Binding.CreatedBy createdBy();
-
-    private static Require create(
-        String localName, Import importRecord, Binding.CreatedBy createdBy) {
+  /**
+   * Represents a goog.require(Type) or goog.forwardDeclare
+   *
+   * @param localName The name local to the module with the require; e.g. `b` in `const b =
+   *     goog.require('a');`
+   * @param importRecord An {@link Import} containing all metadata about this require
+   * @param createdBy Whether this is a goog.require, goog.requireType, or goog.forwardDeclare
+   */
+  record Require(String localName, Import importRecord, CreatedBy createdBy) {
+    Require {
+      requireNonNull(localName, "localName");
+      requireNonNull(importRecord, "importRecord");
+      requireNonNull(createdBy, "createdBy");
       checkArgument(createdBy.isClosureImport());
-      return new AutoValue_ClosureRequireProcessor_Require(localName, importRecord, createdBy);
+    }
+
+    private static Require create(String localName, Import importRecord, CreatedBy createdBy) {
+      return new Require(localName, importRecord, createdBy);
     }
   }
 
-  private ClosureRequireProcessor(Node nameDeclaration, Binding.CreatedBy requireKind) {
+  private ClosureRequireProcessor(Node nameDeclaration, CreatedBy requireKind) {
     checkArgument(NodeUtil.isNameDeclaration(nameDeclaration));
     this.nameDeclaration = nameDeclaration;
     this.requireKind = requireKind;
@@ -69,7 +73,7 @@ final class ClosureRequireProcessor {
             ? nameDeclaration.getFirstChild().getSecondChild()
             : nameDeclaration.getFirstFirstChild();
     // This may be a require, requireType, or forwardDeclare.
-    Binding.CreatedBy requireKind = getModuleDependencyTypeFromRhs(rhs);
+    CreatedBy requireKind = getModuleDependencyTypeFromRhs(rhs);
     if (requireKind == null) {
       return ImmutableList.of();
     }
@@ -92,8 +96,7 @@ final class ClosureRequireProcessor {
    *
    * @return A Closure require (where {@link CreatedBy#isClosureImport()} is true) or null.
    */
-  @Nullable
-  private static CreatedBy getModuleDependencyTypeFromRhs(@Nullable Node value) {
+  private static @Nullable CreatedBy getModuleDependencyTypeFromRhs(@Nullable Node value) {
     if (value == null
         || !value.isCall()
         || !value.hasTwoChildren()

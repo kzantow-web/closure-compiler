@@ -18,11 +18,11 @@ package com.google.javascript.jscomp.integration;
 
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
-import static com.google.javascript.jscomp.base.JSCompStrings.lines;
 import static com.google.javascript.rhino.testing.NodeSubject.assertNode;
 
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.javascript.jscomp.BlackHoleErrorManager;
 import com.google.javascript.jscomp.Compiler;
 import com.google.javascript.jscomp.CompilerOptions;
@@ -35,114 +35,118 @@ import com.google.javascript.jscomp.JSError;
 import com.google.javascript.jscomp.SourceFile;
 import com.google.javascript.jscomp.testing.JSChunkGraphBuilder;
 import com.google.javascript.jscomp.testing.JSCompCorrespondences;
-import com.google.javascript.jscomp.testing.NoninjectingCompiler;
 import com.google.javascript.jscomp.testing.TestExternsBuilder;
 import com.google.javascript.rhino.Node;
 import java.util.ArrayList;
 import java.util.List;
+import org.jspecify.annotations.Nullable;
 import org.junit.Before;
 
 /** Framework for end-to-end test cases. */
 abstract class IntegrationTestCase {
   protected static final Joiner EMPTY_JOINER = Joiner.on("");
 
+  protected static final String[] files(String... values) {
+    // The varargs parameter 'values' is already a String[] inside the method
+    return values;
+  }
+
+  protected static final TestExternsBuilder defaultExternsBuilderwithoutClosure() {
+    return new TestExternsBuilder()
+        .addArguments()
+        .addString()
+        .addObject()
+        .addReflect()
+        .addFunction()
+        .addIterable()
+        .addPromise()
+        .addArray()
+        .addAlert()
+        .addMap()
+        .addExtra(
+            """
+            /**
+             * @const
+             */
+            var Math = {};
+            /**
+             * @param {?} n1
+             * @param {?} n2
+             * @return {number}
+             * @nosideeffects
+             */
+            Math.pow = function(n1, n2) {};
+            Math.random = function() {}
+            var isNaN;
+            var Infinity;
+            /**
+             * @constructor
+             * @extends {Array<string>}
+             */
+            var ITemplateArray = function() {};
+            /** @constructor */
+            var Set;
+            /** @constructor */ function Window() {}
+            /** @type {string} */ Window.prototype.name;
+            /** @type {string} */ Window.prototype.offsetWidth;
+            /** @type {Window} */ var window;
+
+            /** @nosideeffects */ function noSideEffects() {}
+
+            /**
+             * @constructor
+             * @nosideeffects
+             */
+            function Widget() {}
+            /** @modifies {this} */ Widget.prototype.go = function() {};
+            /** @return {string} */ var widgetToken = function() {};
+
+            /**
+             * @constructor
+             * @return {number}
+             * @param {*=} opt_n
+             */
+            function Number(opt_n) {}
+
+            /**
+             * @constructor
+             * @return {boolean}
+             * @param {*=} opt_b
+             */
+            function Boolean(opt_b) {}
+
+            /**
+             * @constructor
+             * @return {!TypeError}
+             * @param {*=} message
+             * @param {*=} fileNameOrOptions
+             * @param {*=} line
+             */
+            function TypeError(message, fileNameOrOptions, line) {}
+            /**
+             * @constructor
+             * @param {*=} message
+             * @param {*=} fileNameOrOptions
+             * @param {*=} line
+             * @return {!Error}
+             * @nosideeffects
+             */
+            function Error(message, fileNameOrOptions, line) {}
+
+            /** @constructor */
+            var HTMLElement = function() {};
+            """);
+  }
+
   /** Externs for the test */
   protected static final ImmutableList<SourceFile> DEFAULT_EXTERNS =
       ImmutableList.of(
-          new TestExternsBuilder()
-              .addArguments()
-              .addString()
-              .addObject()
-              .addReflect()
-              .addFunction()
-              .addIterable()
-              .addPromise()
-              .addArray()
-              .addAlert()
-              .addClosureExterns()
-              .addExtra(
-                  lines(
-                      "/**",
-                      " * @const",
-                      " */",
-                      "var Math = {};",
-                      "/**",
-                      " * @param {?} n1",
-                      " * @param {?} n2",
-                      " * @return {number}",
-                      " * @nosideeffects",
-                      " */",
-                      "Math.pow = function(n1, n2) {};",
-                      "Math.random = function() {}",
-                      "var isNaN;",
-                      "var Infinity;",
-                      "/**",
-                      " * @constructor",
-                      " * @extends {Array<string>}",
-                      " */",
-                      "var ITemplateArray = function() {};",
-                      "/** @constructor */",
-                      "var Map;",
-                      "/** @constructor */",
-                      "var Set;",
-                      "/** @constructor */ function Window() {}",
-                      "/** @type {string} */ Window.prototype.name;",
-                      "/** @type {string} */ Window.prototype.offsetWidth;",
-                      "/** @type {Window} */ var window;",
-                      "",
-                      "/** @nosideeffects */ function noSideEffects() {}",
-                      "",
-                      "/**",
-                      " * @constructor",
-                      " * @nosideeffects",
-                      " */",
-                      "function Widget() {}",
-                      "/** @modifies {this} */ Widget.prototype.go = function() {};",
-                      "/** @return {string} */ var widgetToken = function() {};",
-                      "",
-                      "/**",
-                      " * @constructor",
-                      " * @return {number}",
-                      " * @param {*=} opt_n",
-                      " */",
-                      "function Number(opt_n) {}",
-                      "",
-                      "/**",
-                      " * @constructor",
-                      " * @return {boolean}",
-                      " * @param {*=} opt_b",
-                      " */",
-                      "function Boolean(opt_b) {}",
-                      "",
-                      "/**",
-                      " * @constructor",
-                      " * @return {!TypeError}",
-                      " * @param {*=} message",
-                      " * @param {*=} fileNameOrOptions",
-                      " * @param {*=} line",
-                      " */",
-                      "function TypeError(message, fileNameOrOptions, line) {}",
-                      "/**",
-                      " * @constructor",
-                      " * @param {*=} message",
-                      " * @param {*=} fileNameOrOptions",
-                      " * @param {*=} line",
-                      " * @return {!Error}",
-                      " * @nosideeffects",
-                      " */",
-                      "function Error(message, fileNameOrOptions, line) {}",
-                      "",
-                      "/** @constructor */",
-                      "var HTMLElement = function() {};",
-                      ""))
-              .buildExternsFile("externs"));
+          defaultExternsBuilderwithoutClosure().addClosureExterns().buildExternsFile("externs"));
 
   protected List<SourceFile> externs = DEFAULT_EXTERNS;
 
   // The most recently used compiler.
-  protected Compiler lastCompiler;
-
-  protected boolean useNoninjectingCompiler = false;
+  protected @Nullable Compiler lastCompiler;
 
   protected String inputFileNamePrefix;
   protected String inputFileNameSuffix;
@@ -151,13 +155,12 @@ abstract class IntegrationTestCase {
   public void setUp() {
     externs = DEFAULT_EXTERNS;
     lastCompiler = null;
-    useNoninjectingCompiler = false;
     inputFileNamePrefix = "i";
     inputFileNameSuffix = ".js";
   }
 
   protected void testSame(CompilerOptions options, String original) {
-    testSame(options, new String[] { original });
+    testSame(options, new String[] {original});
   }
 
   protected void testSame(CompilerOptions options, String[] original) {
@@ -165,32 +168,33 @@ abstract class IntegrationTestCase {
   }
 
   /**
-   * Asserts that when compiling with the given compiler options,
-   * {@code original} is transformed into {@code compiled}.
+   * Asserts that when compiling with the given compiler options, {@code original} is transformed
+   * into {@code compiled}.
    */
-  protected void test(CompilerOptions options,
-      String original, String compiled) {
-    test(options, new String[] { original }, new String[] { compiled });
+  protected void test(CompilerOptions options, String original, String compiled) {
+    test(options, new String[] {original}, new String[] {compiled});
   }
 
   /**
-   * Asserts that when compiling with the given compiler options,
-   * {@code original} is transformed into {@code compiled}.
+   * Asserts that when compiling with the given compiler options, {@code original} is transformed
+   * into {@code compiled}.
    */
-  protected void test(CompilerOptions options,
-      String[] original, String[] compiled) {
+  protected void test(CompilerOptions options, String[] original, String[] compiled) {
     Compiler compiler = compile(options, original);
 
     Node root = compiler.getRoot().getLastChild();
 
     // Verify that there are no unexpected errors before checking the compiled output
     assertWithMessage(
-            "Expected no warnings or errors\n"
-                + "Errors: \n"
-                + Joiner.on("\n").join(compiler.getErrors())
-                + "\n"
-                + "Warnings: \n"
-                + Joiner.on("\n").join(compiler.getWarnings()))
+            """
+            Expected no warnings or errors
+            Errors:
+            %s
+            Warnings:
+            %s
+            """,
+            Joiner.on("\n").join(compiler.getErrors()),
+            Joiner.on("\n").join(compiler.getWarnings()))
         .that(compiler.getErrors().size() + compiler.getWarnings().size())
         .isEqualTo(0);
 
@@ -239,7 +243,10 @@ abstract class IntegrationTestCase {
 
   /** Asserts that when compiling with the given compiler options, there is an error or warning. */
   protected void test(
-      CompilerOptions options, String[] original, String[] compiled, DiagnosticGroup warnings) {
+      CompilerOptions options,
+      String[] original,
+      String @Nullable [] compiled,
+      DiagnosticGroup warnings) {
     Compiler compiler = compile(options, original);
     checkUnexpectedErrorsOrWarnings(compiler, 1);
 
@@ -251,15 +258,13 @@ abstract class IntegrationTestCase {
 
     DiagnosticType diagnostic;
     if (compiler.getErrorCount() == 1) {
-      diagnostic = compiler.getErrors().get(0).getType();
+      diagnostic = compiler.getErrors().get(0).type();
     } else {
-      diagnostic = compiler.getWarnings().get(0).getType();
+      diagnostic = compiler.getWarnings().get(0).type();
     }
     assertWithMessage(
-            "Error not in expected diagnostic group. Error: "
-                + diagnostic.key
-                + "\nExpected group: "
-                + warnings)
+            "Error not in expected diagnostic group. Error: %s\nExpected group: %s",
+            diagnostic.key, warnings)
         .that(warnings.matches(diagnostic))
         .isTrue();
   }
@@ -269,18 +274,16 @@ abstract class IntegrationTestCase {
     testParseError(options, original, null);
   }
 
-  /**
-   * Asserts that there is at least one parse error.
-   */
-  protected void testParseError(CompilerOptions options,
-      String original, String compiled) {
+  /** Asserts that there is at least one parse error. */
+  protected void testParseError(
+      CompilerOptions options, String original, @Nullable String compiled) {
     Compiler compiler = compile(options, original);
     for (JSError error : compiler.getErrors()) {
       if (!DiagnosticGroups.PARSING.matches(error)) {
-        assertWithMessage("Found unexpected error type " + error.getType() + ":\n" + error).fail();
+        assertWithMessage("Found unexpected error type %s:\n%s", error.type(), error).fail();
       }
     }
-    assertWithMessage("Unexpected warnings: " + Joiner.on("\n").join(compiler.getWarnings()))
+    assertWithMessage("Unexpected warnings: %s", Joiner.on("\n").join(compiler.getWarnings()))
         .that(compiler.getWarnings().size())
         .isEqualTo(0);
 
@@ -291,8 +294,7 @@ abstract class IntegrationTestCase {
     }
   }
 
-  protected void checkUnexpectedErrorsOrWarnings(
-      Compiler compiler, int expected) {
+  protected void checkUnexpectedErrorsOrWarnings(Compiler compiler, int expected) {
     int actual = compiler.getErrors().size() + compiler.getWarnings().size();
     if (actual != expected) {
       String msg = "";
@@ -302,12 +304,14 @@ abstract class IntegrationTestCase {
       for (JSError err : compiler.getWarnings()) {
         msg += "Warning:" + err + "\n";
       }
-      assertWithMessage("Unexpected warnings or errors.\n " + msg).that(actual).isEqualTo(expected);
+      assertWithMessage("Unexpected warnings or errors.\n %s", msg)
+          .that(actual)
+          .isEqualTo(expected);
     }
   }
 
   protected Compiler compile(CompilerOptions options, String original) {
-    return compile(options, new String[] { original });
+    return compile(options, new String[] {original});
   }
 
   protected Compiler compile(CompilerOptions options, String[] original) {
@@ -320,19 +324,13 @@ abstract class IntegrationTestCase {
                 .build()));
   }
 
-  protected Compiler compile(CompilerOptions options, ImmutableList<JSChunk> modules) {
-    Compiler compiler =
-        useNoninjectingCompiler
-            ? createNoninjectingCompiler(new BlackHoleErrorManager())
-            : createCompiler(new BlackHoleErrorManager());
+  @CanIgnoreReturnValue
+  protected Compiler compile(CompilerOptions options, ImmutableList<JSChunk> chunks) {
+    Compiler compiler = createCompiler(new BlackHoleErrorManager());
 
     lastCompiler = compiler;
-    compiler.compileModules(externs, modules, options);
+    var unused = compiler.compileChunks(externs, chunks, options);
     return compiler;
-  }
-
-  Compiler createNoninjectingCompiler(ErrorManager errorManager) {
-    return new NoninjectingCompiler(errorManager);
   }
 
   Compiler createCompiler(ErrorManager errorManager) {
@@ -344,7 +342,7 @@ abstract class IntegrationTestCase {
   }
 
   protected void testNoWarnings(CompilerOptions options, String code) {
-    testNoWarnings(options, new String[] { code });
+    testNoWarnings(options, new String[] {code});
   }
 
   protected void testNoWarnings(CompilerOptions options, String[] sources) {
@@ -379,5 +377,4 @@ abstract class IntegrationTestCase {
 
     return compiler.getRoot().getLastChild();
   }
-
 }

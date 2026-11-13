@@ -15,6 +15,7 @@
  */
 
 'require base';
+'require es6/util/getiteratorprototype';
 'require es6/util/setprototypeof';
 'require es6/util/makeiterator';
 
@@ -146,7 +147,7 @@ $jscomp.generator.Context = function() {
    * continue.
    *
    * @private
-   * @type {?Iterator<VALUE>}
+   * @type {?IteratorLike<VALUE>}
    */
   this.yieldAllIterator_ = null;
 
@@ -154,7 +155,7 @@ $jscomp.generator.Context = function() {
    * The value that will be sent to the program as the result of suspended
    * yield expression.
    *
-   * @type {?}
+   * @private {?}
    */
   this.yieldResult = undefined;
 
@@ -163,7 +164,7 @@ $jscomp.generator.Context = function() {
    *
    * <p>Program execution starts at 1 and ends at 0.
    *
-   * @type {number}
+   * @private {number}
    */
   this.nextAddress = 1;
 
@@ -287,6 +288,38 @@ $jscomp.generator.Context.prototype.throw_ = function(e) {
   this.jumpToErrorHandler_();
 };
 
+/** Public methods */
+
+/**
+ * Returns the next address in the state machine.
+ *
+ * @final
+ * @return {number}
+ * @requireInlining
+ */
+$jscomp.generator.Context.prototype.getNextAddressJsc = function() {
+  return this.nextAddress;
+};
+
+$jscomp.generator.Context.prototype['getNextAddressJsc'] = function() {
+  return this.nextAddress;
+};
+
+/**
+ * Returns the value that was set by the last yield expression.
+ *
+ * @final
+ * @return {number}
+ * @requireInlining
+ */
+$jscomp.generator.Context.prototype.getYieldResultJsc = function() {
+  return this.yieldResult;
+};
+
+$jscomp.generator.Context.prototype['getYieldResultJsc'] = function() {
+  return this.yieldResult;
+};
+
 /**
  * Returns a value as the result of generator function.
  *
@@ -300,6 +333,9 @@ $jscomp.generator.Context.prototype.return = function(value) {
   this.nextAddress = this.finallyAddress_;
 };
 
+$jscomp.generator.Context.prototype['return'] =
+    $jscomp.generator.Context.prototype.return;
+
 /**
  * Changes the context so the program execution will continue from the given
  * state after executing nessesary pending finally blocks first.
@@ -311,8 +347,15 @@ $jscomp.generator.Context.prototype.return = function(value) {
 $jscomp.generator.Context.prototype.jumpThroughFinallyBlocks = function(
     nextAddress) {
   this.abruptCompletion_ = {jumpTo: nextAddress};
-  this.nextAddress = this.finallyAddress_;
+  if (this.finallyAddress_ < nextAddress) {
+    this.nextAddress = nextAddress;
+    this.abruptCompletion_ = null;
+  } else {
+    this.nextAddress = this.finallyAddress_;
+  }
 };
+$jscomp.generator.Context.prototype['jumpThroughFinallyBlocks'] =
+    $jscomp.generator.Context.prototype.jumpThroughFinallyBlocks;
 
 /**
  * Pauses the state machine program assosiated with generator function to yield
@@ -329,12 +372,14 @@ $jscomp.generator.Context.prototype.yield = function(value, resumeAddress) {
   this.nextAddress = resumeAddress;
   return {value: value};
 };
+$jscomp.generator.Context.prototype['yield'] =
+    $jscomp.generator.Context.prototype.yield;
 
 /**
  * Causes the state machine program to yield all values from an iterator.
  *
  * @final
- * @param {string|!Iterator<VALUE>|!Iterable<VALUE>|!Arguments} iterable
+ * @param {string|!IteratorLike<VALUE>|!Iterable<VALUE>|!Arguments} iterable
  *     Iterator to yeild all values from.
  * @param {number} resumeAddress The address where the program should resume.
  * @return {void | {value: VALUE}}
@@ -342,7 +387,7 @@ $jscomp.generator.Context.prototype.yield = function(value, resumeAddress) {
  */
 $jscomp.generator.Context.prototype.yieldAll = function(
     iterable, resumeAddress) {
-  /** @const @type {!Iterator<VALUE>} */ var iterator =
+  /** @const @type {!IteratorLike<VALUE>} */ var iterator =
       $jscomp.makeIterator(iterable);
   /** @const */ var result = iterator.next();
   $jscomp.generator.ensureIteratorResultIsObject_(result);
@@ -356,6 +401,8 @@ $jscomp.generator.Context.prototype.yieldAll = function(
   this.yieldAllIterator_ = iterator;
   return this.yield(result.value, resumeAddress);
 };
+$jscomp.generator.Context.prototype['yieldAll'] =
+    $jscomp.generator.Context.prototype.yieldAll;
 
 /**
  * Changes the context so the program execution will continue from the given
@@ -368,6 +415,8 @@ $jscomp.generator.Context.prototype.yieldAll = function(
 $jscomp.generator.Context.prototype.jumpTo = function(nextAddress) {
   this.nextAddress = nextAddress;
 };
+$jscomp.generator.Context.prototype['jumpTo'] =
+    $jscomp.generator.Context.prototype.jumpTo;
 
 /**
  * Changes the context so the program execution ends.
@@ -378,6 +427,8 @@ $jscomp.generator.Context.prototype.jumpTo = function(nextAddress) {
 $jscomp.generator.Context.prototype.jumpToEnd = function() {
   this.nextAddress = 0;
 };
+$jscomp.generator.Context.prototype['jumpToEnd'] =
+    $jscomp.generator.Context.prototype.jumpToEnd;
 
 /**
  * Sets catch / finally handlers.
@@ -395,6 +446,8 @@ $jscomp.generator.Context.prototype.setCatchFinallyBlocks = function(
     this.finallyAddress_ = finallyAddress;
   }
 };
+$jscomp.generator.Context.prototype['setCatchFinallyBlocks'] =
+    $jscomp.generator.Context.prototype.setCatchFinallyBlocks;
 
 /**
  * Sets finally handler.
@@ -408,6 +461,8 @@ $jscomp.generator.Context.prototype.setFinallyBlock = function(finallyAddress) {
   this.catchAddress_ = 0;
   this.finallyAddress_ = finallyAddress || 0;
 };
+$jscomp.generator.Context.prototype['setFinallyBlock'] =
+    $jscomp.generator.Context.prototype.setFinallyBlock;
 
 /**
  * Sets a catch handler and jumps to the next address.
@@ -423,6 +478,8 @@ $jscomp.generator.Context.prototype.leaveTryBlock = function(
   this.nextAddress = nextAddress;
   this.catchAddress_ = catchAddress || 0;
 };
+$jscomp.generator.Context.prototype['leaveTryBlock'] =
+    $jscomp.generator.Context.prototype.leaveTryBlock;
 
 /**
  * Initializes exception variable in the beginning of catch block.
@@ -442,6 +499,8 @@ $jscomp.generator.Context.prototype.enterCatchBlock = function(
   this.abruptCompletion_ = null;
   return exception;
 };
+$jscomp.generator.Context.prototype['enterCatchBlock'] =
+    $jscomp.generator.Context.prototype.enterCatchBlock;
 
 /**
  * Saves the current throw context which will be restored at the end of finally
@@ -465,7 +524,10 @@ $jscomp.generator.Context.prototype.enterFinallyBlock = function(
   }
   this.catchAddress_ = nextCatchAddress || 0;
   this.finallyAddress_ = nextFinallyAddress || 0;
+  this.abruptCompletion_ = null;
 };
+$jscomp.generator.Context.prototype['enterFinallyBlock'] =
+    $jscomp.generator.Context.prototype.enterFinallyBlock;
 
 /**
  * Figures out whether the program execution should continue normally, or jump
@@ -581,6 +643,8 @@ $jscomp.generator.Context.prototype.leaveFinallyBlock = function(
     this.nextAddress = nextAddress;
   }
 };
+$jscomp.generator.Context.prototype['leaveFinallyBlock'] =
+    $jscomp.generator.Context.prototype.leaveFinallyBlock;
 
 /**
  * Is used in transpilation of `for in` statements.
@@ -602,6 +666,11 @@ $jscomp.generator.Context.prototype.leaveFinallyBlock = function(
 $jscomp.generator.Context.prototype.forIn = function(object) {
   return new $jscomp.generator.Context.PropertyIterator(object);
 };
+$jscomp.generator.Context.prototype['forIn'] =
+    $jscomp.generator.Context.prototype.forIn;
+
+
+/** End public methods */
 
 /**
  * @constructor
@@ -650,6 +719,8 @@ $jscomp.generator.Context.PropertyIterator.prototype.getNext = function() {
   }
   return null;
 };
+$jscomp.generator.Context.PropertyIterator.prototype['getNext'] =
+    $jscomp.generator.Context.PropertyIterator.prototype.getNext;
 
 /**
  * Engine handling execution of a state machine associated with the generator
@@ -737,9 +808,23 @@ $jscomp.generator.Engine_.prototype.return_ = function(value) {
 $jscomp.generator.Engine_.prototype.throw_ = function(exception) {
   this.context_.start_();
   if (this.context_.yieldAllIterator_) {
-    return this.yieldAllStep_(
-        this.context_.yieldAllIterator_['throw'], exception,
-        this.context_.next_);
+    /** @const */ var throwFn = this.context_.yieldAllIterator_['throw'];
+    if (throwFn) {
+      return this.yieldAllStep_(throwFn, exception, this.context_.next_);
+    }
+    /** @const */ var iter = this.context_.yieldAllIterator_;
+    this.context_.yieldAllIterator_ = null;
+    try {
+      if (iter['return']) {
+        /** @const */ var returnResult = iter['return']();
+        $jscomp.generator.ensureIteratorResultIsObject_(returnResult);
+      }
+      this.context_.throw_(
+          new TypeError("The iterator does not provide a 'throw' method."));
+    } catch (e) {
+      this.context_.throw_(e);
+    }
+    return this.nextStep_();
   }
   this.context_.throw_(exception);
   return this.nextStep_();
@@ -751,7 +836,7 @@ $jscomp.generator.Engine_.prototype.throw_ = function(exception) {
  * @private
  * @final
  * @template T
- * @param {function(this:Iterator<VALUE>, T): !IIterableResult<VALUE>} action
+ * @param {function(this:IteratorLike<VALUE>, T): !IIterableResult<VALUE>} action
  * @param {T} value
  * @param {function(this:$jscomp.generator.Context, VALUE): void} nextAction
  * @return {!IIterableResult<VALUE>}
@@ -761,7 +846,7 @@ $jscomp.generator.Engine_.prototype.yieldAllStep_ = function(
     action, value, nextAction) {
   try {
     /** @const */ var result = action.call(
-        /** @type {!Iterator<VALUE>} */ (this.context_.yieldAllIterator_),
+        /** @type {!IteratorLike<VALUE>} */ (this.context_.yieldAllIterator_),
         value);
     $jscomp.generator.ensureIteratorResultIsObject_(result);
     if (!result.done) {
@@ -823,9 +908,9 @@ $jscomp.generator.Engine_.prototype.nextStep_ = function() {
  * @template VALUE
  * @constructor
  * @final
- * @implements {Generator<VALUE>}
+ * @extends {Generator<VALUE>}
  * @param {!$jscomp.generator.Engine_<VALUE>} engine
- * @suppress {reportUnknownTypes}
+ * @suppress {checkTypes,reportUnknownTypes}
  */
 $jscomp.generator.Generator_ = function(engine) {
   /** @const @override */
@@ -857,7 +942,7 @@ $jscomp.generator.Generator_ = function(engine) {
  *
  * @final
  * @template VALUE
- * @param {function(this:?, ...): (!Iterator<VALUE>|!Iterable<VALUE>)} generator
+ * @param {function(this:?, ...): (!IteratorLike<VALUE>|!Iterable<VALUE>)} generator
  * @param {function(!$jscomp.generator.Context<VALUE>): (void|{value: VALUE})} program
  * @return {!Generator<VALUE>}
  * @suppress {reportUnknownTypes}
@@ -865,17 +950,41 @@ $jscomp.generator.Generator_ = function(engine) {
 $jscomp.generator.createGenerator = function(generator, program) {
   /** @const */ var result =
       new $jscomp.generator.Generator_(new $jscomp.generator.Engine_(program));
-  // The spec says that `myGenFunc() instanceof myGenFunc` must be true.
-  // We'll make this work by setting the prototype before calling the
-  // constructor every time. All of the methods of the object are defined on the
-  // instance by the constructor, so this does no harm.
-  // We also cast Generator_ to Object to hide dynamic inheritance from
-  // jscompiler, it makes ConformanceRules$BanUnknownThis happy.
-  // In some transpiled cases there may not be an explicit prototype, in which
-  // case we skip this step.
-  if ($jscomp.setPrototypeOf && generator.prototype) {
-    /** @type {function(!Object, ?Object): !Object} */ ($jscomp.setPrototypeOf)(
-        result, generator.prototype);
+  // The spec says that `myGenFunc() instanceof myGenFunc` and
+  // `myGenFunc() instanceof Iterator` must both be true. We make this work by
+  // linking `generator.prototype` to `Iterator.prototype` (when available) and
+  // `result` to `generator.prototype`. All of `Generator_`'s own methods are
+  // defined on the instance by the constructor, so replacing `result`'s
+  // prototype does not lose them.
+  // In some transpiled cases `generator.prototype` may not exist, in which case
+  // we skip linking through `generator.prototype` and link `result` directly to
+  // `Iterator.prototype`.
+  var setPrototypeOf = $jscomp.setPrototypeOf;
+  if (setPrototypeOf) {
+    var iteratorProto = $jscomp.getIteratorPrototype();
+    if (iteratorProto) {
+      if (generator.prototype) {
+        var proto = generator.prototype;
+        var isObject = (typeof proto === 'object' && proto !== null) ||
+            typeof proto === 'function';
+        var getPrototypeOf = Object.getPrototypeOf;
+        var protoParent = isObject && getPrototypeOf ?
+            getPrototypeOf(proto) :
+            proto.__proto__;
+        if (!iteratorProto.isPrototypeOf(proto) && protoParent === Object.prototype) {
+          try {
+            setPrototypeOf(proto, iteratorProto);
+          } catch (e) {
+            // Non-extensible prototype; leave the chain as is.
+          }
+        }
+      } else {
+        setPrototypeOf(result, iteratorProto);
+      }
+    }
+    if (generator.prototype) {
+      setPrototypeOf(result, generator.prototype);
+    }
   }
   return result;
 };

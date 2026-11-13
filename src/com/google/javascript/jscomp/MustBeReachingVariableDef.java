@@ -21,16 +21,15 @@ import static com.google.common.base.Preconditions.checkState;
 
 import com.google.javascript.jscomp.ControlFlowGraph.AbstractCfgNodeTraversalCallback;
 import com.google.javascript.jscomp.ControlFlowGraph.Branch;
-import com.google.javascript.jscomp.DataFlowAnalysis.FlowJoiner;
 import com.google.javascript.jscomp.graph.GraphNode;
 import com.google.javascript.jscomp.graph.LatticeElement;
 import com.google.javascript.rhino.Node;
 import java.util.Collection;
-import java.util.HashMap;
-import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Computes must-be-reaching definition for all uses of each variable.
@@ -62,14 +61,13 @@ final class MustBeReachingVariableDef
   }
 
   /**
-   * Abstraction of a local variable definition. It represents the node which
-   * a local variable is defined as well as a set of other local variables that
-   * this definition reads from. For example N: a = b + foo.bar(c). The
-   * definition node will be N, the depending set would be {b,c}.
+   * Abstraction of a local variable definition. It represents the node which a local variable is
+   * defined as well as a set of other local variables that this definition reads from. For example
+   * N: a = b + foo.bar(c). The definition node will be N, the depending set would be {b,c}.
    */
   static class Definition {
     final Node node;
-    final Set<Var> depends = new HashSet<>();
+    final Set<Var> depends = new LinkedHashSet<>();
     private boolean unknownDependencies = false;
 
     Definition(Node node) {
@@ -78,10 +76,9 @@ final class MustBeReachingVariableDef
 
     @Override
     public boolean equals(Object other) {
-      if (!(other instanceof Definition)) {
+      if (!(other instanceof Definition otherDef)) {
         return false;
       }
-      Definition otherDef = (Definition) other;
       // If the var has the same definition node we can assume they have the
       // same depends set.
       return otherDef.node == node;
@@ -99,21 +96,14 @@ final class MustBeReachingVariableDef
   }
 
   /**
-   * Must reaching definition lattice representation. It captures a product
-   * lattice for each local (non-escaped) variable. The sub-lattice is
-   * a n + 2 element lattice with all the {@link Definition} in the program,
-   * TOP and BOTTOM.
+   * Must reaching definition lattice representation. It captures a product lattice for each local
+   * (non-escaped) variable. The sub-lattice is a n + 2 element lattice with all the {@link
+   * Definition} in the program, TOP and BOTTOM.
    *
-   * <p>Since this is a Must-Define analysis, BOTTOM represents the case where
-   * there might be more than one reaching definition for the variable.
+   * <p>Since this is a Must-Define analysis, BOTTOM represents the case where there might be more
+   * than one reaching definition for the variable.
    *
-   *
-   *           (TOP)
-   *       /   |   |      \
-   *     N1    N2  N3 ....Nn
-   *      \    |   |      /
-   *          (BOTTOM)
-   *
+   * <p>(TOP) / | | \ N1 N2 N3 ....Nn \ | | / (BOTTOM)
    */
   static final class MustDef implements LatticeElement {
 
@@ -123,7 +113,7 @@ final class MustBeReachingVariableDef
     // When a Var "A" = "TOP", "A" does not exist in reachingDef's keySet.
     // When a Var "A" = Node N, "A" maps to that node.
     // When a Var "A" = "BOTTOM", "A" maps to null.
-    final HashMap<Var, Definition> reachingDef = new HashMap<>();
+    final LinkedHashMap<Var, Definition> reachingDef = new LinkedHashMap<>();
 
     public MustDef() {}
 
@@ -144,7 +134,7 @@ final class MustBeReachingVariableDef
 
     @Override
     public boolean equals(Object other) {
-      return (other instanceof MustDef) && ((MustDef) other).reachingDef.equals(this.reachingDef);
+      return (other instanceof MustDef mustDef) && mustDef.reachingDef.equals(this.reachingDef);
     }
 
     @Override
@@ -156,7 +146,7 @@ final class MustBeReachingVariableDef
   private static class MustDefJoin implements FlowJoiner<MustDef> {
 
     final MustDef result = new MustDef();
-    final HashMap<Var, Definition> resultMap = result.reachingDef;
+    final LinkedHashMap<Var, Definition> resultMap = result.reachingDef;
 
     @Override
     public void joinFlow(MustDef input) {
@@ -220,26 +210,16 @@ final class MustBeReachingVariableDef
    * @param cfgNode The node to add
    * @param conditional true if the definition is not always executed.
    */
-  private void computeMustDef(
-      Node n, Node cfgNode, MustDef output, boolean conditional) {
+  private void computeMustDef(Node n, Node cfgNode, MustDef output, boolean conditional) {
     switch (n.getToken()) {
-
-      case BLOCK:
-      case ROOT:
-      case FUNCTION:
+      case BLOCK, ROOT, FUNCTION -> {
         return;
-
-      case WHILE:
-      case DO:
-      case IF:
-      case FOR:
-        computeMustDef(
-            NodeUtil.getConditionExpression(n), cfgNode, output, conditional);
+      }
+      case WHILE, DO, IF, FOR -> {
+        computeMustDef(NodeUtil.getConditionExpression(n), cfgNode, output, conditional);
         return;
-
-      case FOR_IN:
-      case FOR_OF:
-      case FOR_AWAIT_OF:
+      }
+      case FOR_IN, FOR_OF, FOR_AWAIT_OF -> {
         // for(x in y) {...}
         Node lhs = n.getFirstChild();
         Node rhs = lhs.getNext();
@@ -247,8 +227,10 @@ final class MustBeReachingVariableDef
           lhs = lhs.getLastChild(); // for(var x in y) {...}
         }
         if (lhs.isName()) {
-          // TODO(lharker): This doesn't seem right - given for (x in y), the value set to x isn't y
-          addToDefIfLocal(lhs.getString(), cfgNode, rhs, output);
+          // We pass null for the def node because an enhanced for-loop conditionally assigns
+          // elements from the collection at runtime (or doesn't execute if empty), so there is no
+          // unconditional reaching definition from the loop header.
+          addToDefIfLocal(lhs.getString(), null, rhs, output);
         } else if (lhs.isDestructuringLhs()) {
           lhs = lhs.getFirstChild();
         }
@@ -256,41 +238,36 @@ final class MustBeReachingVariableDef
           computeMustDef(lhs, cfgNode, output, true);
         }
         return;
-
-      case OPTCHAIN_GETPROP:
+      }
+      case OPTCHAIN_GETPROP -> {
         computeMustDef(n.getFirstChild(), cfgNode, output, conditional);
         return;
-
-      case AND:
-      case OR:
-      case COALESCE:
-      case OPTCHAIN_GETELEM:
+      }
+      case AND, OR, COALESCE, OPTCHAIN_GETELEM -> {
         computeMustDef(n.getFirstChild(), cfgNode, output, conditional);
         computeMustDef(n.getLastChild(), cfgNode, output, true);
         return;
-
-      case OPTCHAIN_CALL:
+      }
+      case OPTCHAIN_CALL -> {
         computeMustDef(n.getFirstChild(), cfgNode, output, conditional);
         for (Node c = n.getSecondChild(); c != null; c = c.getNext()) {
           computeMustDef(c, cfgNode, output, true);
         }
         return;
-
-      case HOOK:
+      }
+      case HOOK -> {
         computeMustDef(n.getFirstChild(), cfgNode, output, conditional);
         computeMustDef(n.getSecondChild(), cfgNode, output, true);
         computeMustDef(n.getLastChild(), cfgNode, output, true);
         return;
-
-      case LET:
-      case CONST:
-      case VAR:
+      }
+      case LET, CONST, VAR -> {
         for (Node c = n.getFirstChild(); c != null; c = c.getNext()) {
           if (c.hasChildren()) {
             if (c.isName()) {
               computeMustDef(c.getFirstChild(), cfgNode, output, conditional);
-              addToDefIfLocal(c.getString(), conditional ? null : cfgNode,
-                  c.getFirstChild(), output);
+              addToDefIfLocal(
+                  c.getString(), conditional ? null : cfgNode, c.getFirstChild(), output);
             } else {
               checkState(c.isDestructuringLhs(), c);
               computeMustDef(c.getSecondChild(), cfgNode, output, conditional);
@@ -299,8 +276,8 @@ final class MustBeReachingVariableDef
           }
         }
         return;
-
-      case DEFAULT_VALUE:
+      }
+      case DEFAULT_VALUE -> {
         if (n.getFirstChild().isDestructuringPattern()) {
           computeMustDef(n.getSecondChild(), cfgNode, output, true);
           computeMustDef(n.getFirstChild(), cfgNode, output, conditional);
@@ -312,17 +289,16 @@ final class MustBeReachingVariableDef
           computeMustDef(n.getFirstChild(), cfgNode, output, conditional);
           computeMustDef(n.getSecondChild(), cfgNode, output, true);
         }
-        break;
-
-      case NAME:
+      }
+      case NAME -> {
         if (NodeUtil.isLhsByDestructuring(n)) {
           addToDefIfLocal(n.getString(), conditional ? null : cfgNode, null, output);
         } else if ("arguments".equals(n.getString())) {
           escapeParameters(output);
         }
         return;
-
-      default:
+      }
+      default -> {
         if (NodeUtil.isAssignmentOp(n)) {
           if (n.getFirstChild().isName()) {
             Node name = n.getFirstChild();
@@ -359,18 +335,19 @@ final class MustBeReachingVariableDef
         for (Node c = n.getFirstChild(); c != null; c = c.getNext()) {
           computeMustDef(c, cfgNode, output, conditional);
         }
+      }
     }
   }
 
   /**
-   * Set the variable lattice for the given name to the node value in the def
-   * lattice. Do nothing if the variable name is one of the escaped variable.
+   * Set the variable lattice for the given name to the node value in the def lattice. Do nothing if
+   * the variable name is one of the escaped variable.
    *
-   * @param node The CFG node where the definition should be record to.
-   *     {@code null} if this is a conditional define.
+   * @param node The CFG node where the definition should be record to. {@code null} if this is a
+   *     conditional define.
    */
-  private void addToDefIfLocal(String name, @Nullable Node node,
-      @Nullable Node rValue, MustDef def) {
+  private void addToDefIfLocal(
+      String name, @Nullable Node node, @Nullable Node rValue, MustDef def) {
     Var var = allVarsInFn.get(name);
 
     // var might be null if the variable is defined in the externs
@@ -430,8 +407,8 @@ final class MustBeReachingVariableDef
   }
 
   /**
-   * Computes all the local variables that rValue reads from and store that
-   * in the def's depends set.
+   * Computes all the local variables that rValue reads from and store that in the def's depends
+   * set.
    */
   private void computeDependence(final Definition def, Node rValue) {
     NodeTraversal.traverse(
@@ -466,7 +443,7 @@ final class MustBeReachingVariableDef
     return state.getIn().reachingDef.get(allVarsInFn.get(name));
   }
 
-  Node getDefNode(String name, Node useNode) {
+  @Nullable Node getDefNode(String name, Node useNode) {
     Definition def = getDef(name, useNode);
     return def == null ? null : def.node;
   }

@@ -25,6 +25,127 @@
 var Intl = {};
 
 /**
+ * @record
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/Segmenter/Segmenter#parameters
+ */
+Intl.SegmenterOptions = function() {};
+
+/**
+ * @type {string|undefined}
+ */
+Intl.SegmenterOptions.prototype.localeMatcher;
+
+/**
+ * @type {string|undefined}
+ */
+Intl.SegmenterOptions.prototype.granularity;
+
+/**
+ * @record
+ */
+Intl.ResolvedSegmenterOptions = function() {};
+
+/**
+ * @type {string}
+ */
+Intl.ResolvedSegmenterOptions.prototype.locale;
+
+/**
+ * @type {string}
+ */
+Intl.ResolvedSegmenterOptions.prototype.granularity;
+
+/**
+ * @record
+ * @template T
+ * @extends {IteratorIterable<T>}
+ */
+Intl.SegmentIterator = function() {};
+
+/**
+ * @return {!Intl.SegmentIterator<T>}
+ * @override
+ */
+Intl.SegmentIterator.prototype[Symbol.iterator] = function() {};
+
+/**
+ * @record
+ * @template T
+ * @extends {Iterable<T>}
+ */
+Intl.Segments = function() {};
+
+/**
+ * @param {number=} codeUnitIndex
+ * @return {!Intl.SegmentData}
+ */
+Intl.Segments.prototype.containing = function(codeUnitIndex) {};
+
+/**
+ * @return {!Intl.SegmentIterator<!Intl.SegmentData>}
+ */
+Intl.Segments.prototype[Symbol.iterator] = function() {};
+
+/**
+ * @record
+ */
+Intl.SegmentData = function() {};
+
+/**
+ * @type {string}
+ */
+Intl.SegmentData.prototype.segment;
+
+/**
+ * @type {number}
+ */
+Intl.SegmentData.prototype.index;
+
+/**
+ * @type {string}
+ */
+Intl.SegmentData.prototype.input;
+
+/**
+ * @type {boolean|undefined}
+ */
+Intl.SegmentData.prototype.isWordLike;
+
+/**
+ * @constructor
+ * @param {string|!Array<string>=} locales
+ * @param {!Intl.SegmenterOptions=} options
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/Segmenter.
+ */
+Intl.Segmenter = function(locales, options) {};
+
+/**
+ * @param {string} input
+ * @return {!Intl.Segments}
+ */
+Intl.Segmenter.prototype.segment = function(input) {};
+
+/**
+ * @return {!Intl.ResolvedSegmenterOptions}
+ */
+Intl.Segmenter.prototype.resolvedOptions = function() {};
+
+/**
+ * @param {string|!Array<string>} locales
+ * @param {!Intl.SegmenterOptions=} options
+ * @return {Array<string>}
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/Segmenter/supportedLocalesOf
+ */
+Intl.Segmenter.supportedLocalesOf = function(locales, options) {};
+
+/**
+ * @param {string} key
+ * @return {Array<string>}
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/supportedValuesOf
+ */
+Intl.supportedValuesOf = function(key) {};
+
+/**
  * NOTE: this API is not from ecma402 and is subject to change.
  * @param {string|Array<string>=} locales
  * @param {{type: (string|undefined)}=}
@@ -91,6 +212,30 @@ Intl.Collator.prototype.compare = function(arg1, arg2) {};
 Intl.Collator.prototype.resolvedOptions = function() {};
 
 /**
+ * @record
+ * @see https://tc39.es/ecma402/#sec-intl.numberformat.prototype.formatrangetoparts
+ */
+Intl.NumberRangeFormatPart = function() {};
+
+/**
+ * @type {string}
+ * Valid values: 'approximatelySign', 'compact', 'currency', 'decimal',
+ *     'exponentInteger', 'exponentMinusSign', 'exponentSeparator', 'fraction',
+ *     'group', 'infinity', 'integer', 'literal', 'minusSign', 'nan', 'percent',
+ *     'percentSign', 'plusSign', 'unit', 'unknown'.
+ */
+Intl.NumberRangeFormatPart.prototype.type;
+
+/** @type {string} */
+Intl.NumberRangeFormatPart.prototype.value;
+
+/**
+ * @type {string}
+ * Valid values: 'startRange', 'endRange', 'shared'.
+ */
+Intl.NumberRangeFormatPart.prototype.source;
+
+/**
  * @constructor
  * @param {string|Array<string>=} locales
  * @param {{
@@ -105,7 +250,9 @@ Intl.Collator.prototype.resolvedOptions = function() {};
  *     maximumSignificantDigits: (number|undefined),
  *     compactDisplay: (string|undefined), currencySign: (string|undefined),
  *     signDisplay: (string|undefined), unit: (string|undefined),
- *     unitDisplay: (string|undefined)
+ *     unitDisplay: (string|undefined), roundingIncrement: (number|undefined),
+ *     roundingMode: (string|undefined), roundingPriority: (string|undefined),
+ *     trailingZeroDisplay: (string|undefined)
  *     }=}
  *         options
  */
@@ -119,17 +266,33 @@ Intl.NumberFormat = function(locales, options) {};
 Intl.NumberFormat.supportedLocalesOf = function(locales, options) {};
 
 /**
- * @param {number} num
+ * @param {number|bigint|string} num
  * @return {string}
  */
 Intl.NumberFormat.prototype.format = function(num) {};
 
 /**
- * @param {number} num
+ * @param {number|bigint|string} num
  * @return {!Array<{type: string, value: string}>}
  * @see http://www.ecma-international.org/ecma-402/#sec-intl.numberformat.prototype.formattoparts
  */
 Intl.NumberFormat.prototype.formatToParts = function(num) {};
+
+/**
+ * @param {number|bigint|string} start
+ * @param {number|bigint|string} end
+ * @return {string}
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/NumberFormat/formatRange
+ */
+Intl.NumberFormat.prototype.formatRange = function(start, end) {};
+
+/**
+ * @param {number|bigint|string} start
+ * @param {number|bigint|string} end
+ * @return {!Array<!Intl.NumberRangeFormatPart>}
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/NumberFormat/formatRangeToParts
+ */
+Intl.NumberFormat.prototype.formatRangeToParts = function(start, end) {};
 
 /**
  * @return {{locale: string, numberingSystem: string, style: string,
@@ -139,7 +302,10 @@ Intl.NumberFormat.prototype.formatToParts = function(num) {};
  *     maximumSignificantDigits: number, useGrouping: boolean,
  *     compactDisplay: (string|undefined), currencySign: (string|undefined),
  *     signDisplay: (string|undefined), unit: (string|undefined),
- *     unitDisplay: (string|undefined)}}
+ *     unitDisplay: (string|undefined), roundingIncrement: number,
+ *     roundingMode: string, roundingPriority: string,
+ *     trailingZeroDisplay: string
+ * }}
  */
 Intl.NumberFormat.prototype.resolvedOptions = function() {};
 
@@ -182,6 +348,20 @@ Intl.DateTimeFormat.prototype.format = function(date) {};
 Intl.DateTimeFormat.prototype.formatToParts = function(date) {};
 
 /**
+ * @param {(!Date|number)=} date1
+ * @param {(!Date|number)=} date2
+ * @return {string}
+ */
+Intl.DateTimeFormat.prototype.formatRange = function(date1, date2) {};
+
+/**
+ * @param {(!Date|number)=} date1
+ * @param {(!Date|number)=} date2
+ * @return {!Array<{type: string, value: string}>}
+ */
+Intl.DateTimeFormat.prototype.formatRangeToParts = function(date1, date2) {};
+
+/**
  * @return {{locale: string, calendar: string, numberingSystem: string,
  *    timeZone: (string|undefined), weekday: (string|undefined),
  *    era: (string|undefined), year: (string|undefined),
@@ -189,7 +369,7 @@ Intl.DateTimeFormat.prototype.formatToParts = function(date) {};
  *    hour: (string|undefined), minute: (string|undefined),
  *    second: (string|undefined), timeZoneName: (string|undefined),
  *    hour12: (boolean|undefined),
- *    dateStyle: (string|undefined), datimeStyle: (string|undefined),
+ *    dateStyle: (string|undefined), timeStyle: (string|undefined),
  *    dayPeriod: (string|undefined), hourCycle: (string|undefined),
  *    fractionalSecondDigits: (number|undefined)}}
  */
@@ -197,15 +377,56 @@ Intl.DateTimeFormat.prototype.resolvedOptions = function() {};
 
 /**
  * @constructor
+ * @param {string|!Array<string>=} locales
+ * @param {{localeMatcher: (string|undefined),
+ *    style: (string|undefined), type: string,
+ *    languageDisplay: (string|undefined), fallback: (string|undefined)}=}
+ *        options
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/DisplayNames
+ */
+Intl.DisplayNames = function(locales, options) {};
+
+/**
+ * @param {!Array<string>} locales
+ * @param {{localeMatcher: string}=} options
+ * @return {!Array<string>}
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/DisplayNames/supportedLocalesOf
+ */
+Intl.DisplayNames.supportedLocalesOf = function(locales, options) {};
+
+/**
+ * @param {string=} code
+ * @return {(string|undefined)}
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/DisplayNames/of
+ */
+Intl.DisplayNames.prototype.of = function(code) {};
+
+/**
+ * @return {{locale: string, style: string, type: string,
+ *    fallback: string, languageDisplay: (string|undefined)}}
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/DisplayNames/resolvedOptions
+ */
+Intl.DisplayNames.prototype.resolvedOptions = function() {};
+
+/**
+ * @constructor
  * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/PluralRules#Syntax
+ * @see https://tc39.es/ecma402/#sec-intl.pluralrules
  * @param {string|Array<string>=} locales
- * @param {{localeMatcher: (string|undefined), type: (string|undefined),
- *     minimumIntegerDigits: (number|undefined),
- *     minimumFractionDigits: (number|undefined),
- *     maximumFractionDigits: (number|undefined),
- *     minimumSignificantDigits: (number|undefined),
- *     maximumSignificantDigits: (number|undefined)}=}
- *         options
+ * @param {{
+ *   type: (string|undefined),
+ *   localeMatcher: (string|undefined),
+ *   notation: (string|undefined),
+ *   minimumIntegerDigits: (number|undefined),
+ *   minimumFractionDigits: (number|undefined),
+ *   maximumFractionDigits: (number|undefined),
+ *   minimumSignificantDigits: (number|undefined),
+ *   maximumSignificantDigits: (number|undefined),
+ *   roundingMode: (string|undefined),
+ *   roundingIncrement: (number|undefined),
+ *   roundingPriority: (string|undefined),
+ *   trailingZeroDisplay: (string|undefined),
+ * }=} options
  */
 Intl.PluralRules = function(locales, options) {};
 
@@ -222,7 +443,7 @@ Intl.PluralRules.supportedLocalesOf = function(locales, options) {};
  * @return {{locale: string, pluralCategories: Array<string>, type: string,
  *            minimumIntegerDigits: number, minimumFractionDigits: number,
  *            maximumFractionDigits: number, minimumSignificantDigits: number,
- *            maximumSignificantDigits: number }}
+ *            maximumSignificantDigits: number, roundingMode: string}}
  */
 Intl.PluralRules.prototype.resolvedOptions = function() {};
 
@@ -310,3 +531,171 @@ Intl.ListFormat.prototype.formatToParts = function(items) {};
  * @return {{locale: string, style: string, type: string}}
  */
 Intl.ListFormat.prototype.resolvedOptions = function() {};
+
+/**
+ * A string that is a valid [Unicode BCP 47 Locale
+ * Identifier](https://unicode.org/reports/tr35/#Unicode_locale_identifier).
+ *
+ * For example: "fa", "es-MX", "zh-Hant-TW".
+ *
+ * @typedef {string}
+ * @see https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Intl#locales_argument.
+ */
+Intl.UnicodeBCP47LocaleIdentifier;
+
+/**
+ * Set of possible values: "h12", "h23", "h11", "h24".
+ * @typedef {string}
+ */
+Intl.LocaleHourCycleKey;
+
+/**
+ * Set of possible values: "upper", "lower", "false".
+ * @typedef {string}
+ */
+Intl.LocaleCollationCaseFirst;
+
+/**
+ * @record
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/Locale/Locale#parameters
+ */
+Intl.LocaleOptions = function() {};
+
+/** @type {string|undefined} */
+Intl.LocaleOptions.prototype.baseName;
+
+/** @type {string|undefined} */
+Intl.LocaleOptions.prototype.calendar;
+
+/** @type {!Intl.LocaleCollationCaseFirst|undefined} */
+Intl.LocaleOptions.prototype.caseFirst;
+
+/** @type {string|undefined} */
+Intl.LocaleOptions.prototype.collation;
+
+/** @type {!Intl.LocaleHourCycleKey|undefined} */
+Intl.LocaleOptions.prototype.hourCycle;
+
+/** @type {string|undefined} */
+Intl.LocaleOptions.prototype.language;
+
+/** @type {string|undefined} */
+Intl.LocaleOptions.prototype.numberingSystem;
+
+/** @type {boolean|undefined} */
+Intl.LocaleOptions.prototype.numeric;
+
+/** @type {string|undefined} */
+Intl.LocaleOptions.prototype.region;
+
+/** @type {string|undefined} */
+Intl.LocaleOptions.prototype.script;
+
+/**
+ * @record
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/Locale/getTextInfo#return_value
+ */
+Intl.TextInfo = function() {};
+
+/**
+ * @type {string|undefined}
+ * Valid values: 'ltr', 'rtl'.
+ */
+Intl.TextInfo.prototype.direction;
+
+/**
+ * @record
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/Locale/getWeekInfo#return_value
+ */
+Intl.WeekInfo = function() {};
+
+/** @type {number} */
+Intl.WeekInfo.prototype.firstDay;
+
+/** @type {!Array<number>} */
+Intl.WeekInfo.prototype.weekend;
+
+/**
+ * @constructor
+ * @implements {Intl.LocaleOptions}
+ * @param {!Intl.UnicodeBCP47LocaleIdentifier} tag
+ * @param {!Intl.LocaleOptions|undefined} options
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/Locale/Locale
+ */
+Intl.Locale = function(tag, options) {};
+
+/** @type {string} */
+Intl.Locale.prototype.baseName;
+
+/** @type {string|undefined} */
+Intl.Locale.prototype.calendar;
+
+/** @type {!Intl.LocaleCollationCaseFirst|undefined} */
+Intl.Locale.prototype.caseFirst;
+
+/** @type {string|undefined} */
+Intl.Locale.prototype.collation;
+
+/** @type {!Intl.LocaleHourCycleKey|undefined} */
+Intl.Locale.prototype.hourCycle;
+
+/** @type {string} */
+Intl.Locale.prototype.language;
+
+/** @type {string|undefined} */
+Intl.Locale.prototype.numberingSystem;
+
+/** @type {boolean|undefined} */
+Intl.Locale.prototype.numeric;
+
+/** @type {string|undefined} */
+Intl.Locale.prototype.region;
+
+/** @type {string|undefined} */
+Intl.Locale.prototype.script;
+
+/** @return {!Array<string>} */
+Intl.Locale.prototype.getCalendars = function() {};
+
+/** @return {!Array<string>} */
+Intl.Locale.prototype.getCollations = function() {};
+
+/** @return {!Array<string>} */
+Intl.Locale.prototype.getHourCycles = function() {};
+
+/** @return {!Array<string>} */
+Intl.Locale.prototype.getNumberingSystems = function() {};
+
+/** @return {!Intl.TextInfo} */
+Intl.Locale.prototype.getTextInfo = function() {};
+
+/** @return {!Array<string>|undefined} */
+Intl.Locale.prototype.getTimeZones = function() {};
+
+/** @return {!Intl.WeekInfo} */
+Intl.Locale.prototype.getWeekInfo = function() {};
+
+/**
+ * @return {!Intl.Locale}
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/Locale/maximize
+ */
+Intl.Locale.prototype.maximize = function() {};
+
+/**
+ * @return {!Intl.Locale}
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/Locale/minimize
+ */
+Intl.Locale.prototype.minimize = function() {};
+
+/**
+ * @override
+ * @return {!Intl.UnicodeBCP47LocaleIdentifier}
+ */
+Intl.Locale.prototype.toString = function() {};
+
+/**
+ * @param {(string|!Array<string>)=} locale
+ * @return {!Array<string>}
+ * @see https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Intl/getCanonicalLocales
+ */
+Intl.getCanonicalLocales = function(locale) {};

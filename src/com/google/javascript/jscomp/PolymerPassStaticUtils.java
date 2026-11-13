@@ -24,23 +24,26 @@ import com.google.common.base.Ascii;
 import com.google.common.base.CaseFormat;
 import com.google.common.collect.ImmutableList;
 import com.google.javascript.jscomp.PolymerPass.MemberDefinition;
-import com.google.javascript.jscomp.parsing.parser.util.format.SimpleFormat;
 import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.JSTypeExpression;
 import com.google.javascript.rhino.Node;
+import com.google.javascript.rhino.QualifiedName;
 import com.google.javascript.rhino.Token;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
-import javax.annotation.Nullable;
+import java.util.Set;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Simple static utility functions shared between the {@link PolymerPass} and its helper classes.
  */
 final class PolymerPassStaticUtils {
   private static final String VIRTUAL_FILE = "<PolymerPassStaticUtils.java>";
+  private static final QualifiedName POLYMER_DOT_ELEMENT = QualifiedName.of("Polymer.Element");
 
-  /** @return Whether the call represents a call to the Polymer function. */
+  /** Returns whether the call represents a call to the Polymer function. */
   @VisibleForTesting
   public static boolean isPolymerCall(Node call) {
     if (call == null || !call.isCall()) {
@@ -55,7 +58,7 @@ final class PolymerPassStaticUtils {
         || (name.isGetProp() && name.getString().equals("Polymer"));
   }
 
-  /** @return Whether the class extends PolymerElement. */
+  /** Returns whether the class extends PolymerElement. */
   @VisibleForTesting
   public static boolean isPolymerClass(Node cls) {
     if (cls == null || !cls.isClass()) {
@@ -71,11 +74,21 @@ final class PolymerPassStaticUtils {
     // imported from an ES module, the rewriting should set the original name to `PolymerElement`.
     // When imported from an goog module (TS), we'll have a GETPROP like
     // `module$polymer$polymer_element.PolymerElement`.
+    // YT Polymer components may also extend the `PolymerElementWithoutHtml`,
+    // `PolymerLiteControllerBase`, `PolymerBehavior`, or `PolymerBehaviorWithoutHtml` base classes.
     return !heritage.isEmpty()
-        && (heritage.matchesQualifiedName("Polymer.Element")
-            || heritage.matchesName("PolymerElement")
-            || "PolymerElement".equals(heritage.getOriginalQualifiedName())
-            || (heritage.isGetProp() && heritage.getString().equals("PolymerElement")));
+        && (POLYMER_DOT_ELEMENT.matches(heritage)
+            || matches(heritage, "PolymerElement")
+            || matches(heritage, "PolymerElementWithoutHtml")
+            || matches(heritage, "PolymerLiteControllerBase")
+            || matches(heritage, "PolymerBehavior")
+            || matches(heritage, "PolymerBehaviorWithoutHtml"));
+  }
+
+  private static boolean matches(Node n, String name) {
+    return n.matchesName(name)
+        || name.equals(n.getOriginalQualifiedName())
+        || (n.isGetProp() && n.getString().equals(name));
   }
 
   /**
@@ -125,7 +138,8 @@ final class PolymerPassStaticUtils {
   static void quoteListenerAndHostAttributeKeys(Node objLit, AbstractCompiler compiler) {
     checkState(objLit.isObjectLit());
     for (Node keyNode = objLit.getFirstChild(); keyNode != null; keyNode = keyNode.getNext()) {
-      if (keyNode.isComputedProp()) {
+      if (!keyNode.isStringKey()) {
+        // We should only quote string keys. If this is not a string key, then we should skip it.
         continue;
       }
       if (!keyNode.getString().equals("listeners")
@@ -135,12 +149,104 @@ final class PolymerPassStaticUtils {
       for (Node keyToQuote = keyNode.getFirstFirstChild();
           keyToQuote != null;
           keyToQuote = keyToQuote.getNext()) {
-        if (!keyToQuote.isQuotedString()) {
-          keyToQuote.setQuotedString();
+        if (!keyToQuote.isQuotedStringKey()) {
+          keyToQuote.setQuotedStringKey();
           compiler.reportChangeToEnclosingScope(keyToQuote);
         }
       }
     }
+  }
+
+  /**
+   * Ensures that methods registered in the static {@code observers} block, as well as methods
+   * referenced in the {@code observer} and {@code computed} fields on a Polymer property block
+   * declaration are exported and marked {@code @noCollapse}.
+   */
+  static void protectObserverAndPropertyFunctionKeys(Node behaviorObjLit) {
+    checkState(behaviorObjLit.isObjectLit());
+
+    Set<String> methodsToProtect = new LinkedHashSet<>();
+    methodsToProtect.addAll(addObserverMethodsToProtect(behaviorObjLit));
+    methodsToProtect.addAll(addPropertyMethodsToProtect(behaviorObjLit));
+
+    for (Node keyNode = behaviorObjLit.getFirstChild();
+        keyNode != null;
+        keyNode = keyNode.getNext()) {
+      // Note: This also is true for object literal methods.
+      if (!NodeUtil.isObjectLitKey(keyNode)) {
+        continue;
+      }
+
+      String keyName = NodeUtil.getObjectOrClassLitKeyName(keyNode);
+      if (!methodsToProtect.contains(keyName)) {
+        continue;
+      }
+
+      addExportAndNoCollapseToKey(keyNode);
+    }
+  }
+
+  /** Finds methods referenced in the 'observers' property and returns them as a Set. */
+  private static Set<String> addObserverMethodsToProtect(Node behaviorObjLit) {
+    Set<String> methodsToProtect = new LinkedHashSet<>();
+    Node observers = NodeUtil.getFirstPropMatchingKey(behaviorObjLit, "observers");
+    if (observers != null && observers.isArrayLit()) {
+      for (Node child = observers.getFirstChild(); child != null; child = child.getNext()) {
+        if (!child.isStringLit()) {
+          continue;
+        }
+
+        String name = extractMethodName(child.getString());
+        if (name != null) {
+          methodsToProtect.add(name);
+        }
+      }
+    }
+    return methodsToProtect;
+  }
+
+  /** Finds methods referenced in the 'properties' property and returns them as a Set. */
+  private static Set<String> addPropertyMethodsToProtect(Node behaviorObjLit) {
+    Set<String> methodsToProtect = new LinkedHashSet<>();
+    Node properties = NodeUtil.getFirstPropMatchingKey(behaviorObjLit, "properties");
+    if (properties != null && properties.isObjectLit()) {
+      for (Node prop = properties.getFirstChild(); prop != null; prop = prop.getNext()) {
+        if (!prop.getLastChild().isObjectLit()) {
+          continue;
+        }
+
+        Node observer = NodeUtil.getFirstPropMatchingKey(prop.getLastChild(), "observer");
+        if (observer != null && observer.isStringLit()) {
+          methodsToProtect.add(observer.getString());
+        }
+
+        Node computed = NodeUtil.getFirstPropMatchingKey(prop.getLastChild(), "computed");
+        if (computed != null && computed.isStringLit()) {
+          String name = extractMethodName(computed.getString());
+          if (name != null) {
+            methodsToProtect.add(name);
+          }
+        }
+      }
+    }
+    return methodsToProtect;
+  }
+
+  private static @Nullable String extractMethodName(String signature) {
+    int openParenIndex = signature.indexOf('(');
+    return openParenIndex > 0 ? signature.substring(0, openParenIndex).trim() : null;
+  }
+
+  /**
+   * Ensures the given key node (or methodFunction) is exported and adds `@nocollapse` to its JSDoc.
+   *
+   * @param keyNode The key node from an object literal.
+   */
+  private static void addExportAndNoCollapseToKey(Node keyNode) {
+    JSDocInfo.Builder newDocs = JSDocInfo.Builder.maybeCopyFrom(keyNode.getJSDocInfo());
+    newDocs.recordNoCollapse();
+    newDocs.recordExport();
+    keyNode.setJSDocInfo(newDocs.build());
   }
 
   /**
@@ -166,10 +272,11 @@ final class PolymerPassStaticUtils {
       return ImmutableList.of();
     }
 
-    Map<String, JSDocInfo> constructorPropertyJsDoc = new HashMap<>();
+    Map<String, JSDocInfo> constructorPropertyJsDoc = new LinkedHashMap<>();
     if (constructor != null) {
       collectConstructorPropertyJsDoc(constructor, constructorPropertyJsDoc);
     }
+    Node enclosingModule = NodeUtil.getEnclosingModuleIfPresent(descriptor);
 
     ImmutableList.Builder<MemberDefinition> members = ImmutableList.builder();
     for (Node keyNode = properties.getFirstChild(); keyNode != null; keyNode = keyNode.getNext()) {
@@ -187,7 +294,8 @@ final class PolymerPassStaticUtils {
       } else {
         bestJsDoc = propertiesConfigJsDoc;
       }
-      members.add(new MemberDefinition(bestJsDoc, keyNode, keyNode.getFirstChild()));
+      members.add(
+          new MemberDefinition(bestJsDoc, keyNode, keyNode.getFirstChild(), enclosingModule));
     }
     return members.build();
   }
@@ -218,9 +326,10 @@ final class PolymerPassStaticUtils {
 
   /**
    * Gets the JSTypeExpression for a given property using its "type" key.
+   *
    * @see https://github.com/Polymer/polymer/blob/0.8-preview/PRIMER.md#configuring-properties
    */
-  static JSTypeExpression getTypeFromProperty(
+  static @Nullable JSTypeExpression getTypeFromProperty(
       MemberDefinition property, AbstractCompiler compiler) {
     if (property.info != null && property.info.hasType()) {
       return property.info.getType().copy();
@@ -247,20 +356,13 @@ final class PolymerPassStaticUtils {
     String typeString = typeValue.getString();
     Node typeNode;
     switch (typeString) {
-      case "Boolean":
-      case "String":
-      case "Number":
-        typeNode = IR.string(Ascii.toLowerCase(typeString));
-        break;
-      case "Array":
-      case "Function":
-      case "Object":
-      case "Date":
-        typeNode = new Node(Token.BANG, IR.string(typeString));
-        break;
-      default:
+      case "Boolean", "String", "Number" -> typeNode = IR.string(Ascii.toLowerCase(typeString));
+      case "Array", "Function", "Object", "Date" ->
+          typeNode = new Node(Token.BANG, IR.string(typeString));
+      default -> {
         compiler.report(JSError.make(property.value, PolymerPassErrors.POLYMER_INVALID_PROPERTY));
         typeNode = new Node(Token.QMARK);
+      }
     }
 
     typeNode.srcrefTree(typeValue);
@@ -271,8 +373,12 @@ final class PolymerPassStaticUtils {
    * @return The PolymerElement type string for a class definition.
    */
   public static String getPolymerElementType(final PolymerClassDefinition cls) {
-    String nativeElementName = cls.nativeBaseElement == null ? ""
-        : CaseFormat.LOWER_HYPHEN.to(CaseFormat.UPPER_CAMEL, cls.nativeBaseElement);
-    return SimpleFormat.format("Polymer%sElement", nativeElementName);
+    String nativeElementName =
+        cls.nativeBaseElement == null
+            ? ""
+            : CaseFormat.LOWER_HYPHEN.to(CaseFormat.UPPER_CAMEL, cls.nativeBaseElement);
+    return String.format("Polymer%sElement", nativeElementName);
   }
+
+  private PolymerPassStaticUtils() {}
 }

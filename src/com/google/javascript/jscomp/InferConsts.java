@@ -19,13 +19,13 @@ package com.google.javascript.jscomp;
 import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Attaches the CONST_VAR annotation to any variable that's
  * 1) Provably well-defined and assigned once in its lifetime.
  * 2) Annotated 'const'
  * 3) Declared with the 'const' keyword.
- * 4) Is constant by naming convention.
  *
  * These 3 are considered semantically equivalent. Notice that a variable
  * in a loop is never considered const.
@@ -56,7 +56,7 @@ class InferConsts implements CompilerPass {
     }
   }
 
-  private void considerVar(Var v, ReferenceCollection refCollection) {
+  private void considerVar(Var v, @Nullable ReferenceCollection refCollection) {
     if (v.isImplicitGoogNamespace()) {
       return; // no name node for provided variables.
     }
@@ -65,9 +65,6 @@ class InferConsts implements CompilerPass {
     if (docInfo != null && docInfo.isConstant()) {
       nameNode.setDeclaredConstantVar(true);
     } else if (nameNode != null && nameNode.getParent().isConst()) {
-      nameNode.setDeclaredConstantVar(true);
-    } else if (nameNode != null
-        && compiler.getCodingConvention().isConstant(nameNode.getString())) {
       nameNode.setDeclaredConstantVar(true);
     }
     if (isInferredConst(v, refCollection)) {
@@ -85,27 +82,26 @@ class InferConsts implements CompilerPass {
     }
     Token declarationType = v.declarationType();
 
-    switch (declarationType) {
-      case LET:
-        // Check that non-destructuring let names are actually assigned at declaration.
-        return !nameNode.getParent().isLet() || nameNode.hasChildren();
-      case CONST:
-      case CATCH:
-      case CLASS:
-      case PARAM_LIST: // Parameters cannot be referenced before declaration.
-      case FUNCTION: // Function hoisting means no references before declaration.
-        return true;
-      case IMPORT:
-        // ES module exports are mutable.
-        // TODO(lharker): make this check smarter if we start optimizing unrewritten modules.
-        return false;
-      case VAR:
-        // var hoisting requires this extra work to make sure the 'declaration' is also the first
-        // reference.
-        return refCollection.firstReferenceIsAssigningDeclaration()
-            && refCollection.isWellDefined();
-      default:
-        throw new IllegalStateException("Unrecognized declaration type " + declarationType);
-    }
+    return switch (declarationType) {
+      case LET ->
+          // Check that non-destructuring let names are actually assigned at declaration.
+          !nameNode.getParent().isLet() || nameNode.hasChildren();
+      case CONST,
+          CATCH,
+          CLASS,
+          PARAM_LIST, // Parameters cannot be referenced before declaration.
+          FUNCTION -> // Function hoisting means no references before declaration.
+          true;
+      case IMPORT ->
+          // ES module exports are mutable.
+          // TODO(lharker): make this check smarter if we start optimizing unrewritten modules.
+          false;
+      case VAR ->
+          // var hoisting requires this extra work to make sure the 'declaration' is also the first
+          // reference.
+          refCollection.firstReferenceIsAssigningDeclaration() && refCollection.isWellDefined();
+      default ->
+          throw new IllegalStateException("Unrecognized declaration type " + declarationType);
+    };
   }
 }

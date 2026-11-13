@@ -19,8 +19,11 @@ package com.google.javascript.jscomp;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.junit.Assert.assertThrows;
 
 import com.google.common.collect.ImmutableMap;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.text.ParseException;
 import java.util.Arrays;
 import java.util.List;
@@ -29,10 +32,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
-/**
- * Tests for {@link VariableMap}.
- *
- */
+/** Tests for {@link VariableMap}. */
 @RunWith(JUnit4.class)
 public final class VariableMapTest {
 
@@ -43,16 +43,14 @@ public final class VariableMapTest {
     cycleTest(ImmutableMap.of("AAA", "a:a", "BBB", "b:b"));
   }
 
-  public void cycleTest(ImmutableMap<String, String> map)
-      throws ParseException {
+  public void cycleTest(ImmutableMap<String, String> map) throws ParseException {
     VariableMap in = new VariableMap(map);
     String serialized = new String(in.toBytes(), UTF_8);
     VariableMap out = VariableMap.fromBytes(serialized.getBytes(UTF_8));
     assertMapsEquals(in.toMap(), out.toMap());
   }
 
-  public void assertMapsEquals(
-      Map<String, String> expected, Map<String, String> result) {
+  public void assertMapsEquals(Map<String, String> expected, Map<String, String> result) {
     assertThat(result).hasSize(expected.size());
     for (String key : expected.keySet()) {
       assertThat(result).containsEntry(key, expected.get(key));
@@ -85,6 +83,15 @@ public final class VariableMapTest {
   public void testFromBytesWithEmptyValue() throws ParseException {
     VariableMap vm = VariableMap.fromBytes("AAA:".getBytes(UTF_8));
     assertThat(vm.lookupNewName("AAA")).isEmpty();
+  }
+
+  @Test
+  public void testFromStream() throws ParseException, IOException {
+    VariableMap vm =
+        VariableMap.fromStream(new ByteArrayInputStream("AAA:a\nBBB:b\n".getBytes(UTF_8)));
+    assertThat(vm.getOriginalNameToNewNameMap()).hasSize(2);
+    assertThat(vm.lookupNewName("AAA")).isEqualTo("a");
+    assertThat(vm.lookupNewName("BBB")).isEqualTo("b");
   }
 
   @Test
@@ -135,7 +142,7 @@ public final class VariableMapTest {
     if (bytes1 != bytes2) {
       assertWithMessage("length differs.").that(bytes2.length).isEqualTo(bytes1.length);
       for (int i = 0; i < bytes1.length; i++) {
-        assertWithMessage("byte " + i + "differs.").that(bytes2[i]).isEqualTo(bytes1[i]);
+        assertWithMessage("byte %sdiffers.", i).that(bytes2[i]).isEqualTo(bytes1[i]);
       }
     }
   }
@@ -153,5 +160,19 @@ public final class VariableMapTest {
   public void testReverseLookupOfNullFindsNoName() {
     VariableMap vm = new VariableMap(ImmutableMap.of("AA", "a", "BB", "b"));
     assertThat(vm.lookupSourceName(null)).isNull();
+  }
+
+  @Test
+  public void testFromLines_leadingNewline() throws ParseException {
+    VariableMap vm = VariableMap.fromBytes("\na:b\n".getBytes(UTF_8));
+    assertThat(vm.lookupNewName("a")).isEqualTo("b");
+
+    VariableMap vmCrlf = VariableMap.fromBytes("\r\na:b\r\n".getBytes(UTF_8));
+    assertThat(vmCrlf.lookupNewName("a")).isEqualTo("b");
+  }
+
+  @Test
+  public void testFromLines_colonAtStartThrowsParseException() {
+    assertThrows(ParseException.class, () -> VariableMap.fromBytes(":foo\n".getBytes(UTF_8)));
   }
 }

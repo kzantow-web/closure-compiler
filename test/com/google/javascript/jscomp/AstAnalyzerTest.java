@@ -18,7 +18,6 @@ package com.google.javascript.jscomp;
 
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.truth.Truth.assertThat;
-import static com.google.javascript.jscomp.CompilerTestCase.lines;
 import static com.google.javascript.jscomp.DiagnosticGroups.ES5_STRICT;
 import static com.google.javascript.rhino.Token.ADD;
 import static com.google.javascript.rhino.Token.ARRAYLIT;
@@ -31,6 +30,7 @@ import static com.google.javascript.rhino.Token.ASSIGN_OR;
 import static com.google.javascript.rhino.Token.AWAIT;
 import static com.google.javascript.rhino.Token.BIGINT;
 import static com.google.javascript.rhino.Token.BITOR;
+import static com.google.javascript.rhino.Token.BLOCK;
 import static com.google.javascript.rhino.Token.CALL;
 import static com.google.javascript.rhino.Token.CLASS;
 import static com.google.javascript.rhino.Token.COALESCE;
@@ -51,6 +51,7 @@ import static com.google.javascript.rhino.Token.GETPROP;
 import static com.google.javascript.rhino.Token.GETTER_DEF;
 import static com.google.javascript.rhino.Token.HOOK;
 import static com.google.javascript.rhino.Token.IF;
+import static com.google.javascript.rhino.Token.IN;
 import static com.google.javascript.rhino.Token.INC;
 import static com.google.javascript.rhino.Token.ITER_REST;
 import static com.google.javascript.rhino.Token.ITER_SPREAD;
@@ -80,12 +81,14 @@ import static com.google.javascript.rhino.Token.YIELD;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.javascript.jscomp.AccessorSummary.PropertyAccessKind;
 import com.google.javascript.jscomp.colors.StandardColors;
-import com.google.javascript.jscomp.parsing.parser.util.format.SimpleFormat;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
+import com.google.javascript.rhino.jstype.JSType;
 import com.google.javascript.rhino.jstype.JSTypeNative;
+import com.google.javascript.rhino.jstype.JSTypeRegistry;
 import java.util.ArrayDeque;
 import java.util.Optional;
 import org.junit.Test;
@@ -112,35 +115,47 @@ public final class AstAnalyzerTest {
     Token token;
     boolean globalRegExp;
     boolean assumeGettersArePure;
+    boolean assumeBuiltinsPure = true;
 
+    @CanIgnoreReturnValue
     AnalysisCase expect(boolean b) {
       this.expect = b;
       return this;
     }
 
+    @CanIgnoreReturnValue
     AnalysisCase js(String s) {
       this.js = s;
       return this;
     }
 
+    @CanIgnoreReturnValue
     AnalysisCase token(Token t) {
       this.token = t;
       return this;
     }
 
+    @CanIgnoreReturnValue
     AnalysisCase globalRegExp(boolean b) {
       this.globalRegExp = b;
       return this;
     }
 
+    @CanIgnoreReturnValue
     AnalysisCase assumeGettersArePure(boolean b) {
       this.assumeGettersArePure = b;
       return this;
     }
 
+    @CanIgnoreReturnValue
+    AnalysisCase assumeBuiltinsPure(boolean b) {
+      this.assumeBuiltinsPure = b;
+      return this;
+    }
+
     @Override
     public String toString() {
-      return SimpleFormat.format("%s node in `%s` -> %s", token, js, expect);
+      return String.format("%s node in `%s` -> %s", token, js, expect);
     }
   }
 
@@ -150,9 +165,18 @@ public final class AstAnalyzerTest {
 
   /** Provides methods for parsing and accessing the compiler used for the parsing. */
   private static final class ParseHelper {
-    private Compiler compiler = null;
+    private boolean useTypesForLocalOptimizations = false;
+    private boolean hasGlobalRegexpReferences = true;
+    private boolean assumeGettersArePure = true;
+    private boolean assumeBuiltinsPure = true;
+    private JSTypeRegistry typeRegistry;
+    private final AccessorSummary accessorSummary =
+        AccessorSummary.create(
+            ImmutableMap.of(
+                "getter", PropertyAccessKind.GETTER_ONLY, //
+                "setter", PropertyAccessKind.SETTER_ONLY));
 
-    private void resetCompiler() {
+    private Compiler newCompiler() {
       CompilerOptions options = new CompilerOptions();
 
       // To allow octal literals such as 0123 to be parsed.
@@ -161,19 +185,17 @@ public final class AstAnalyzerTest {
 
       options.setLanguageIn(CompilerOptions.LanguageMode.UNSUPPORTED);
 
-      compiler = new Compiler();
+      Compiler compiler = new Compiler();
       compiler.initOptions(options);
 
-      compiler.setAccessorSummary(
-          AccessorSummary.create(
-              ImmutableMap.of(
-                  "getter", PropertyAccessKind.GETTER_ONLY, //
-                  "setter", PropertyAccessKind.SETTER_ONLY)));
+      return compiler;
     }
 
     private Node parseInternal(String js) {
+      Compiler compiler = newCompiler();
       Node n = compiler.parseTestCode(js);
       assertThat(compiler.getErrors()).isEmpty();
+      this.typeRegistry = compiler.getTypeRegistry();
       return n;
     }
 
@@ -182,16 +204,13 @@ public final class AstAnalyzerTest {
      * preorder DFS.
      */
     Node parseFirst(Token token, String js) {
-      resetCompiler();
-
       return findFirst(token, parseInternal(js)).get();
     }
 
     Node parseCase(AnalysisCase kase) {
-      resetCompiler();
-      compiler.setHasRegExpGlobalReferences(kase.globalRegExp);
-      compiler.getOptions().setAssumeGettersArePure(kase.assumeGettersArePure);
-
+      this.hasGlobalRegexpReferences = kase.globalRegExp;
+      this.assumeGettersArePure = kase.assumeGettersArePure;
+      this.assumeBuiltinsPure = kase.assumeBuiltinsPure;
       Node root = parseInternal(kase.js);
       if (kase.token == null) {
         return root.getFirstChild();
@@ -201,7 +220,15 @@ public final class AstAnalyzerTest {
     }
 
     AstAnalyzer getAstAnalyzer() {
-      return compiler.getAstAnalyzer();
+      return new AstAnalyzer(
+          AstAnalyzer.Options.builder()
+              .setUseTypesForLocalOptimization(useTypesForLocalOptimizations)
+              .setHasRegexpGlobalReferences(hasGlobalRegexpReferences)
+              .setAssumeGettersArePure(assumeGettersArePure)
+              .setAssumeKnownBuiltinsArePure(assumeBuiltinsPure)
+              .build(),
+          typeRegistry,
+          accessorSummary);
     }
   }
 
@@ -230,7 +257,7 @@ public final class AstAnalyzerTest {
 
     // Always include the index. If two cases have the same name, only one will be executed.
     @Parameters(name = "#{index} {0}")
-    public static Iterable<AnalysisCase> cases() {
+    public static ImmutableList<AnalysisCase> cases() {
       return ImmutableList.of(
           kase().js("i++").token(INC).expect(true),
           kase().js("[b, [a, i++]]").token(ARRAYLIT).expect(true),
@@ -357,11 +384,12 @@ public final class AstAnalyzerTest {
 
     // Always include the index. If two cases have the same name, only one will be executed.
     @Parameters(name = "#{index} {0}")
-    public static Iterable<AnalysisCase> cases() {
+    public static ImmutableList<AnalysisCase> cases() {
       return ImmutableList.of(
           // Cases in need of differentiation.
           kase().expect(false).js("[1]"),
           kase().expect(false).js("[1, 2]"),
+          kase().expect(false).js("[1, 2]").assumeBuiltinsPure(false),
           kase().expect(true).js("i++"),
           kase().expect(true).js("[b, [a, i++]]"),
           kase().expect(true).js("i=3"),
@@ -394,6 +422,7 @@ public final class AstAnalyzerTest {
           kase().expect(false).js("(class Foo extends Bar { })"),
           kase().expect(true).js("(class extends foo() { })"),
           kase().expect(false).js("a"),
+          kase().expect(false).js("a").assumeBuiltinsPure(false),
           kase().expect(false).js("a.b"),
           kase().expect(false).js("a.b.c"),
           kase().expect(false).js("[b, c [d, [e]]]"),
@@ -426,6 +455,7 @@ public final class AstAnalyzerTest {
           kase().expect(false).js("new Array"),
           kase().expect(false).js("new Array(4)"),
           kase().expect(false).js("new Array('a', 'b', 'c')"),
+          kase().expect(true).js("new Array()").assumeBuiltinsPure(false),
           kase().expect(true).js("new SomeClassINeverHeardOf()"),
           kase().expect(true).js("new SomeClassINeverHeardOf()"),
           kase().expect(false).js("({}).foo = 4"),
@@ -446,7 +476,11 @@ public final class AstAnalyzerTest {
           kase().expect(false).js("({},[]).foo = 2;"),
           kase().expect(true).js("delete a.b"),
           kase().expect(false).js("Math.random();"),
+          kase().expect(true).js("Math.random();").assumeBuiltinsPure(false),
           kase().expect(true).js("Math.random(seed);"),
+          kase().expect(true).js("Math.random(seed);").assumeBuiltinsPure(false),
+          kase().expect(false).js("Math.sin(1, 10);"),
+          kase().expect(true).js("Math.sin(1, 10);").assumeBuiltinsPure(false),
           kase().expect(false).js("[1, 1].foo;"),
           kase().expect(true).js("export var x = 0;"),
           kase().expect(true).js("export let x = 0;"),
@@ -606,14 +640,42 @@ public final class AstAnalyzerTest {
           kase().expect(true).token(COMPUTED_FIELD_DEF).js("class C { static ['x'] = alert(1); }"),
           kase().expect(true).token(COMPUTED_FIELD_DEF).js("class C { static [alert(1)] = 2; }"),
 
+          // CLASS_STATIC_BLOCK
+          kase().expect(false).token(BLOCK).js("class C { static {} }"),
+          kase().expect(false).token(BLOCK).js("class C { static { [1]; } }"),
+          kase().expect(true).token(BLOCK).js("class C { static { let x; } }"),
+          kase().expect(true).token(BLOCK).js("class C { static { const x =1 ; } }"),
+          kase().expect(true).token(BLOCK).js("class C { static { var x; } }"),
+          kase().expect(true).token(BLOCK).js("class C { static { this.x = 1; } }"),
+          kase().expect(true).token(BLOCK).js("class C { static { function f() { } } }"),
+          kase().expect(false).token(BLOCK).js("class C { static { (function () {} )} }"),
+          kase().expect(false).token(BLOCK).js("class C { static { ()=>{} } }"),
+
           // SUPER calls
           kase().expect(false).token(SUPER).js("super()"),
           kase().expect(false).token(SUPER).js("super.foo()"),
 
-          // IObject methods
-          // "toString" and "valueOf" are assumed to be side-effect free
+          // Some common Object methods are assumed to be side-effect free when called
+          // with their standard builtin arity.
           kase().expect(false).js("o.toString()"),
+          kase().expect(false).js("o.toString(16)"),
+          kase().expect(false).js("(0).toString(16)"),
+          kase().expect(false).js("(0n).toString(16)"),
+          kase().expect(false).js("o?.toString(16)"),
+          kase().expect(false).js("(0)?.toString(16)"),
+          kase().expect(false).js("(0n)?.toString(16)"),
           kase().expect(false).js("o.valueOf()"),
+          kase().expect(true).js("o.toString(16, 2)"),
+          kase().expect(true).js("o.valueOf(1)"),
+          // These builtin-method assumptions are disabled when assumeKnownBuiltinsArePure is false.
+          kase().expect(true).js("o.toString()").assumeBuiltinsPure(false),
+          kase().expect(true).js("o.toString(16)").assumeBuiltinsPure(false),
+          kase().expect(true).js("(0).toString(16)").assumeBuiltinsPure(false),
+          kase().expect(true).js("(0n).toString(16)").assumeBuiltinsPure(false),
+          kase().expect(true).js("o?.toString(16)").assumeBuiltinsPure(false),
+          kase().expect(true).js("(0)?.toString(16)").assumeBuiltinsPure(false),
+          kase().expect(true).js("(0n)?.toString(16)").assumeBuiltinsPure(false),
+          kase().expect(true).js("o.valueOf()").assumeBuiltinsPure(false),
           // other methods depend on the extern definitions
           kase().expect(true).js("o.watch()"),
 
@@ -623,9 +685,15 @@ public final class AstAnalyzerTest {
 
           // RegExp instance methods have global side-effects, so whether they are
           // considered side-effect free depends on whether the global properties
-          // are referenced.
+          // are referenced and whether we assume that the built-in methods are not overwritten
+          // with impure variants.
           kase().expect(true).js("(/abc/gi).test('')").globalRegExp(true),
           kase().expect(false).js("(/abc/gi).test('')").globalRegExp(false),
+          kase()
+              .expect(true)
+              .js("(/abc/gi).test('')")
+              .globalRegExp(false)
+              .assumeBuiltinsPure(false),
           kase().expect(true).js("(/abc/gi).test(a)").globalRegExp(true),
           kase().expect(false).js("(/abc/gi).test(b)").globalRegExp(false),
           kase().expect(true).js("(/abc/gi).exec('')").globalRegExp(true),
@@ -661,7 +729,31 @@ public final class AstAnalyzerTest {
           kase().expect(false).js("'a'.replace(/a/, 'x')").globalRegExp(false),
 
           // Dynamic import changes global state
-          kase().expect(true).token(DYNAMIC_IMPORT).js("import('./module.js')"));
+          kase().expect(true).token(DYNAMIC_IMPORT).js("import('./module.js')"),
+
+          // Symbol() call expressions are side-effect free
+          kase().expect(false).js("Symbol()"),
+          kase().expect(false).js("Symbol('desc')"),
+          kase().expect(true).js("Symbol(foo())"),
+          kase().expect(true).js("Symbol()").assumeBuiltinsPure(false),
+
+          // Expected behavior: the private reads `o.#x`, `o?.#x`, and `this.#x` have side effects,
+          // but `#x in o` doesn't. A private read throws a TypeError if the object has no `#x`,
+          // also on `this` (as in `C.prototype.m.call(other)`), and code uses that as a brand
+          // check. `#x in o` throws only if `o` is not an object, like `'x' in o`, which has no
+          // side effects either.
+          //
+          // TODO(b/236744850): Private member reads are treated as free of side effects.
+          // Current behavior: `mayHaveSideEffects` returns false for the 3 reads below. It also
+          //   returns false for the last case, `#x in o`, which is correct.
+          // Why it's a bug: passes remove the brand checks. For example, `PeepholeRemoveDeadCode`
+          //   removes `if (o.#x) {}`, so
+          //   `try { if (o.#x) {} return true; } catch (e) { return false; }` returns true for
+          //   any `o`.
+          kase().expect(false).token(GETPROP).js("class C { #x; m(o) { o.#x; } }"),
+          kase().expect(false).token(OPTCHAIN_GETPROP).js("class C { #x; m(o) { o?.#x; } }"),
+          kase().expect(false).token(GETPROP).js("class C { #x; m() { this.#x; } }"),
+          kase().expect(false).token(IN).js("class C { #x; m(o) { #x in o; } }"));
     }
   }
 
@@ -671,7 +763,7 @@ public final class AstAnalyzerTest {
 
     // Always include the index. If two cases have the same name, only one will be executed.
     @Parameters(name = "#{index} {0}")
-    public static Iterable<AnalysisCase> cases() {
+    public static ImmutableList<AnalysisCase> cases() {
       return ImmutableList.of(
           kase().js("x = y").token(ASSIGN).expect(true),
           kase().js("x += y").token(ASSIGN_ADD).expect(true),
@@ -709,6 +801,9 @@ public final class AstAnalyzerTest {
           kase().js("Object();").token(CALL).expect(false),
           kase().js("Object?.();").token(OPTCHAIN_CALL).expect(false),
           kase().js("new Object();").token(NEW).expect(false),
+          // Symbol() is known not to have side-effects
+          kase().js("Symbol();").token(CALL).expect(false),
+          kase().js("Symbol('desc');").token(CALL).expect(false),
           // TAGGED_TEMPLATELIT is just a special syntax for a CALL.
           kase().js("foo`template`;").token(TAGGED_TEMPLATELIT).expect(true),
 
@@ -835,26 +930,40 @@ public final class AstAnalyzerTest {
     }
 
     @Test
-    public void testTypeBasedStringMethodCallSideEffects() {
+    public void testStringMethodCallSideEffects_noTypesForLocalOptimizations() {
       ParseHelper helper = new ParseHelper();
 
-      Node xDotReplaceCall = helper.parseFirst(CALL, lines("x.replace(/xyz/g, '');"));
+      Node xDotReplaceCall = helper.parseFirst(CALL, "x.replace(/xyz/g, '');");
       AstAnalyzer astAnalyzer = helper.getAstAnalyzer();
       assertThat(astAnalyzer.functionCallHasSideEffects(xDotReplaceCall)).isTrue();
 
-      helper.compiler.setHasRegExpGlobalReferences(false);
+      helper.hasGlobalRegexpReferences = false;
+      astAnalyzer = helper.getAstAnalyzer();
       assertThat(astAnalyzer.functionCallHasSideEffects(xDotReplaceCall)).isTrue();
 
       Node xNode = xDotReplaceCall.getFirstFirstChild();
-      xNode.setJSType(helper.compiler.getTypeRegistry().getNativeType(JSTypeNative.STRING_TYPE));
+      xNode.setJSType(helper.typeRegistry.getNativeType(JSTypeNative.STRING_TYPE));
       assertThat(astAnalyzer.functionCallHasSideEffects(xDotReplaceCall)).isTrue();
+    }
 
-      helper.compiler.getOptions().setUseTypesForLocalOptimization(true);
-      assertThat(astAnalyzer.functionCallHasSideEffects(xDotReplaceCall)).isFalse();
+    @Test
+    public void testTypeBasedStringMethodCallSideEffects_useTypesForLocalOptimziations() {
+      ParseHelper helper = new ParseHelper();
+      helper.useTypesForLocalOptimizations = true;
+      helper.hasGlobalRegexpReferences = false;
 
-      xNode.setJSType(null);
-      xNode.setColor(StandardColors.STRING);
-      assertThat(astAnalyzer.functionCallHasSideEffects(xDotReplaceCall)).isFalse();
+      Node xDotReplaceCall = helper.parseFirst(CALL, "x.replace(/xyz/g, '');");
+      Node xDotReplaceCallStringType = xDotReplaceCall.cloneTree();
+      Node xDotReplaceCallStringColor = xDotReplaceCall.cloneTree();
+
+      JSType stringType = helper.typeRegistry.getNativeType(JSTypeNative.STRING_TYPE);
+      xDotReplaceCallStringType.getFirstFirstChild().setJSType(stringType);
+      xDotReplaceCallStringColor.getFirstFirstChild().setColor(StandardColors.STRING);
+      AstAnalyzer astAnalyzer = helper.getAstAnalyzer();
+
+      assertThat(astAnalyzer.functionCallHasSideEffects(xDotReplaceCall)).isTrue();
+      assertThat(astAnalyzer.functionCallHasSideEffects(xDotReplaceCallStringType)).isFalse();
+      assertThat(astAnalyzer.functionCallHasSideEffects(xDotReplaceCallStringColor)).isFalse();
     }
   }
 
@@ -875,15 +984,25 @@ public final class AstAnalyzerTest {
             {"BigInt"},
             {"Boolean"},
             {"RegExp"},
-            {"Error"}
+            {"Error"},
+            {"Symbol"}
           });
     }
 
     @Test
-    public void test() {
+    public void test_assumingPureBuiltins() {
       ParseHelper parseHelper = new ParseHelper();
-      Node func = parseHelper.parseFirst(CALL, SimpleFormat.format("%s(1);", functionName));
+      parseHelper.assumeBuiltinsPure = true;
+      Node func = parseHelper.parseFirst(CALL, String.format("%s(1);", functionName));
       assertThat(parseHelper.getAstAnalyzer().functionCallHasSideEffects(func)).isFalse();
+    }
+
+    @Test
+    public void test_noAssumePureBuiltins() {
+      ParseHelper parseHelper = new ParseHelper();
+      parseHelper.assumeBuiltinsPure = false;
+      Node func = parseHelper.parseFirst(CALL, String.format("%s(1);", functionName));
+      assertThat(parseHelper.getAstAnalyzer().functionCallHasSideEffects(func)).isTrue();
     }
   }
 
@@ -950,7 +1069,7 @@ public final class AstAnalyzerTest {
 
     // Always include the index. If two cases have the same name, only one will be executed.
     @Parameters(name = "#{index} {0}")
-    public static final Iterable<Object[]> cases() {
+    public static final ImmutableList<Object[]> cases() {
       return ImmutableList.copyOf(
           new Object[][] {
             {"Array"}, {"Date"}, {"Error"}, {"Object"}, {"RegExp"}, {"XMLHttpRequest"}
@@ -960,7 +1079,7 @@ public final class AstAnalyzerTest {
     @Test
     public void noSideEffectsForKnownConstructor() {
       ParseHelper parseHelper = new ParseHelper();
-      Node newNode = parseHelper.parseFirst(NEW, SimpleFormat.format("new %s();", constructorName));
+      Node newNode = parseHelper.parseFirst(NEW, String.format("new %s();", constructorName));
       AstAnalyzer astAnalyzer = parseHelper.getAstAnalyzer();
       // we know nothing about the class being instantiated, so assume side effects occur.
       assertThat(astAnalyzer.constructorCallHasSideEffects(newNode)).isFalse();

@@ -27,7 +27,8 @@ import com.google.javascript.rhino.JSTypeExpression;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.QualifiedName;
 import com.google.javascript.rhino.Token;
-import javax.annotation.Nullable;
+import java.util.ArrayList;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Encapsulates something that could be a declaration.
@@ -57,11 +58,19 @@ abstract class PotentialDeclaration {
   static PotentialDeclaration fromName(Node nameNode) {
     checkArgument(nameNode.isQualifiedName(), nameNode);
     Node rhs = NodeUtil.getRValueOfLValue(nameNode);
-    if (ClassUtil.isThisProp(nameNode)) {
-      String name = ClassUtil.getPrototypeNameOfThisProp(nameNode);
+    if (ClassUtil.isThisPropInsideClassWithName(nameNode)) {
+      String name = ClassUtil.getFullyQualifiedNameOfThisProp(nameNode);
       return new ThisPropDeclaration(name, nameNode, rhs);
     }
     return new NameDeclaration(nameNode.getQualifiedName(), nameNode, rhs);
+  }
+
+  static PotentialDeclaration fromMemberFieldDef(Node fieldNode) {
+    checkArgument(fieldNode.isMemberFieldDef());
+    Node rhs = NodeUtil.getRValueOfLValue(fieldNode);
+    String name = ClassUtil.getFullyQualifiedNameOfMemberFieldDef(fieldNode);
+    // lhs is MEMBER_FIELD_DEF  rhs is the value assigned to the field if any.
+    return new MemberFieldDeclaration(name, fieldNode, rhs);
   }
 
   static PotentialDeclaration fromMethod(Node functionNode) {
@@ -101,13 +110,11 @@ abstract class PotentialDeclaration {
     return lhs;
   }
 
-  @Nullable
-  Node getRhs() {
+  @Nullable Node getRhs() {
     return rhs;
   }
 
-  @Nullable
-  JSDocInfo getJsDoc() {
+  @Nullable JSDocInfo getJsDoc() {
     return NodeUtil.getBestJSDocInfo(lhs);
   }
 
@@ -241,11 +248,11 @@ abstract class PotentialDeclaration {
 
       Node prev = null;
 
-      for (Node n : NodeUtil.findLhsNodesInNode(rootTarget.getParent())) {
-
+      ArrayList<Node> lhsNodes = new ArrayList<>();
+      NodeUtil.visitLhsNodesInNode(rootTarget.getParent(), lhsNodes::add);
+      for (Node n : lhsNodes) {
         n.detach();
         Node temp = IR.var(n);
-
         if (prev == null) {
           definitionNode.replaceWith(temp);
           compiler.reportChangeToEnclosingScope(temp);
@@ -360,43 +367,42 @@ abstract class PotentialDeclaration {
       //   1. EXPR_RESULT: goog.define('foo', 1);
       //   2. ASSIGN: a.b = goog.define('c', 2);
       //   3. NAME: var x = goog.define('d', 3);
-      switch (callNode.getParent().getToken()) {
-        case EXPR_RESULT:
-          return new DefineDeclaration(
-              callNode.getSecondChild().getString(), callNode, callNode.getLastChild());
-        case ASSIGN:
+      return switch (callNode.getParent().getToken()) {
+        case EXPR_RESULT ->
+            new DefineDeclaration(
+                callNode.getSecondChild().getString(), callNode, callNode.getLastChild());
+        case ASSIGN -> {
           Node previous = callNode.getPrevious();
-          return new DefineDeclaration(
+          yield new DefineDeclaration(
               previous.getQualifiedName(), previous, callNode.getLastChild());
-        case NAME:
+        }
+        case NAME -> {
           Node parent = callNode.getParent();
-          return new DefineDeclaration(parent.getString(), parent, callNode.getLastChild());
-        default:
-          throw new IllegalStateException("Unexpected parent: " + callNode.getParent().getToken());
-      }
+          yield new DefineDeclaration(parent.getString(), parent, callNode.getLastChild());
+        }
+        default ->
+            throw new IllegalStateException(
+                "Unexpected parent: " + callNode.getParent().getToken());
+      };
     }
 
-    static Node makeEmptyValueNode(JSTypeExpression type) {
+    static @Nullable Node makeEmptyValueNode(JSTypeExpression type) {
       Node n = type.getRoot();
       while (n != null && !n.isStringLit() && !n.isName()) {
         n = n.getFirstChild();
       }
-      switch (n != null ? n.getString() : "") {
-        case "boolean":
-          return new Node(Token.FALSE);
-        case "number":
-          return Node.newNumber(0);
-        case "string":
-          return Node.newString("");
-        default:
-          return null;
-      }
+      return switch (n != null ? n.getString() : "") {
+        case "boolean" -> new Node(Token.FALSE);
+        case "number" -> Node.newNumber(0);
+        case "string" -> Node.newString("");
+        default -> null;
+      };
     }
   }
 
   /**
-   * A declaration of a method defined using the ES6 method syntax or goog.defineClass. Note that a
-   * method defined as an assignment to a prototype property would be a NameDeclaration instead.
+   * A declaration of a method defined using the ES6 method syntax. Note that a method defined as an
+   * assignment to a prototype property would be a NameDeclaration instead.
    */
   private static class MethodDeclaration extends PotentialDeclaration {
     MethodDeclaration(String name, Node functionNode) {
@@ -405,6 +411,25 @@ abstract class PotentialDeclaration {
 
     @Override
     void simplify(AbstractCompiler compiler) {}
+
+    @Override
+    Node getRemovableNode() {
+      return getLhs();
+    }
+  }
+
+  private static class MemberFieldDeclaration extends PotentialDeclaration {
+    MemberFieldDeclaration(@Nullable String name, Node lhs, Node rhs) {
+      super(name, lhs, rhs);
+    }
+
+    @Override
+    void simplify(AbstractCompiler compiler) {
+      Node rhs = getRhs();
+      if (rhs != null) {
+        NodeUtil.deleteNode(rhs, compiler);
+      }
+    }
 
     @Override
     Node getRemovableNode() {
@@ -473,7 +498,8 @@ abstract class PotentialDeclaration {
    *     foo: String,
    *     bar: {
    *       type: Number,
-   *       value: 123
+   *       value: 123,
+   *       readOnly: true
    *     }
    *   },
    *   baz: function() {}
@@ -504,13 +530,13 @@ abstract class PotentialDeclaration {
           propKey = propKey.getNext()) {
         Node propDef = propKey.getOnlyChild();
         // A property definition is either a function reference (e.g. String, Number), or another
-        // object literal. If it's an object literal, only the "type" sub-property matters for type
-        // checking, so we can delete everything else (which may include e.g. a "value" sub-property
-        // with a function expression).
+        // object literal. If it's an object literal, only the "type" and "readOnly" sub-properties
+        // matters for type checking, so we can delete everything else (which may include e.g. a
+        // "value" sub-property with a function expression).
         if (propDef.isObjectLit()) {
           for (Node subProp = propDef.getFirstChild(); subProp != null; ) {
             final Node next = subProp.getNext();
-            if (!subProp.getString().equals("type")) {
+            if (!subProp.getString().equals("type") && !subProp.getString().equals("readOnly")) {
               NodeUtil.deleteNode(subProp, compiler);
             }
             subProp = next;
@@ -655,7 +681,6 @@ abstract class PotentialDeclaration {
   private static boolean isTypedRhs(Node rhs) {
     return rhs.isFunction()
         || rhs.isClass()
-        || NodeUtil.isCallTo(rhs, "goog.defineClass")
         || (rhs.isQualifiedName() && GOOG_ABSTRACTMETHOD.matches(rhs));
   }
 
@@ -677,7 +702,7 @@ abstract class PotentialDeclaration {
   }
 
   static boolean isAliasDeclaration(Node lhs, @Nullable Node rhs) {
-    return !ClassUtil.isThisProp(lhs)
+    return !ClassUtil.isThisPropInsideClassWithName(lhs)
         && isConstToBeInferred(lhs)
         && rhs != null
         && isQualifiedAliasExpression(rhs);

@@ -188,10 +188,13 @@ IDBRequest.prototype.source; // readonly
 /** @type {?IDBTransaction} */
 IDBRequest.prototype.transaction; // readonly
 
-
+// Note: ?IDBDatabase is used as the type argument here in order to honor the
+// fact that IDBFactory#deleteDatabase will always return with a null result.
+// As of TS 5.7 the corresponding .d.ts declaration is incorrect as it does not
+// allow for null.
 /**
  * @constructor
- * @extends {IDBRequest}
+ * @extends {IDBRequest<?IDBDatabase>}
  * @see http://www.w3.org/TR/IndexedDB/#idl-def-IDBOpenDBRequest
  */
 function IDBOpenDBRequest() {}
@@ -266,7 +269,7 @@ var IDBTransactionOptions = function() {};
 IDBTransactionOptions.prototype.durability;
 
 /**
- * @param {(string|!Array<string>|!DOMStringList)} storeNames The stores to open
+ * @param {(string|!Array<string>|!Iterable<string>|!DOMStringList)} storeNames The stores to open
  *     in this transaction.
  * @param {!IDBTransactionMode=} mode The mode for opening the object stores.
  * @param {!IDBTransactionOptions=} options Extra options, like durability.
@@ -392,7 +395,7 @@ IDBObjectStore.prototype.openCursor = function(range, direction) {};
 
 /**
  * @param {string} name The name of the index.
- * @param {string|!Array<string>} keyPath The path to the index key.
+ * @param {string|!Array<string>|!Iterable<string>} keyPath The path to the index key.
  * @param {!IDBIndexParameters=} opt_paramters Optional parameters
  *     for the created index.
  * @return {!IDBIndex} The IDBIndex object.

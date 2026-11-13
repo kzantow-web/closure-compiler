@@ -31,19 +31,19 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Test compiler by comparing output to data files aka golden files.
- * Always start with the options object from this class.
+ * Test compiler by comparing output to data files aka golden files. Always start with the options
+ * object from this class.
  */
-public class GoldenFileComparer {
+public final class GoldenFileComparer {
 
   private static final String DATA_DIR =
       "test/"
           + "com/google/javascript/jscomp/testdata/";
 
   private static ImmutableList<SourceFile> coverageExterns() {
-    SourceFile externs = SourceFile.fromCode(
-        "externs", "function Symbol() {}; var window; var self;");
-      return ImmutableList.of(externs);
+    SourceFile externs =
+        SourceFile.fromCode("externs", "function Symbol() {}; var window; var self;");
+    return ImmutableList.of(externs);
   }
 
   private static String compile(
@@ -64,7 +64,7 @@ public class GoldenFileComparer {
 
   private static SourceFile readSource(String fileName) throws IOException {
     String source = readFile(toFullPath(fileName));
-   return SourceFile.fromCode(fileName, source);
+    return SourceFile.fromCode(fileName, source);
   }
 
   private static boolean compare(String compiledSource, String goldenSource) {
@@ -78,13 +78,14 @@ public class GoldenFileComparer {
     // Loop through each line to make it convenient to pin-point the faulty one
     for (int i = 0; i < compiledLines.length; i++) {
       assertWithMessage(
-              "Instrumented code does not match expected at line no: "
-                  + (i + 1)
-                  + "\nExpected:\n"
-                  + goldenLines[i]
-                  + "\nFound:\n"
-                  + compiledLines[i]
-                  + "\n")
+              """
+              Instrumented code does not match expected at line no: %s
+              Expected:
+              %s
+              Found:
+              %s
+              """,
+              (i + 1), goldenLines[i], compiledLines[i])
           .that(compiledLines[i])
           .isEqualTo(goldenLines[i]);
     }
@@ -115,8 +116,8 @@ public class GoldenFileComparer {
    */
   public static void compileAndCompareSubsetOfActualToExpected(
       String goldenFileName, CompilerOptions options, String sourceFileName) throws Exception {
-    List<SourceFile> sourceFiles = ImmutableList.of(readSource(sourceFileName));
-    List<SourceFile> externsFiles = ImmutableList.of();
+    ImmutableList<SourceFile> sourceFiles = ImmutableList.of(readSource(sourceFileName));
+    ImmutableList<SourceFile> externsFiles = ImmutableList.of();
     String compiledSource = compile(externsFiles, sourceFiles, options);
     String goldenSource = readFile(toFullPath(goldenFileName));
 
@@ -131,9 +132,8 @@ public class GoldenFileComparer {
     }
 
     assertWithMessage(
-            "Line "
-                + (identicalLinesBetweenFiles + 1)
-                + " from Golden was not found in compiled version of source file")
+            "Line %s from Golden was not found in compiled version of source file",
+            (identicalLinesBetweenFiles + 1))
         .that(identicalLinesBetweenFiles)
         .isEqualTo(goldenLines.size());
   }
@@ -144,8 +144,8 @@ public class GoldenFileComparer {
    */
   public static void compileAndCompare(
       String goldenFileName, CompilerOptions options, String sourceFileName) throws Exception {
-    List<SourceFile> sourceFiles = ImmutableList.of(readSource(sourceFileName));
-    List<SourceFile> externsFiles = ImmutableList.of();
+    ImmutableList<SourceFile> sourceFiles = ImmutableList.of(readSource(sourceFileName));
+    ImmutableList<SourceFile> externsFiles = ImmutableList.of();
     compileAndCompare(goldenFileName, options, sourceFiles, externsFiles);
   }
 
@@ -161,10 +161,10 @@ public class GoldenFileComparer {
       String externsFileName)
       throws Exception {
     // Prepare sources
-    List<SourceFile> sourceFiles =
+    ImmutableList<SourceFile> sourceFiles =
         ImmutableList.of(readSource(sourceFileName1), readSource(sourceFileName2));
 
-    List<SourceFile> externsFiles =
+    ImmutableList<SourceFile> externsFiles =
         ImmutableList.of(SourceFile.fromFile(toFullPath(externsFileName)));
 
     compileAndCompare(goldenFileName, options, sourceFiles, externsFiles);
@@ -178,4 +178,6 @@ public class GoldenFileComparer {
     options.setPrettyPrint(true);
     return options;
   }
+
+  private GoldenFileComparer() {}
 }

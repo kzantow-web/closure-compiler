@@ -16,19 +16,15 @@
 package com.google.javascript.jscomp;
 
 import static com.google.common.truth.Truth.assertThat;
-import static com.google.javascript.jscomp.CompilerTestCase.lines;
 
-import com.google.common.annotations.GwtIncompatible;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMultimap;
 import com.google.javascript.rhino.Node;
 import java.io.IOException;
-import java.util.List;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
-@GwtIncompatible("Conformance")
 @RunWith(JUnit4.class)
 public class ConformanceAllowlisterTest {
   @Test
@@ -38,7 +34,10 @@ public class ConformanceAllowlisterTest {
     sources.add(
         SourceFile.fromCode(
             "/entry.js",
-            lines("var foo = document.getElementById('name');", "foo.title = 'test';")));
+            """
+            var foo = document.getElementById('name');
+            foo.title = 'test';
+            """));
 
     Requirement requirement =
         Requirement.newBuilder()
@@ -58,7 +57,10 @@ public class ConformanceAllowlisterTest {
     sources.add(
         SourceFile.fromCode(
             "/entry.js",
-            lines("var foo = document.getElementById('name');", "foo.title = 'test';")));
+            """
+            var foo = document.getElementById('name');
+            foo.title = 'test';
+            """));
 
     Requirement whitelistRequirement =
         Requirement.newBuilder()
@@ -88,7 +90,10 @@ public class ConformanceAllowlisterTest {
     sources.add(
         SourceFile.fromCode(
             "/entry.js",
-            lines("var foo = document.getElementById('name');", "foo.title = 'test';")));
+            """
+            var foo = document.getElementById('name');
+            foo.title = 'test';
+            """));
 
     Requirement whitelistRequirement =
         Requirement.newBuilder()
@@ -123,7 +128,10 @@ public class ConformanceAllowlisterTest {
     sources.add(
         SourceFile.fromCode(
             "/test/entry.js",
-            lines("var foo = document.getElementById('name');", "foo.innerHTML = 'test';")));
+            """
+            var foo = document.getElementById('name');
+            foo.innerHTML = 'test';
+            """));
 
     Requirement whitelistRequirement =
         Requirement.newBuilder()
@@ -155,7 +163,7 @@ public class ConformanceAllowlisterTest {
     options.setCheckTypes(true);
     // TODO(bangert): Support banned property on OBJECT even if types are not checked.
     options.setChecksOnly(true);
-    List<SourceFile> externs = ImmutableList.of();
+    ImmutableList<SourceFile> externs = ImmutableList.of();
     Compiler compiler = new Compiler();
     Result result = compiler.compile(externs, sources, options);
     assertThat(result.success).isTrue();

@@ -29,8 +29,7 @@ public final class CheckSuspiciousCodeTest extends CompilerTestCase {
 
   @Override
   protected CompilerPass getProcessor(Compiler compiler) {
-    return new CombinedCompilerPass(compiler,
-        new CheckSuspiciousCode());
+    return new CombinedCompilerPass(compiler, new CheckSuspiciousCode());
   }
 
   @Override
@@ -62,7 +61,7 @@ public final class CheckSuspiciousCodeTest extends CompilerTestCase {
     final DiagnosticType e = CheckSuspiciousCode.SUSPICIOUS_SEMICOLON;
 
     testSame("if(x()) x = y;");
-    testWarning("if(x()); x = y;", e);  // I've had this bug, damned ;
+    testWarning("if(x()); x = y;", e); // I've had this bug, damned ;
     testSame("if(x()){} x = y;");
 
     testSame("if(x()) x = y; else y=z;");
@@ -223,8 +222,11 @@ public final class CheckSuspiciousCodeTest extends CompilerTestCase {
     testReportInstanceOf("Infinity", "Number");
     testReportInstanceOf("NaN", "Number");
     testReportInstanceOf(
-        "/** @constructor */ function Foo() {}; var foo = new Foo();"
-        + "!foo", "Foo");
+        """
+        /** @constructor */ function Foo() {}; var foo = new Foo();
+        !foo
+        """,
+        "Foo");
 
     testReportInstanceOf("(4 + 5)", "Number");
     testReportInstanceOf("('a' + 'b')", "String");
@@ -245,9 +247,15 @@ public final class CheckSuspiciousCodeTest extends CompilerTestCase {
     testReportInstanceOf("!Function", "Object");
     testReportInstanceOf("!func()", "String");
     testReportInstanceOf("!({})", "Object");
-    testReportInstanceOf("/** @constructor */ function Foo() {"
-        + "!this", "Foo;"
-        + "}");
+    testReportInstanceOf(
+        """
+        /** @constructor */ function Foo() {
+        !this
+        """,
+        """
+        Foo;
+        }
+        """);
 
     testSame("new String('') instanceof String");
     testSame("new Number(4) instanceof Number");
@@ -258,21 +266,26 @@ public final class CheckSuspiciousCodeTest extends CompilerTestCase {
     testSame("Function instanceof Object");
     testSame("func() instanceof String");
     testSame("({}) instanceof Object");
-    testSame("/** @constructor */ function Foo() {"
-        + " var a = this instanceof Foo; }");
+    testSame(
+        """
+        /** @constructor */ function Foo() {
+         var a = this instanceof Foo; }
+        """);
 
     testSame("(()=>42) instanceof Function");
     testSame("class Person{} Person instanceof Function");
-    testSame(lines(
-        "class Person{}",
-        "var peter = new Person();",
-        "peter instanceof Person"));
+    testSame(
+        """
+        class Person{}
+        var peter = new Person();
+        peter instanceof Person
+        """);
     testSame("taggedTemplate`${tagged}Temp` instanceof Function");
   }
 
   private void testReportInstanceOf(String left, String right) {
-    testWarning(left + " instanceof " + right,
-        CheckSuspiciousCode.SUSPICIOUS_INSTANCEOF_LEFT_OPERAND);
+    testWarning(
+        left + " instanceof " + right, CheckSuspiciousCode.SUSPICIOUS_INSTANCEOF_LEFT_OPERAND);
   }
 
   @Test
@@ -337,15 +350,15 @@ public final class CheckSuspiciousCodeTest extends CompilerTestCase {
   public void testSuspiciousLeftArgumentOfLogicalOperator_typeBased() {
     enableTypeCheck();
     String prefix =
-        lines(
-            "/** @return {!Object} */ function truthy() { return {}; }",
-            "/** @return {null|undefined} */ function falsy() { return null; }",
-            "/** @return {number} */ function number() { return 42; }",
-            "/** @return {?} */ function unknown() { return 42; }",
-            "/** @const */ var ns = {};",
-            "/** @type {!Object<!Object>} */ ns.truthy = {};",
-            "/** @type {null} */ ns.falsy = null;",
-            "");
+        """
+        /** @return {!Object} */ function truthy() { return {}; }
+        /** @return {null|undefined} */ function falsy() { return null; }
+        /** @return {number} */ function number() { return 42; }
+        /** @return {?} */ function unknown() { return 42; }
+        /** @const */ var ns = {};
+        /** @type {!Object<!Object>} */ ns.truthy = {};
+        /** @type {null} */ ns.falsy = null;
+        """;
 
     testSame("var x = x || {};");
     testSame(prefix + "if (number() && y) {}");
@@ -409,11 +422,11 @@ public final class CheckSuspiciousCodeTest extends CompilerTestCase {
     // assert that a name exists, but code must still verify to be sure).
     enableTypeCheck();
     String prefix =
-        lines(
-            "/** @const */ var ns = {};",
-            "/** @type {!Object<!Object>} */ ns.truthy = {};",
-            "/** @type {null} */ ns.falsy = null;",
-            "");
+        """
+        /** @const */ var ns = {};
+        /** @type {!Object<!Object>} */ ns.truthy = {};
+        /** @type {null} */ ns.falsy = null;
+        """;
     testSame(prefix + "if (ns.truthy && y) {}");
     testSame(prefix + "if (ns.falsy && y) {}");
     testSame(prefix + "if (!ns.truthy && y) {}");
@@ -429,10 +442,10 @@ public final class CheckSuspiciousCodeTest extends CompilerTestCase {
     // Primitive types (like number) and unknown types can be either true or false, so don't warn.
     enableTypeCheck();
     String prefix =
-        lines(
-            "/** @return {number} */ function number() { return 42; }",
-            "/** @return {?} */ function unknown() { return 42; }",
-            "");
+        """
+        /** @return {number} */ function number() { return 42; }
+        /** @return {?} */ function unknown() { return 42; }
+        """;
     testSame(prefix + "if (number() && y) {}");
     testSame(prefix + "if (unknown() && y) {}");
     testSame(prefix + "if (number() || y) {}");
@@ -447,13 +460,13 @@ public final class CheckSuspiciousCodeTest extends CompilerTestCase {
   public void testSuspiciousLeftArgumentOfLogicalOperator_deeperNesting() {
     enableTypeCheck();
     String prefix =
-        lines(
-            "/** @return {!Object} */ function truthy() { return {}; }",
-            "function falsy() { return; }",
-            "/** @const */ var ns = {};",
-            "/** @type {!Object<!Object>} */ ns.truthy = {};",
-            "/** @type {null} */ ns.falsy = null;",
-            "");
+        """
+        /** @return {!Object} */ function truthy() { return {}; }
+        function falsy() { return; }
+        /** @const */ var ns = {};
+        /** @type {!Object<!Object>} */ ns.truthy = {};
+        /** @type {null} */ ns.falsy = null;
+        """;
 
     // When the above constructs (that don't warn) are combined more deeply, they still don't warn.
     testSame(prefix + "if (ns.falsy || ns.truthy || y) {}");
@@ -475,10 +488,10 @@ public final class CheckSuspiciousCodeTest extends CompilerTestCase {
     // fewer lies about them in the wild.
     enableTypeCheck();
     String prefix =
-        lines(
-            "/** @return {!Object} */ function truthy() { return {}; }",
-            "function falsy() { return; }",
-            "");
+        """
+        /** @return {!Object} */ function truthy() { return {}; }
+        function falsy() { return; }
+        """;
 
     testWarning(prefix + "if (falsy() && y) {}", SUSPICIOUS_LEFT_OPERAND_OF_LOGICAL_OPERATOR);
     testWarning(prefix + "if (!falsy() && y) {}", SUSPICIOUS_LEFT_OPERAND_OF_LOGICAL_OPERATOR);

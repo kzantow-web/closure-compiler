@@ -26,6 +26,7 @@ import com.google.javascript.rhino.Node;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map.Entry;
+import org.jspecify.annotations.Nullable;
 
 /**
  * A compiler pass to optimize function return results. Currently this pass looks for results that
@@ -42,7 +43,7 @@ class OptimizeReturns implements OptimizeCalls.CallGraphCompilerPass, CompilerPa
   private final AbstractCompiler compiler;
 
   // Allocated & cleaned up by process()
-  private LogFile decisionsLog;
+  private @Nullable LogFile decisionsLog;
 
   OptimizeReturns(AbstractCompiler compiler) {
     this.compiler = compiler;
@@ -117,7 +118,9 @@ class OptimizeReturns implements OptimizeCalls.CallGraphCompilerPass, CompilerPa
         if (NodeUtil.isExpressionResultUsed(callNode)) {
           // At least one call site uses the return value, this
           // is not a candidate.
-          decisionsLog.log("%s\treturn value used: %s", name, callNode.getLocation());
+          if (decisionsLog.isLogging()) { // avoid build location string when not logging
+            decisionsLog.log("%s\treturn value used: %s", name, callNode.getLocation());
+          }
           return false;
         }
         seenUse = true;
@@ -130,7 +133,9 @@ class OptimizeReturns implements OptimizeCalls.CallGraphCompilerPass, CompilerPa
         // If this isn't an non-aliasing reference (typeof, instanceof, etc)
         // then there is nothing that can be done.
         if (!OptimizeCalls.isAllowedReference(n)) {
-          decisionsLog.log("%s\tdisallowed reference: %s", name, n.getLocation());
+          if (decisionsLog.isLogging()) { // avoid build location string when not logging
+            decisionsLog.log("%s\tdisallowed reference: %s", name, n.getLocation());
+          }
           return false;
         }
       }
@@ -171,23 +176,17 @@ class OptimizeReturns implements OptimizeCalls.CallGraphCompilerPass, CompilerPa
   }
 
   private static boolean isCandidateFunction(Node n) {
-    switch (n.getToken()) {
-      case FUNCTION:
-        // Named function expression can be recursive, this creates an alias of the name, meaning
-        // it might be used in an unexpected way.
-        return !NodeUtil.isNamedFunctionExpression(n);
-      case COMMA:
-      case CAST:
-        return isCandidateFunction(n.getLastChild());
-      case HOOK:
-        return isCandidateFunction(n.getSecondChild()) && isCandidateFunction(n.getLastChild());
-      case OR:
-      case AND:
-      case COALESCE:
-        return isCandidateFunction(n.getFirstChild()) && isCandidateFunction(n.getLastChild());
-      default:
-        return false;
-    }
+    return switch (n.getToken()) {
+      case FUNCTION ->
+          // Named function expression can be recursive, this creates an alias of the name, meaning
+          // it might be used in an unexpected way.
+          !NodeUtil.isNamedFunctionExpression(n);
+      case COMMA, CAST -> isCandidateFunction(n.getLastChild());
+      case HOOK -> isCandidateFunction(n.getSecondChild()) && isCandidateFunction(n.getLastChild());
+      case OR, AND, COALESCE ->
+          isCandidateFunction(n.getFirstChild()) && isCandidateFunction(n.getLastChild());
+      default -> false;
+    };
   }
 
   /**
@@ -222,33 +221,18 @@ class OptimizeReturns implements OptimizeCalls.CallGraphCompilerPass, CompilerPa
   // Just remove objects that don't reference properties (object literals) or names (functions)
   // So we don't need to update the graph.
   private boolean isRemovableValue(Node n) {
-    switch (n.getToken()) {
-      case TEMPLATELIT:
-      case ARRAYLIT:
+    return switch (n.getToken()) {
+      case TEMPLATELIT, ARRAYLIT -> {
         for (Node child = n.getFirstChild(); child != null; child = child.getNext()) {
           if ((!child.isEmpty()) && !isRemovableValue(child)) {
-            return false;
+            yield false;
           }
         }
-        return true;
-
-      case REGEXP:
-      case STRINGLIT:
-      case NUMBER:
-      case NULL:
-      case TRUE:
-      case FALSE:
-      case TEMPLATELIT_STRING:
-        return true;
-      case TEMPLATELIT_SUB:
-      case CAST:
-      case NOT:
-      case VOID:
-      case NEG:
-        return isRemovableValue(n.getFirstChild());
-
-      default:
-        return false;
-    }
+        yield true;
+      }
+      case REGEXP, STRINGLIT, NUMBER, NULL, TRUE, FALSE, TEMPLATELIT_STRING -> true;
+      case TEMPLATELIT_SUB, CAST, NOT, VOID, NEG -> isRemovableValue(n.getFirstChild());
+      default -> false;
+    };
   }
 }

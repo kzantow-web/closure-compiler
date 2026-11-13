@@ -28,8 +28,10 @@ import static com.google.javascript.jscomp.testing.ScopeSubject.assertScope;
 import com.google.javascript.jscomp.NodeTraversal.AbstractPostOrderCallback;
 import com.google.javascript.jscomp.testing.JSChunkGraphBuilder;
 import com.google.javascript.jscomp.testing.TestExternsBuilder;
+import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.StaticSourceFile.SourceKind;
+import org.jspecify.annotations.Nullable;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -39,10 +41,10 @@ import org.junit.runners.JUnit4;
 public final class VarCheckTest extends CompilerTestCase {
   private static final String EXTERNS = "var window; function alert() {}";
 
-  private CheckLevel strictModuleDepErrorLevel;
+  private CheckLevel strictChunkDepErrorLevel;
   private boolean validityCheck = false;
 
-  private CheckLevel externValidationErrorLevel;
+  private @Nullable CheckLevel externValidationErrorLevel;
 
   private boolean declarationCheck;
 
@@ -56,7 +58,7 @@ public final class VarCheckTest extends CompilerTestCase {
     super.setUp();
     // Setup value set by individual tests to the appropriate defaults.
     allowExternsChanges();
-    strictModuleDepErrorLevel = CheckLevel.OFF;
+    strictChunkDepErrorLevel = CheckLevel.OFF;
     externValidationErrorLevel = null;
     validityCheck = false;
     declarationCheck = false;
@@ -67,7 +69,7 @@ public final class VarCheckTest extends CompilerTestCase {
     CompilerOptions options = super.getOptions();
     options.setClosurePass(true);
     options.setWarningLevel(DiagnosticGroups.MODULE_LOAD, CheckLevel.OFF);
-    options.setWarningLevel(DiagnosticGroups.STRICT_MODULE_DEP_CHECK, strictModuleDepErrorLevel);
+    options.setWarningLevel(DiagnosticGroups.STRICT_MODULE_DEP_CHECK, strictChunkDepErrorLevel);
     if (externValidationErrorLevel != null) {
       options.setWarningLevel(DiagnosticGroups.EXTERNS_VALIDATION, externValidationErrorLevel);
     }
@@ -90,12 +92,6 @@ public final class VarCheckTest extends CompilerTestCase {
         }
       }
     };
-  }
-
-  @Override
-  protected int getNumRepetitions() {
-    // Because we synthesize externs, the second pass won't emit a warning.
-    return 1;
   }
 
   @Test
@@ -318,9 +314,10 @@ public final class VarCheckTest extends CompilerTestCase {
     testSame(
         externs("asdf;"),
         srcs(
-            lines(
-                "(function() { var asdf; })()", //
-                "var /** @suppress {duplicate} */ asdf;")),
+            """
+            (function() { var asdf; })()
+            var /** @suppress {duplicate} */ asdf;
+            """),
         warning(VarCheck.NAME_REFERENCE_IN_EXTERNS_ERROR));
   }
 
@@ -361,12 +358,13 @@ public final class VarCheckTest extends CompilerTestCase {
   public void testVarReferenceInTypeSummary() {
     testSame(
         externs(
-            lines(
-                "/** @typeSummary */",
-                "var goog;",
-                "goog.addSingletonGetter;",
-                "class Foo {}",
-                "goog.addSingletonGetter(Foo);")),
+            """
+            /** @typeSummary */
+            var goog;
+            goog.addSingletonGetter;
+            class Foo {}
+            goog.addSingletonGetter(Foo);
+            """),
         srcs("Foo.getInstance();"));
   }
 
@@ -389,9 +387,10 @@ public final class VarCheckTest extends CompilerTestCase {
     testSame(externs("var Foo; var ns = {}; /** @const */ ns.FooAlias = Foo;"), srcs(""));
     testSame(
         externs(
-            lines(
-                "var ns = {}; /** @constructor */ ns.Foo = function() {};",
-                "var ns2 = {}; /** @const */ ns2.Bar = ns.Foo;")),
+            """
+            var ns = {}; /** @constructor */ ns.Foo = function() {};
+            var ns2 = {}; /** @const */ ns2.Bar = ns.Foo;
+            """),
         srcs(""));
   }
 
@@ -524,96 +523,102 @@ public final class VarCheckTest extends CompilerTestCase {
 
     // Arrow function nested
     testError(
-        lines("function FUNC() {", "  {", "    () => { var b = a; }", "  }", "}"),
+        """
+        function FUNC() {
+          {
+            () => { var b = a; }
+          }
+        }
+        """,
         VarCheck.UNDEFINED_VAR_ERROR);
   }
 
   @Test
-  public void testLegalVarReferenceBetweenModules() {
-    testDependentModules("var x = 10;", "var y = x++;", null);
+  public void testLegalVarReferenceBetweenChunks() {
+    testDependentChunks("var x = 10;", "var y = x++;", null);
   }
 
   @Test
-  public void testLegalLetReferenceBetweenModules() {
-    testDependentModules("let x = 10;", "let y = x++;", null);
+  public void testLegalLetReferenceBetweenChunks() {
+    testDependentChunks("let x = 10;", "let y = x++;", null);
   }
 
   @Test
-  public void testLegalConstReferenceBetweenModules() {
-    testDependentModules("const x = 10;", "const y = x + 1;", null);
+  public void testLegalConstReferenceBetweenChunks() {
+    testDependentChunks("const x = 10;", "const y = x + 1;", null);
   }
 
   @Test
-  public void testMissingModuleDependencyDefault() {
-    testIndependentModules("var x = 10;", "var y = x++;", null, VarCheck.MISSING_MODULE_DEP_ERROR);
+  public void testMissingChunkDependencyDefault() {
+    testIndependentChunks("var x = 10;", "var y = x++;", null, VarCheck.MISSING_CHUNK_DEP_ERROR);
   }
 
   @Test
-  public void testMissingModuleDependencyLetAndConst() {
-    testIndependentModules("let x = 10;", "let y = x++;", null, VarCheck.MISSING_MODULE_DEP_ERROR);
-    testIndependentModules(
-        "const x = 10;", "const y = x + 1;", null, VarCheck.MISSING_MODULE_DEP_ERROR);
+  public void testMissingChunkDependencyLetAndConst() {
+    testIndependentChunks("let x = 10;", "let y = x++;", null, VarCheck.MISSING_CHUNK_DEP_ERROR);
+    testIndependentChunks(
+        "const x = 10;", "const y = x + 1;", null, VarCheck.MISSING_CHUNK_DEP_ERROR);
   }
 
   @Test
-  public void testViolatedModuleDependencyDefault() {
-    testDependentModules("var y = x++;", "var x = 10;", VarCheck.VIOLATED_MODULE_DEP_ERROR);
+  public void testViolatedChunkDependencyDefault() {
+    testDependentChunks("var y = x++;", "var x = 10;", VarCheck.VIOLATED_CHUNK_DEP_ERROR);
   }
 
   @Test
-  public void testViolatedModuleDependencyLetAndConst() {
-    testDependentModules("let y = x++;", "let x = 10;", VarCheck.VIOLATED_MODULE_DEP_ERROR);
-    testDependentModules("const y = x + 1;", "const x = 10;", VarCheck.VIOLATED_MODULE_DEP_ERROR);
+  public void testViolatedChunkDependencyLetAndConst() {
+    testDependentChunks("let y = x++;", "let x = 10;", VarCheck.VIOLATED_CHUNK_DEP_ERROR);
+    testDependentChunks("const y = x + 1;", "const x = 10;", VarCheck.VIOLATED_CHUNK_DEP_ERROR);
   }
 
   @Test
-  public void testMissingModuleDependencySkipNonStrict() {
+  public void testMissingChunkDependencySkipNonStrict() {
     validityCheck = true;
-    testIndependentModules("var x = 10;", "var y = x++;", null, null);
+    testIndependentChunks("var x = 10;", "var y = x++;", null, null);
   }
 
   @Test
-  public void testViolatedModuleDependencySkipNonStrict() {
+  public void testViolatedChunkDependencySkipNonStrict() {
     validityCheck = true;
-    testDependentModules("var y = x++;", "var x = 10;", null);
+    testDependentChunks("var y = x++;", "var x = 10;", null);
   }
 
   @Test
-  public void testMissingModuleDependencySkipNonStrictNotPromoted() {
+  public void testMissingChunkDependencySkipNonStrictNotPromoted() {
     validityCheck = true;
-    strictModuleDepErrorLevel = CheckLevel.ERROR;
-    testIndependentModules("var x = 10;", "var y = x++;", null, null);
+    strictChunkDepErrorLevel = CheckLevel.ERROR;
+    testIndependentChunks("var x = 10;", "var y = x++;", null, null);
   }
 
   @Test
-  public void testViolatedModuleDependencyNonStrictNotPromoted() {
+  public void testViolatedChunkDependencyNonStrictNotPromoted() {
     validityCheck = true;
-    strictModuleDepErrorLevel = CheckLevel.ERROR;
-    testDependentModules("var y = x++;", "var x = 10;", null);
+    strictChunkDepErrorLevel = CheckLevel.ERROR;
+    testDependentChunks("var y = x++;", "var x = 10;", null);
   }
 
   @Test
-  public void testDependentStrictModuleDependencyCheck() {
-    strictModuleDepErrorLevel = CheckLevel.ERROR;
-    testDependentModules(
+  public void testDependentStrictChunkDependencyCheck() {
+    strictChunkDepErrorLevel = CheckLevel.ERROR;
+    testDependentChunks(
         "var f = function() {return new B();};",
         "var B = function() {}",
-        VarCheck.STRICT_MODULE_DEP_ERROR);
+        VarCheck.STRICT_CHUNK_DEP_ERROR);
   }
 
   @Test
-  public void testIndependentStrictModuleDependencyCheck() {
-    strictModuleDepErrorLevel = CheckLevel.ERROR;
-    testIndependentModules(
+  public void testIndependentStrictChunkDependencyCheck() {
+    strictChunkDepErrorLevel = CheckLevel.ERROR;
+    testIndependentChunks(
         "var f = function() {return new B();};",
         "var B = function() {}",
-        VarCheck.STRICT_MODULE_DEP_ERROR,
+        VarCheck.STRICT_CHUNK_DEP_ERROR,
         null);
   }
 
   @Test
-  public void testStarStrictModuleDependencyCheck() {
-    strictModuleDepErrorLevel = CheckLevel.WARNING;
+  public void testStarStrictChunkDependencyCheck() {
+    strictChunkDepErrorLevel = CheckLevel.WARNING;
     testSame(
         srcs(
             JSChunkGraphBuilder.forStar()
@@ -621,36 +626,39 @@ public final class VarCheckTest extends CompilerTestCase {
                 .addChunk("function b() { a(); c(); }")
                 .addChunk("function c() { a(); }")
                 .build()),
-        warning(VarCheck.STRICT_MODULE_DEP_ERROR));
+        warning(VarCheck.STRICT_CHUNK_DEP_ERROR));
   }
 
   @Test
   public void testForwardVarReferenceInLocalScope1() {
-    testDependentModules("var x = 10; function a() {y++;}", "var y = 11; a();", null);
+    testDependentChunks("var x = 10; function a() {y++;}", "var y = 11; a();", null);
   }
 
   @Test
   public void testForwardVarReferenceInLocalScope2() {
     // It would be nice if this pass could use a call graph to flag this case
     // as an error, but it currently doesn't.
-    testDependentModules("var x = 10; function a() {y++;} a();", "var y = 11;", null);
+    testDependentChunks("var x = 10; function a() {y++;} a();", "var y = 11;", null);
   }
 
-  private void testDependentModules(String code1, String code2, DiagnosticType error) {
-    testDependentModules(code1, code2, error, null);
+  private void testDependentChunks(String code1, String code2, @Nullable DiagnosticType error) {
+    testDependentChunks(code1, code2, error, null);
   }
 
-  private void testDependentModules(
-      String code1, String code2, DiagnosticType error, DiagnosticType warning) {
-    testTwoModules(code1, code2, true, error, warning);
+  private void testDependentChunks(
+      String code1, String code2, DiagnosticType error, @Nullable DiagnosticType warning) {
+    testTwoChunks(code1, code2, true, error, warning);
   }
 
-  private void testIndependentModules(
-      String code1, String code2, DiagnosticType error, DiagnosticType warning) {
-    testTwoModules(code1, code2, false, error, warning);
+  private void testIndependentChunks(
+      String code1,
+      String code2,
+      @Nullable DiagnosticType error,
+      @Nullable DiagnosticType warning) {
+    testTwoChunks(code1, code2, false, error, warning);
   }
 
-  private void testTwoModules(
+  private void testTwoChunks(
       String code1,
       String code2,
       boolean m2DependsOnm1,
@@ -718,6 +726,33 @@ public final class VarCheckTest extends CompilerTestCase {
   }
 
   @Test
+  public void testJSCompiler_renamePropertyInRequiredSymbols() {
+    assertThat(VarCheck.REQUIRED_SYMBOLS).contains("JSCompiler_renameProperty");
+  }
+
+  @Test
+  public void testJSCompiler_renamePropertySynthesizedExtern() {
+    checkSynthesizedExtern(srcs(""), VAR_CHECK_EXTERNS);
+    assertThat(VAR_CHECK_EXTERNS).contains("var JSCompiler_renameProperty;\n");
+  }
+
+  @Test
+  public void testJSCompiler_renamePropertySynthesizedExternAllowsLaterPasses() {
+    Compiler compiler = createAndInitializeCompiler(externs(""), srcs("var placeholder = 1;"));
+    compiler.parseInputs();
+    Node externs = compiler.getExternsRoot();
+    Node root = compiler.getJsRoot();
+    new VarCheck(compiler, /* validityCheck= */ false).process(externs, root);
+    // Simulate a pass like ClosureOptimizePrimitives or DartSuperAccessorsPass adding a call
+    // to JSCompiler_renameProperty without an explicit extern declaration.
+    Node syntheticCall =
+        IR.exprResult(IR.call(IR.name("JSCompiler_renameProperty"), IR.string("foo")));
+    root.getFirstChild().addChildToBack(syntheticCall);
+    // ValidityCheck runs VarCheck with validityCheck = true, which must pass without throwing.
+    new VarCheck(compiler, /* validityCheck= */ true).process(externs, root);
+  }
+
+  @Test
   public void testVariableInNormalCodeUsedInExterns1() {
     checkSynthesizedExtern(
         externs("x.foo;"),
@@ -774,9 +809,11 @@ public final class VarCheckTest extends CompilerTestCase {
   @Test
   public void testRedeclaration4() {
     String js =
-        " /** @fileoverview @suppress {duplicate} */\n"
-            + " /** @type {string} */ var a;\n"
-            + " var a; ";
+        """
+        /** @fileoverview @suppress {duplicate} */
+        /** @type {string} */ var a;
+        var a;\s
+        """;
     testSame(js);
   }
 
@@ -804,31 +841,33 @@ public final class VarCheckTest extends CompilerTestCase {
   @Test
   public void testDuplicateBlockScopedDeclarationInSwitch() {
     testError(
-        lines(
-            "function f(x) {",
-            "  switch (x) {",
-            "    case 'a':",
-            "      let z = 123;",
-            "      break;",
-            "    case 'b':",
-            "      let z = 234;",
-            "      break;",
-            "  }",
-            "}"),
+        """
+        function f(x) {
+          switch (x) {
+            case 'a':
+              let z = 123;
+              break;
+            case 'b':
+              let z = 234;
+              break;
+          }
+        }
+        """,
         BLOCK_SCOPED_DECL_MULTIPLY_DECLARED_ERROR);
 
     testError(
-        lines(
-            "function f(x) {",
-            "  switch (x) {",
-            "    case 'a':",
-            "      class C {}",
-            "      break;",
-            "    case 'b':",
-            "      class C {}",
-            "      break;",
-            "  }",
-            "}"),
+        """
+        function f(x) {
+          switch (x) {
+            case 'a':
+              class C {}
+              break;
+            case 'b':
+              class C {}
+              break;
+          }
+        }
+        """,
         BLOCK_SCOPED_DECL_MULTIPLY_DECLARED_ERROR);
   }
 
@@ -1030,13 +1069,14 @@ public final class VarCheckTest extends CompilerTestCase {
     testSame(
         srcs(
             TestExternsBuilder.getClosureExternsAsSource(),
-            lines(
-                "goog.loadModule(function(exports) {", //
-                "  goog.module('foo.A');",
-                "  goog.module.declareLegacyNamespace();",
-                "  exports = class {};",
-                "  return exports;",
-                "});"),
+            """
+            goog.loadModule(function(exports) {
+              goog.module('foo.A');
+              goog.module.declareLegacyNamespace();
+              exports = class {};
+              return exports;
+            });
+            """,
             "new foo.A();"));
   }
 
@@ -1045,12 +1085,13 @@ public final class VarCheckTest extends CompilerTestCase {
     testError(
         srcs(
             TestExternsBuilder.getClosureExternsAsSource(),
-            lines(
-                "goog.loadModule(function(exports) {", //
-                "  goog.module('foo.A');",
-                "  exports = class {};",
-                "  return exports;",
-                "});"),
+            """
+            goog.loadModule(function(exports) {
+              goog.module('foo.A');
+              exports = class {};
+              return exports;
+            });
+            """,
             "new foo.A();"),
         error(UNDEFINED_VAR_ERROR));
   }
@@ -1097,123 +1138,140 @@ public final class VarCheckTest extends CompilerTestCase {
 
   @Test
   public void testReferenceToWeakVar_fromStrongFile() {
-    JSChunk weakModule = new JSChunk(JSChunk.WEAK_CHUNK_NAME);
-    JSChunk strongModule = new JSChunk(JSChunk.STRONG_CHUNK_NAME);
-    weakModule.addDependency(strongModule);
+    JSChunk weakChunk = new JSChunk(JSChunk.WEAK_CHUNK_NAME);
+    JSChunk strongChunk = new JSChunk(JSChunk.STRONG_CHUNK_NAME);
+    weakChunk.addDependency(strongChunk);
 
-    weakModule.add(SourceFile.fromCode("weak.js", lines("var weakVar = 0;"), SourceKind.WEAK));
+    weakChunk.add(SourceFile.fromCode("weak.js", "var weakVar = 0;", SourceKind.WEAK));
 
-    strongModule.add(SourceFile.fromCode("strong.js", lines("weakVar();"), SourceKind.STRONG));
+    strongChunk.add(SourceFile.fromCode("strong.js", "weakVar();", SourceKind.STRONG));
 
     test(
         srcs(
             new JSChunk[] {
-              strongModule, weakModule,
+              strongChunk, weakChunk,
             }),
-        error(VarCheck.VIOLATED_MODULE_DEP_ERROR),
+        error(VarCheck.VIOLATED_CHUNK_DEP_ERROR),
         error(VarCheck.UNDEFINED_VAR_ERROR));
   }
 
   @Test
   public void testReferenceToWeakVar_fromWeakFile() {
-    JSChunk weakModule = new JSChunk(JSChunk.WEAK_CHUNK_NAME);
-    weakModule.add(
+    JSChunk weakChunk = new JSChunk(JSChunk.WEAK_CHUNK_NAME);
+    weakChunk.add(
         SourceFile.fromCode(
             "weak.js",
-            lines(
-                "var weakVar = 0;", //
-                "weakVar();"),
+            """
+            var weakVar = 0;
+            weakVar();
+            """,
             SourceKind.WEAK));
 
-    testSame(srcs(weakModule));
+    testSame(srcs(weakChunk));
   }
 
   @Test
   public void testReferenceToWeakNamespaceRoot_fromStrongFile() {
-    JSChunk weakModule = new JSChunk(JSChunk.WEAK_CHUNK_NAME);
-    JSChunk strongModule = new JSChunk(JSChunk.STRONG_CHUNK_NAME);
-    weakModule.addDependency(strongModule);
+    JSChunk weakChunk = new JSChunk(JSChunk.WEAK_CHUNK_NAME);
+    JSChunk strongChunk = new JSChunk(JSChunk.STRONG_CHUNK_NAME);
+    weakChunk.addDependency(strongChunk);
 
-    weakModule.add(
+    weakChunk.add(
         SourceFile.fromCode(
             "weak.js",
-            lines(
-                TestExternsBuilder.getClosureExternsAsSource(), //
-                "goog.provide('foo.bar');"),
+            TestExternsBuilder.getClosureExternsAsSource() + "goog.provide('foo.bar');",
             SourceKind.WEAK));
 
-    strongModule.add(SourceFile.fromCode("strong.js", lines("foo();"), SourceKind.STRONG));
+    strongChunk.add(SourceFile.fromCode("strong.js", "foo();", SourceKind.STRONG));
 
     test(
         srcs(
             new JSChunk[] {
-              strongModule, weakModule,
+              strongChunk, weakChunk,
             }),
         error(VarCheck.UNDEFINED_VAR_ERROR));
   }
 
   @Test
   public void testReferenceToWeakNamespaceRoot_fromStrongFile_synthesizesExtern() {
-    JSChunk weakModule = new JSChunk(JSChunk.WEAK_CHUNK_NAME);
-    JSChunk strongModule = new JSChunk(JSChunk.STRONG_CHUNK_NAME);
-    weakModule.addDependency(strongModule);
+    JSChunk weakChunk = new JSChunk(JSChunk.WEAK_CHUNK_NAME);
+    JSChunk strongChunk = new JSChunk(JSChunk.STRONG_CHUNK_NAME);
+    weakChunk.addDependency(strongChunk);
 
-    weakModule.add(
+    weakChunk.add(
         SourceFile.fromCode(
             "weak.js",
-            lines(
-                TestExternsBuilder.getClosureExternsAsSource(), //
-                "goog.provide('foo.bar');"),
+            TestExternsBuilder.getClosureExternsAsSource() + "goog.provide('foo.bar');",
             SourceKind.WEAK));
 
-    strongModule.add(
+    strongChunk.add(
         SourceFile.fromCode(
-            "strong.js", lines("/** @suppress {undefinedVars} */", "foo();"), SourceKind.STRONG));
+            "strong.js",
+            """
+            /** @suppress {undefinedVars} */
+            foo();
+            """,
+            SourceKind.STRONG));
 
     testExternChanges(
-        externs(""), srcs(strongModule, weakModule), expected("var foo;" + VAR_CHECK_EXTERNS));
+        externs(""), srcs(strongChunk, weakChunk), expected("var foo;" + VAR_CHECK_EXTERNS));
   }
 
   @Test
-  public void testReferenceToWeakModuleNamespaceRoot_fromStrongFile() {
-    JSChunk weakModule = new JSChunk(JSChunk.WEAK_CHUNK_NAME);
-    JSChunk strongModule = new JSChunk(JSChunk.STRONG_CHUNK_NAME);
-    weakModule.addDependency(strongModule);
+  public void testReferenceToweakChunkNamespaceRoot_fromStrongFile() {
+    JSChunk weakChunk = new JSChunk(JSChunk.WEAK_CHUNK_NAME);
+    JSChunk strongChunk = new JSChunk(JSChunk.STRONG_CHUNK_NAME);
+    weakChunk.addDependency(strongChunk);
 
-    weakModule.add(
+    weakChunk.add(
         SourceFile.fromCode(
             "weak.js",
-            lines(
-                TestExternsBuilder.getClosureExternsAsSource(), //
-                "goog.module('foo.bar'); goog.module.declareLegacyNamespace();"),
+            TestExternsBuilder.getClosureExternsAsSource()
+                + "goog.module('foo.bar'); goog.module.declareLegacyNamespace();",
             SourceKind.WEAK));
 
-    strongModule.add(SourceFile.fromCode("strong.js", lines("foo();"), SourceKind.STRONG));
+    strongChunk.add(SourceFile.fromCode("strong.js", "foo();", SourceKind.STRONG));
 
-    test(srcs(strongModule, weakModule), error(VarCheck.UNDEFINED_VAR_ERROR));
+    test(srcs(strongChunk, weakChunk), error(VarCheck.UNDEFINED_VAR_ERROR));
   }
 
   @Test
   public void testReferenceToStrongNamespaceRoot_withAdditionalWeakProvide_fromStrongFile() {
-    JSChunk weakModule = new JSChunk(JSChunk.WEAK_CHUNK_NAME);
-    JSChunk strongModule = new JSChunk(JSChunk.STRONG_CHUNK_NAME);
-    weakModule.addDependency(strongModule);
+    JSChunk weakChunk = new JSChunk(JSChunk.WEAK_CHUNK_NAME);
+    JSChunk strongChunk = new JSChunk(JSChunk.STRONG_CHUNK_NAME);
+    weakChunk.addDependency(strongChunk);
 
-    weakModule.add(
-        SourceFile.fromCode("weak.js", lines("goog.provide('foo.bar');"), SourceKind.WEAK));
+    weakChunk.add(SourceFile.fromCode("weak.js", "goog.provide('foo.bar');", SourceKind.WEAK));
 
-    strongModule.add(
+    strongChunk.add(
         SourceFile.fromCode(
             "strong0.js",
-            lines(TestExternsBuilder.getClosureExternsAsSource(), "goog.provide('foo.qux');"),
+            TestExternsBuilder.getClosureExternsAsSource() + "goog.provide('foo.qux');",
             SourceKind.STRONG));
-    strongModule.add(SourceFile.fromCode("strong1.js", lines("foo();"), SourceKind.STRONG));
+    strongChunk.add(SourceFile.fromCode("strong1.js", "foo();", SourceKind.STRONG));
 
     testSame(
         srcs(
             new JSChunk[] {
-              strongModule, weakModule,
+              strongChunk, weakChunk,
             }));
+  }
+
+  @Test
+  public void testPrivateBrandCheck() {
+    String js =
+        """
+        class C {
+          #x;
+          #m() {}
+          get #g() { return 1; }
+          has(o) {
+            return #x in o && #m in o && #g in o;
+          }
+        }
+        """;
+    testSame(js);
+    checkSynthesizedExtern(srcs(js), VAR_CHECK_EXTERNS);
   }
 
   private static final class VariableTestCheck implements CompilerPass {
@@ -1231,7 +1289,10 @@ public final class VarCheckTest extends CompilerTestCase {
           new AbstractPostOrderCallback() {
             @Override
             public void visit(NodeTraversal t, Node n, Node parent) {
-              if (n.isName() && !parent.isFunction() && !parent.isLabel()) {
+              if (n.isName()
+                  && !parent.isFunction()
+                  && !parent.isLabel()
+                  && !n.isPrivateIdentifier()) {
                 assertScope(t.getScope()).declares(n.getString());
               }
             }

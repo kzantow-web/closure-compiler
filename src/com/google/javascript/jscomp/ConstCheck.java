@@ -21,25 +21,27 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import com.google.javascript.jscomp.NodeTraversal.AbstractPostOrderCallback;
 import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.Node;
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.Set;
 
 /**
  * Verifies that constants are only assigned a value once.
- * e.g. var XX = 5;
+ *
+ * <p>e.g.
+ *
+ * <pre><code>
  * XX = 3;    // error!
  * XX++;      // error!
+ * </code></pre>
  */
 // TODO(tbreisacher): Consider merging this with CheckAccessControls so that all
 // const-related checks are in the same place.
-class ConstCheck extends AbstractPostOrderCallback
-    implements CompilerPass {
+class ConstCheck extends AbstractPostOrderCallback implements CompilerPass {
 
   static final DiagnosticType CONST_REASSIGNED_VALUE_ERROR =
       DiagnosticType.warning(
           "JSC_CONSTANT_REASSIGNED_VALUE_ERROR",
-          "constant {0} assigned a value more than once.\n" +
-          "Original definition at {1}");
+          "constant {0} assigned a value more than once.\nOriginal definition at {1}");
 
   private final AbstractCompiler compiler;
   private final Set<Var> initializedConstants;
@@ -47,7 +49,7 @@ class ConstCheck extends AbstractPostOrderCallback
   /** Creates an instance. */
   public ConstCheck(AbstractCompiler compiler) {
     this.compiler = compiler;
-    this.initializedConstants = new HashSet<>();
+    this.initializedConstants = new LinkedHashSet<>();
   }
 
   @Override
@@ -58,7 +60,7 @@ class ConstCheck extends AbstractPostOrderCallback
   @Override
   public void visit(NodeTraversal t, Node n, Node parent) {
     switch (n.getToken()) {
-      case NAME:
+      case NAME -> {
         if (NodeUtil.isNameDeclaration(parent)) {
           String name = n.getString();
           Var var = t.getScope().getVar(name);
@@ -74,51 +76,43 @@ class ConstCheck extends AbstractPostOrderCallback
             }
           }
         }
-        break;
-
-      case ASSIGN:
-      case ASSIGN_BITOR:
-      case ASSIGN_BITXOR:
-      case ASSIGN_BITAND:
-      case ASSIGN_LSH:
-      case ASSIGN_RSH:
-      case ASSIGN_URSH:
-      case ASSIGN_ADD:
-      case ASSIGN_SUB:
-      case ASSIGN_MUL:
-      case ASSIGN_DIV:
-      case ASSIGN_MOD:
-      case ASSIGN_EXPONENT:
-        {
-          Node lhs = n.getFirstChild();
-          if (lhs.isName()) {
-            String name = lhs.getString();
-            Var var = t.getScope().getVar(name);
-            if (isConstant(var, lhs) && !initializedConstants.add(var)) {
-              reportError(n, var, name);
-            } else if (var != null && var.isGoogModuleExports() && !initializedConstants.add(var)) {
-              compiler.report(
-                  JSError.make(n, CONST_REASSIGNED_VALUE_ERROR, "exports", n.getSourceFileName()));
-            }
+      }
+      case ASSIGN,
+          ASSIGN_BITOR,
+          ASSIGN_BITXOR,
+          ASSIGN_BITAND,
+          ASSIGN_LSH,
+          ASSIGN_RSH,
+          ASSIGN_URSH,
+          ASSIGN_ADD,
+          ASSIGN_SUB,
+          ASSIGN_MUL,
+          ASSIGN_DIV,
+          ASSIGN_MOD,
+          ASSIGN_EXPONENT -> {
+        Node lhs = n.getFirstChild();
+        if (lhs.isName()) {
+          String name = lhs.getString();
+          Var var = t.getScope().getVar(name);
+          if (isConstant(var, lhs) && !initializedConstants.add(var)) {
+            reportError(n, var, name);
+          } else if (var != null && var.isGoogModuleExports() && !initializedConstants.add(var)) {
+            compiler.report(
+                JSError.make(n, CONST_REASSIGNED_VALUE_ERROR, "exports", n.getSourceFileName()));
           }
-          break;
         }
-
-      case INC:
-      case DEC:
-        {
-          Node lhs = n.getFirstChild();
-          if (lhs.isName()) {
-            String name = lhs.getString();
-            Var var = t.getScope().getVar(name);
-            if (isConstant(var, lhs)) {
-              reportError(n, var, name);
-            }
+      }
+      case INC, DEC -> {
+        Node lhs = n.getFirstChild();
+        if (lhs.isName()) {
+          String name = lhs.getString();
+          Var var = t.getScope().getVar(name);
+          if (isConstant(var, lhs)) {
+            reportError(n, var, name);
           }
-          break;
         }
-      default:
-        break;
+      }
+      default -> {}
     }
   }
 

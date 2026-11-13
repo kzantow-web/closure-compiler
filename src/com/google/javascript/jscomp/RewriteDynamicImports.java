@@ -40,12 +40,12 @@ import com.google.javascript.rhino.jstype.JSTypeRegistry;
 import com.google.javascript.rhino.jstype.TemplateType;
 import com.google.javascript.rhino.jstype.TemplatizedType;
 import java.util.Iterator;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Rewrite dynamic import expressions to account for bundling and module rewriting. Since dynamic
  * imports cannot be fully polyfilled, optionally support replacing the expression with a function
- * call which indicates an external polyfill is utilized.
+ * call (alias function) which indicates an external polyfill is utilized.
  *
  * <p>If the import specifier is a string literal and the module resolver recognizes the target, the
  * pass retargets the specifier to the correct output chunk.
@@ -61,6 +61,26 @@ import javax.annotation.Nullable;
  * <pre>
  *   imprt_('./output-chunk0.js').then(function() { return module$output$chunk0; });
  * </pre>
+ *
+ * <p>Unlike other "rewrite" passes for which the DefaultPassConfig checks the output language level
+ * using {@code options.needsTranspilationOf(feature)} before adding a pass, it does not check the
+ * language level before adding this particular pass. Even when supported by the output level, we
+ * still invoke this pass if {@code options.shouldAllowDynamicImport()} is set. The only difference
+ * is that for {@code ES2020}, the dynamic imports syntax can pass through if aliasing is not
+ * requested, while for {@code < ES2020} they must get rewritten using the alias call.
+ *
+ * <pre>
+ * <p>{@code
+ * options.shouldAllowDynamicImport() === false?
+ *     ForbidDynamicImportUsage :
+ *     (output >= ES2020) ?
+ *         don't *really* rewrite it unless aliasing is requested :
+ *         rewrite it using the alias call
+ * }
+ * </pre>
+ *
+ * <p>TODO: b/291319705 For the above reason, the pass should be better named as
+ * MaybeRewriteDynamicImports.
  */
 public class RewriteDynamicImports extends NodeTraversal.AbstractPostOrderCallback
     implements CompilerPass {
@@ -68,7 +88,7 @@ public class RewriteDynamicImports extends NodeTraversal.AbstractPostOrderCallba
   static final DiagnosticType DYNAMIC_IMPORT_ALIASING_REQUIRED =
       DiagnosticType.warning(
           "JSC_DYNAMIC_IMPORT_ALIASING_REQUIRED",
-          "Dynamic import expressions should be aliased for for language level. "
+          "Dynamic import expressions should be aliased for language level. "
               + "Use the --dynamic_import_alias flag.");
 
   static final DiagnosticType DYNAMIC_IMPORT_INVALID_ALIAS =
@@ -81,7 +101,6 @@ public class RewriteDynamicImports extends NodeTraversal.AbstractPostOrderCallba
   private final boolean requiresAliasing;
   private final boolean shouldWrapDynamicImportCallbacks;
   private boolean dynamicImportsRemoved = false;
-  private boolean arrowFunctionsAdded = false;
   private boolean wrappedDynamicImportCallback = false;
 
   /** @param compiler The compiler */
@@ -98,7 +117,7 @@ public class RewriteDynamicImports extends NodeTraversal.AbstractPostOrderCallba
   private final boolean aliasIsValid() {
     return alias != null
         && (alias.equals("import")
-            || NodeUtil.isValidQualifiedName(compiler.getFeatureSet(), alias));
+            || NodeUtil.isValidQualifiedName(compiler.getAllowableFeatures(), alias));
   }
 
   @Override
@@ -111,15 +130,20 @@ public class RewriteDynamicImports extends NodeTraversal.AbstractPostOrderCallba
     if (wrappedDynamicImportCallback) {
       injectWrappingFunctionExtern();
     }
+
     if (dynamicImportsRemoved) {
+      compiler.markFeatureNotAllowed(Feature.DYNAMIC_IMPORT);
+
       // This pass removes dynamic import, but adds arrow functions.
-      compiler.setFeatureSet(compiler.getFeatureSet().without(Feature.DYNAMIC_IMPORT));
+      // It is unusual to call this NodeUtil method instead of the TranspilationPasses one. This
+      // pass runs as a stage1 checks pass and does not have access to {@code TranspilationPasses}.
+      // Adding that dep produces a cycle in the BUILD dep graph.
+      // Regular transpiler passes must use the {@code
+      // TranspilationPassses.maybeMarkFeaturesAsTranspiledAway}.
+      NodeUtil.removeFeatureFromAllScripts(root, Feature.DYNAMIC_IMPORT, compiler);
       if (this.requiresAliasing && aliasIsValid()) {
         NodeTraversal.traverse(compiler, externs, new AliasInjectingTraversal());
       }
-    }
-    if (arrowFunctionsAdded) {
-      compiler.setFeatureSet(compiler.getFeatureSet().with(Feature.ARROW_FUNCTIONS));
     }
   }
 
@@ -149,20 +173,20 @@ public class RewriteDynamicImports extends NodeTraversal.AbstractPostOrderCallba
           (targetModuleVarName == null) ? null : t.getScope().getVar(targetModuleVarName);
 
       if (targetModuleNS != null) {
-        final JSChunk targetModule = targetModuleNS.getInput().getChunk();
+        final JSChunk targetChunk = targetModuleNS.getInput().getChunk();
         // If the target module is bundled into the same output chunk, replace the import statement
         // with a promise that resolves to the module namespace.
         // No further rewriting occurs for this case.
-        if (t.getChunk() == targetModule) {
+        if (t.getChunk() == targetChunk) {
           replaceDynamicImportWithPromise(t, n, targetModuleNS);
           return;
         } else {
           // The target output chunk is recognized and different from the current chunk.
           // Retarget the import specifier path to the output chunk path and rewrite
           // the import to reference the rewritten global module namespace variable.
-          retargetImportSpecifier(t, n, targetModule);
+          retargetImportSpecifier(t, n, targetChunk);
           if (NodeUtil.isExpressionResultUsed(n)) {
-            addChainedThen(n, targetModuleNS);
+            addChainedThen(t, n, targetModuleNS);
           }
         }
       }
@@ -251,10 +275,10 @@ public class RewriteDynamicImports extends NodeTraversal.AbstractPostOrderCallba
    *   import('./chunk0.js');
    * </pre>
    */
-  private void retargetImportSpecifier(NodeTraversal t, Node dynamicImport, JSChunk targetModule) {
+  private void retargetImportSpecifier(NodeTraversal t, Node dynamicImport, JSChunk targetChunk) {
     String retargetedSpecifier;
     String importingChunkFilename = getChunkFileName(t.getInput().getChunk());
-    String targetChunkFilename = getChunkFileName(targetModule);
+    String targetChunkFilename = getChunkFileName(targetChunk);
     try {
       retargetedSpecifier =
           ModuleLoader.relativePathFrom(importingChunkFilename, targetChunkFilename);
@@ -289,7 +313,7 @@ public class RewriteDynamicImports extends NodeTraversal.AbstractPostOrderCallba
    *   import('./foo.js').then(() => module$foo);
    * </pre>
    */
-  private void addChainedThen(Node dynamicImport, Var targetModuleNs) {
+  private void addChainedThen(NodeTraversal t, Node dynamicImport, Var targetModuleNs) {
     JSTypeRegistry registry = compiler.getTypeRegistry();
     final Node importParent = dynamicImport.getParent();
     final Node placeholder = IR.empty();
@@ -321,9 +345,9 @@ public class RewriteDynamicImports extends NodeTraversal.AbstractPostOrderCallba
       importThenCall.copyTypeFrom(dynamicImport);
     }
     placeholder.replaceWith(importThenCall);
+    NodeUtil.addFeatureToScript(t.getCurrentScript(), Feature.ARROW_FUNCTIONS, compiler);
     compiler.reportChangeToChangeScope(callbackFn);
     compiler.reportChangeToEnclosingScope(importParent);
-    arrowFunctionsAdded = true;
   }
 
   /**

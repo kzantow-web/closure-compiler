@@ -67,9 +67,6 @@ public class ParseTree {
   public CatchTree asCatch() { return (CatchTree) this; }
   public ClassDeclarationTree asClassDeclaration() { return (ClassDeclarationTree) this; }
   public CommaExpressionTree asCommaExpression() { return (CommaExpressionTree) this; }
-  public ComprehensionIfTree asComprehensionIf() { return (ComprehensionIfTree) this; }
-  public ComprehensionForTree asComprehensionFor() { return (ComprehensionForTree) this; }
-  public ComprehensionTree asComprehension() { return (ComprehensionTree) this; }
   public ComputedPropertyDefinitionTree asComputedPropertyDefinition() {
     return (ComputedPropertyDefinitionTree) this; }
 
@@ -207,32 +204,43 @@ public class ParseTree {
       parseTree = parseTree.asParenExpression().expression;
     }
 
-    switch (parseTree.type) {
-      case ARRAY_PATTERN:
-      case OBJECT_PATTERN:
-        return true;
-      default:
-        return false;
-    }
+    return switch (parseTree.type) {
+      case ARRAY_PATTERN, OBJECT_PATTERN -> true;
+      default -> false;
+    };
   }
 
+  /** Is valid assignment target for non-vanilla assignment operators like `+=`, `-+`, `**=`, etc */
+  public boolean isValidNonVanillaAssignmentTarget() {
+    ParseTree parseTree = this;
+    while (parseTree.type == ParseTreeType.PAREN_EXPRESSION) {
+      parseTree = parseTree.asParenExpression().expression;
+    }
+    return switch (parseTree.type) {
+      case IDENTIFIER_EXPRESSION, MEMBER_EXPRESSION, MEMBER_LOOKUP_EXPRESSION, DEFAULT_PARAMETER ->
+          true;
+      case ARRAY_PATTERN, OBJECT_PATTERN -> false;
+      default -> false;
+    };
+  }
+
+  /** Is valid assignment target for any assignment operator like `=`, `+=`, `-+`, `**=`, etc */
   public boolean isValidAssignmentTarget() {
     ParseTree parseTree = this;
     while (parseTree.type == ParseTreeType.PAREN_EXPRESSION) {
       parseTree = parseTree.asParenExpression().expression;
     }
 
-    switch(parseTree.type) {
-      case IDENTIFIER_EXPRESSION:
-      case MEMBER_EXPRESSION:
-      case MEMBER_LOOKUP_EXPRESSION:
-      case ARRAY_PATTERN:
-      case OBJECT_PATTERN:
-      case DEFAULT_PARAMETER:
-        return true;
-      default:
-        return false;
-    }
+    return switch (parseTree.type) {
+      case IDENTIFIER_EXPRESSION,
+          MEMBER_EXPRESSION,
+          MEMBER_LOOKUP_EXPRESSION,
+          ARRAY_PATTERN,
+          OBJECT_PATTERN,
+          DEFAULT_PARAMETER ->
+          true;
+      default -> false;
+    };
   }
 
   public boolean isRestParameter() {

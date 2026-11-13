@@ -35,14 +35,13 @@ import java.util.Iterator;
 public class CrossChunkMethodMotion implements CompilerPass {
 
   // Internal errors
-  static final DiagnosticType NULL_COMMON_MODULE_ERROR = DiagnosticType.error(
-      "JSC_INTERNAL_ERROR_MODULE_DEPEND",
-      "null deepest common module");
+  static final DiagnosticType NULL_COMMON_CHUNK_ERROR =
+      DiagnosticType.error("JSC_INTERNAL_ERROR_CHUNK_DEPEND", "null deepest common chunk");
 
   private final AbstractCompiler compiler;
   private final IdGenerator idGenerator;
   private final AnalyzePrototypeProperties analyzer;
-  private final JSChunkGraph moduleGraph;
+  private final JSChunkGraph chunkGraph;
   private final boolean noStubFunctions;
   private final AstFactory astFactory;
 
@@ -71,8 +70,7 @@ public class CrossChunkMethodMotion implements CompilerPass {
    * @param idGenerator An id generator for method stubs.
    * @param canModifyExterns If true, then we can move prototype properties that are declared in the
    *     externs file.
-   * @param noStubFunctions if true, we can move methods without stub functions in the parent
-   *     chunk.
+   * @param noStubFunctions if true, we can move methods without stub functions in the parent chunk.
    */
   CrossChunkMethodMotion(
       AbstractCompiler compiler,
@@ -81,10 +79,10 @@ public class CrossChunkMethodMotion implements CompilerPass {
       boolean noStubFunctions) {
     this.compiler = compiler;
     this.idGenerator = idGenerator;
-    this.moduleGraph = compiler.getModuleGraph();
+    this.chunkGraph = compiler.getChunkGraph();
     this.analyzer =
         new AnalyzePrototypeProperties(
-            compiler, moduleGraph, canModifyExterns, false /* anchorUnusedVars */, noStubFunctions);
+            compiler, chunkGraph, canModifyExterns, /* anchorUnusedVars= */ false, noStubFunctions);
     this.noStubFunctions = noStubFunctions;
     this.astFactory = compiler.createAstFactory();
   }
@@ -93,22 +91,20 @@ public class CrossChunkMethodMotion implements CompilerPass {
   public void process(Node externRoot, Node root) {
     // If there are < 2 chunks, then we will never move anything,
     // so we're done.
-    if (moduleGraph.getChunkCount() > 1) {
+    if (chunkGraph.getChunkCount() > 1) {
       analyzer.process(externRoot, root);
       moveMethods(analyzer.getAllNameInfo());
     }
   }
 
-  /**
-   * Move methods deeper in the chunk graph when possible.
-   */
+  /** Move methods deeper in the chunk graph when possible. */
   private void moveMethods(Collection<NameInfo> allNameInfo) {
     boolean hasStubDeclaration = idGenerator.hasGeneratedAnyIds();
     for (NameInfo nameInfo : allNameInfo) {
       if (!nameInfo.isReferenced()) {
         // The code below can't do anything with unreferenced name
         // infos.  They should be skipped to avoid NPE since their
-        // deepestCommonModuleRef is null.
+        // deepestCommonChunkRef is null.
         continue;
       }
 
@@ -116,26 +112,24 @@ public class CrossChunkMethodMotion implements CompilerPass {
         continue;
       }
 
-      JSChunk deepestCommonModuleRef = nameInfo.getDeepestCommonModuleRef();
-      if (deepestCommonModuleRef == null) {
-        compiler.report(JSError.make(NULL_COMMON_MODULE_ERROR));
+      JSChunk deepestCommonChunkRef = nameInfo.getDeepestCommonChunkRef();
+      if (deepestCommonChunkRef == null) {
+        compiler.report(JSError.make(NULL_COMMON_CHUNK_ERROR));
         continue;
       }
 
-      Iterator<Symbol> declarations =
-          nameInfo.getDeclarations().descendingIterator();
+      Iterator<Symbol> declarations = nameInfo.getDeclarations().descendingIterator();
       while (declarations.hasNext()) {
         Symbol symbol = declarations.next();
-        if (symbol instanceof PrototypeProperty) {
-          tryToMovePrototypeMethod(nameInfo, deepestCommonModuleRef, (PrototypeProperty) symbol);
-        } else if (symbol instanceof ClassMemberFunction) {
-          tryToMoveMemberFunction(nameInfo, deepestCommonModuleRef, (ClassMemberFunction) symbol);
+        if (symbol instanceof PrototypeProperty prototypeProperty) {
+          tryToMovePrototypeMethod(nameInfo, deepestCommonChunkRef, prototypeProperty);
+        } else if (symbol instanceof ClassMemberFunction classMemberFunction) {
+          tryToMoveMemberFunction(nameInfo, deepestCommonChunkRef, classMemberFunction);
         } // else it's a variable definition, and we don't move those.
       }
     }
 
-    if (!noStubFunctions && !hasStubDeclaration && idGenerator
-        .hasGeneratedAnyIds()) {
+    if (!noStubFunctions && !hasStubDeclaration && idGenerator.hasGeneratedAnyIds()) {
       // Declare stub functions in the top-most chunk.
       Node declarations = compiler.parseSyntheticCode("chunk_method_stubbing", STUB_DECLARATIONS);
       NodeUtil.markNewScopesChanged(declarations, compiler);
@@ -146,7 +140,7 @@ public class CrossChunkMethodMotion implements CompilerPass {
   }
 
   private void tryToMovePrototypeMethod(
-      NameInfo nameInfo, JSChunk deepestCommonModuleRef, PrototypeProperty prop) {
+      NameInfo nameInfo, JSChunk deepestCommonChunkRef, PrototypeProperty prop) {
 
     // We should only move a property across chunks if:
     // 1) We can move it deeper in the chunk graph, and
@@ -186,12 +180,12 @@ public class CrossChunkMethodMotion implements CompilerPass {
       return;
     }
 
-    if (moduleGraph.dependsOn(deepestCommonModuleRef, prop.getModule())) {
+    if (chunkGraph.dependsOn(deepestCommonChunkRef, prop.getChunk())) {
       if (hasUnmovableRedeclaration(nameInfo, prop)) {
         // If it has been redeclared on the same object, skip it.
         return;
       }
-      Node destParent = compiler.getNodeForCodeInsertion(deepestCommonModuleRef);
+      Node destParent = compiler.getNodeForCodeInsertion(deepestCommonChunkRef);
       if (valueParent.isMemberFunctionDef()) {
         movePrototypeObjectLiteralMethodShorthand(nameInfo.name, destParent, value);
       } else if (valueParent.isStringKey()) {
@@ -340,6 +334,7 @@ public class CrossChunkMethodMotion implements CompilerPass {
         ownerDotPrototypeNode.isQualifiedName()
             && ownerDotPrototypeNode.getString().equals("prototype"),
         ownerDotPrototypeNode);
+    Node originalScript = NodeUtil.getEnclosingScript(memberFunctionDef);
 
     if (noStubFunctions) {
       // Remove the definition from the object literal
@@ -355,6 +350,8 @@ public class CrossChunkMethodMotion implements CompilerPass {
               .createAssignStatement(ownerDotPrototypeDotPropName, functionNode.detach())
               .srcrefTreeIfMissing(memberFunctionDef);
       destParent.addChildToFront(definitionStatement);
+      NodeUtil.addFeaturesToScript(
+          destParent, NodeUtil.getFeatureSetOfScript(originalScript), compiler);
       compiler.reportChangeToEnclosingScope(destParent);
     } else {
       int stubId = idGenerator.newId();
@@ -373,6 +370,9 @@ public class CrossChunkMethodMotion implements CompilerPass {
               .createAssignStatement(ownerDotPrototypeDotPropName, unstubCall)
               .srcrefTreeIfMissing(memberFunctionDef);
       destParent.addChildToFront(definitionStatement);
+      NodeUtil.addFeaturesToScript(
+          destParent, NodeUtil.getFeatureSetOfScript(originalScript), compiler);
+
       compiler.reportChangeToEnclosingScope(destParent);
     }
   }
@@ -419,12 +419,12 @@ public class CrossChunkMethodMotion implements CompilerPass {
    * all uses of the method.
    *
    * @param nameInfo information about all definitions of the given property name
-   * @param deepestCommonModuleRef all uses of the method are either in this chunk or in chunks that
+   * @param deepestCommonChunkRef all uses of the method are either in this chunk or in chunks that
    *     depend on it
    * @param classMemberFunction definition of the method within its class body
    */
   private void tryToMoveMemberFunction(
-      NameInfo nameInfo, JSChunk deepestCommonModuleRef, ClassMemberFunction classMemberFunction) {
+      NameInfo nameInfo, JSChunk deepestCommonChunkRef, ClassMemberFunction classMemberFunction) {
 
     // We should only move a property across chunks if:
     // 1) We can move it deeper in the chunk graph,
@@ -456,38 +456,40 @@ public class CrossChunkMethodMotion implements CompilerPass {
       return;
     }
 
-    if (moduleGraph.dependsOn(deepestCommonModuleRef, classMemberFunction.getModule())) {
+    if (chunkGraph.dependsOn(deepestCommonChunkRef, classMemberFunction.getChunk())) {
       if (hasUnmovableRedeclaration(nameInfo, classMemberFunction)) {
         // If it has been redeclared on the same object, skip it.
         return;
       }
 
-      Node destinationParent = compiler.getNodeForCodeInsertion(deepestCommonModuleRef);
-      String className = rootVar.getName();
+      Node destinationParent = compiler.getNodeForCodeInsertion(deepestCommonChunkRef);
+      Node classNameNode = rootVar.getNameNode();
       if (noStubFunctions) {
-        moveClassInstanceMethodWithoutStub(className, definitionNode, destinationParent);
+        moveClassInstanceMethodWithoutStub(classNameNode, definitionNode, destinationParent);
       } else {
-        moveClassInstanceMethodWithStub(className, definitionNode, destinationParent);
+        moveClassInstanceMethodWithStub(classNameNode, definitionNode, destinationParent);
       }
     }
   }
 
   private void moveClassInstanceMethodWithoutStub(
-      String className, Node methodDefinition, Node destinationParent) {
+      Node classNameNode, Node methodDefinition, Node destinationParent) {
     checkArgument(methodDefinition.isMemberFunctionDef(), methodDefinition);
     Node classMembers = checkNotNull(methodDefinition.getParent());
     checkState(classMembers.isClassMembers(), classMembers);
     Node classNode = classMembers.getParent();
     checkState(classNode.isClass(), classNode);
+    Node originalScript = NodeUtil.getEnclosingScript(methodDefinition);
 
     methodDefinition.detach();
     compiler.reportChangeToEnclosingScope(classMembers);
 
     // ClassName.prototype.propertyName = function() {};
     Node functionNode = checkNotNull(methodDefinition.getOnlyChild());
+    Node clonedNameNode = classNameNode.cloneNode().copyTypeFrom(classNode);
     Node classNameDotPrototypeDotPropName =
         astFactory.createGetProp(
-            astFactory.createPrototypeAccess(astFactory.createName(className, type(classNode))),
+            astFactory.createPrototypeAccess(clonedNameNode),
             methodDefinition.getString(),
             type(functionNode));
     functionNode.detach();
@@ -496,11 +498,13 @@ public class CrossChunkMethodMotion implements CompilerPass {
             .createAssignStatement(classNameDotPrototypeDotPropName, functionNode)
             .srcrefTreeIfMissing(methodDefinition);
     destinationParent.addChildToFront(definitionStatementNode);
+    NodeUtil.addFeaturesToScript(
+        destinationParent, NodeUtil.getFeatureSetOfScript(originalScript), compiler);
     compiler.reportChangeToEnclosingScope(destinationParent);
   }
 
   private void moveClassInstanceMethodWithStub(
-      String className, Node methodDefinition, Node destinationParent) {
+      Node classNameNode, Node methodDefinition, Node destinationParent) {
     checkArgument(methodDefinition.isMemberFunctionDef(), methodDefinition);
     Node classMembers = checkNotNull(methodDefinition.getParent());
     checkState(classMembers.isClassMembers(), classMembers);
@@ -511,9 +515,10 @@ public class CrossChunkMethodMotion implements CompilerPass {
 
     // Put a stub definition after the class
     // ClassName.prototype.propertyName = JSCompiler_stubMethod(id);
+    Node clonedNameNode = classNameNode.cloneNode().copyTypeFrom(classNode);
     Node classNameDotPrototypeDotPropName =
         astFactory.createGetProp(
-            astFactory.createPrototypeAccess(astFactory.createName(className, type(classNode))),
+            astFactory.createPrototypeAccess(clonedNameNode),
             methodDefinition.getString(),
             type(methodDefinition));
     Node stubCall = createStubCall(methodDefinition, stubId);
@@ -523,6 +528,8 @@ public class CrossChunkMethodMotion implements CompilerPass {
             .srcrefTreeIfMissing(methodDefinition);
     Node classDefiningStatement = NodeUtil.getEnclosingStatement(classMembers);
     stubDefinitionStatement.insertAfter(classDefiningStatement);
+
+    Node originalScript = NodeUtil.getEnclosingScript(methodDefinition);
 
     // remove the definition from the class
     methodDefinition.detach();
@@ -540,19 +547,20 @@ public class CrossChunkMethodMotion implements CompilerPass {
             .createAssignStatement(classNameDotPrototypeDotPropName2, unstubCall)
             .srcrefTreeIfMissing(methodDefinition);
     destinationParent.addChildToFront(statementNode);
+    NodeUtil.addFeaturesToScript(
+        destinationParent, NodeUtil.getFeatureSetOfScript(originalScript), compiler);
     compiler.reportChangeToEnclosingScope(destinationParent);
   }
 
   static boolean hasUnmovableRedeclaration(NameInfo nameInfo, Property prop) {
     for (Symbol symbol : nameInfo.getDeclarations()) {
-      if (symbol instanceof Property) {
-        Property otherProp = (Property) symbol;
+      if (symbol instanceof Property otherProp) {
         // It is possible to do better here if the dependencies are well defined
         // but redefinitions are usually in optional chunks so it isn't likely
         // worth the effort to check.
         if (prop != otherProp
             && prop.getRootVar() == otherProp.getRootVar()
-            && prop.getModule() != otherProp.getModule()) {
+            && prop.getChunk() != otherProp.getChunk()) {
           return true;
         }
       }

@@ -24,7 +24,7 @@ import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.Node;
 import java.util.ArrayList;
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -59,7 +59,7 @@ final class CheckSideEffects extends AbstractPostOrderCallback implements Compil
 
   private final List<Node> problemNodes = new ArrayList<>();
 
-  private final Set<String> noSideEffectExterns = new HashSet<>();
+  private final Set<String> noSideEffectExterns = new LinkedHashSet<>();
 
   private final AbstractCompiler compiler;
 
@@ -130,7 +130,7 @@ final class CheckSideEffects extends AbstractPostOrderCallback implements Compil
 
     boolean isResultUsed = NodeUtil.isExpressionResultUsed(n);
     boolean isSimpleOp = NodeUtil.isSimpleOperator(n) || n.isGetProp() || n.isGetElem();
-    if (!isResultUsed) {
+    if (!isResultUsed && !n.isVoid()) {
       if (isSimpleOp || !t.getCompiler().getAstAnalyzer().mayHaveSideEffects(n)) {
         if (report) {
           String msg = "This code lacks side-effects. Is there a bug?";
@@ -232,7 +232,8 @@ final class CheckSideEffects extends AbstractPostOrderCallback implements Compil
 
         if (target.getString().equals(J2CL_PROTECTOR_FN)) {
           // Do not let non-J2CL code abuse it.
-          checkState(n.getSourceFileName().endsWith(".java.js"), "Only allowed for J2CL code");
+          checkState(
+              J2clSourceUtils.isJ2clSource(n.getSourceFileName()), "Only allowed for J2CL code");
           NodeUtil.deleteFunctionCall(n, compiler);
           return;
         }

@@ -18,10 +18,13 @@ package com.google.javascript.jscomp;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.javascript.jscomp.base.JSCompStrings.lines;
+import static java.util.Objects.requireNonNull;
 
+import com.google.auto.value.AutoBuilder;
 import com.google.auto.value.AutoValue;
-import com.google.common.collect.HashBasedTable;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Table;
+import com.google.common.collect.Tables;
 import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.JSDocInfo.Visibility;
 import com.google.javascript.rhino.Node;
@@ -32,10 +35,11 @@ import com.google.javascript.rhino.jstype.JSTypeNative;
 import com.google.javascript.rhino.jstype.JSTypeRegistry;
 import com.google.javascript.rhino.jstype.ObjectType;
 import java.util.Deque;
+import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.Objects;
 import java.util.function.Supplier;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * A compiler pass that checks that the programmer has obeyed all the access control restrictions
@@ -46,29 +50,25 @@ import javax.annotation.Nullable;
  */
 class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
 
-  static final DiagnosticType DEPRECATED_NAME = DiagnosticType.disabled(
-      "JSC_DEPRECATED_VAR",
-      "Variable {0} has been deprecated.");
+  static final DiagnosticType DEPRECATED_NAME =
+      DiagnosticType.disabled("JSC_DEPRECATED_VAR", "Variable {0} has been deprecated.");
 
-  static final DiagnosticType DEPRECATED_NAME_REASON = DiagnosticType.disabled(
-      "JSC_DEPRECATED_VAR_REASON",
-      "Variable {0} has been deprecated: {1}");
+  static final DiagnosticType DEPRECATED_NAME_REASON =
+      DiagnosticType.disabled("JSC_DEPRECATED_VAR_REASON", "Variable {0} has been deprecated: {1}");
 
-  static final DiagnosticType DEPRECATED_PROP = DiagnosticType.disabled(
-      "JSC_DEPRECATED_PROP",
-      "Property {0} of type {1} has been deprecated.");
+  static final DiagnosticType DEPRECATED_PROP =
+      DiagnosticType.disabled(
+          "JSC_DEPRECATED_PROP", "Property {0} of type {1} has been deprecated.");
 
-  static final DiagnosticType DEPRECATED_PROP_REASON = DiagnosticType.disabled(
-      "JSC_DEPRECATED_PROP_REASON",
-      "Property {0} of type {1} has been deprecated: {2}");
+  static final DiagnosticType DEPRECATED_PROP_REASON =
+      DiagnosticType.disabled(
+          "JSC_DEPRECATED_PROP_REASON", "Property {0} of type {1} has been deprecated: {2}");
 
-  static final DiagnosticType DEPRECATED_CLASS = DiagnosticType.disabled(
-      "JSC_DEPRECATED_CLASS",
-      "Class {0} has been deprecated.");
+  static final DiagnosticType DEPRECATED_CLASS =
+      DiagnosticType.disabled("JSC_DEPRECATED_CLASS", "Class {0} has been deprecated.");
 
-  static final DiagnosticType DEPRECATED_CLASS_REASON = DiagnosticType.disabled(
-      "JSC_DEPRECATED_CLASS_REASON",
-      "Class {0} has been deprecated: {1}");
+  static final DiagnosticType DEPRECATED_CLASS_REASON =
+      DiagnosticType.disabled("JSC_DEPRECATED_CLASS_REASON", "Class {0} has been deprecated: {1}");
 
   static final DiagnosticType BAD_PACKAGE_PROPERTY_ACCESS =
       DiagnosticType.error(
@@ -90,27 +90,22 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
           "JSC_BAD_PROTECTED_PROPERTY_ACCESS",
           "Access to protected property {0} of {1} not allowed here.");
 
-  static final DiagnosticType
-      BAD_PROPERTY_OVERRIDE_IN_FILE_WITH_FILEOVERVIEW_VISIBILITY =
+  static final DiagnosticType BAD_PROPERTY_OVERRIDE_IN_FILE_WITH_FILEOVERVIEW_VISIBILITY =
       DiagnosticType.error(
           "JSC_BAD_PROPERTY_OVERRIDE_IN_FILE_WITH_FILEOVERVIEW_VISIBILITY",
           "Overridden property {0} in file with fileoverview visibility {1}"
               + " must explicitly redeclare superclass visibility");
 
   static final DiagnosticType PRIVATE_OVERRIDE =
-      DiagnosticType.warning(
-          "JSC_PRIVATE_OVERRIDE",
-          "Overriding private property of {0}.");
+      DiagnosticType.warning("JSC_PRIVATE_OVERRIDE", "Overriding private property of {0}.");
 
   static final DiagnosticType EXTEND_FINAL_CLASS =
       DiagnosticType.error(
-          "JSC_EXTEND_FINAL_CLASS",
-          "{0} is not allowed to extend final class {1}.");
+          "JSC_EXTEND_FINAL_CLASS", "{0} is not allowed to extend final class {1}.");
 
   static final DiagnosticType VISIBILITY_MISMATCH =
       DiagnosticType.warning(
-          "JSC_VISIBILITY_MISMATCH",
-          "Overriding {0} property of {1} with {2} property.");
+          "JSC_VISIBILITY_MISMATCH", "Overriding {0} property of {1} with {2} property.");
 
   static final DiagnosticType CONST_PROPERTY_REASSIGNED_VALUE =
       DiagnosticType.warning(
@@ -128,8 +123,7 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
 
   static final DiagnosticType CONST_PROPERTY_DELETED =
       DiagnosticType.warning(
-        "JSC_CONSTANT_PROPERTY_DELETED",
-        "constant property {0} cannot be deleted");
+          "JSC_CONSTANT_PROPERTY_DELETED", "constant property {0} cannot be deleted");
 
   private final AbstractCompiler compiler;
   private final JSTypeRegistry typeRegistry;
@@ -140,8 +134,8 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
   // handful of elements, it provides the smoothest API (push, pop, and a peek that doesn't throw
   // on empty), and (unlike ArrayDeque) is null-permissive. No other option meets all these needs.
   private final Deque<ObjectType> currentClassStack = new LinkedList<>();
-  private final HashBasedTable<JSType, String, ConstantDeclaration> constPropertyInits =
-      HashBasedTable.create();
+  private final Table<JSType, String, ConstantDeclaration> constPropertyInits =
+      Tables.newCustomTable(new LinkedHashMap<>(), LinkedHashMap::new);
 
   /**
    * Distinguishes between different kinds of "constant" JSDoc to provide more useful error messages
@@ -171,8 +165,7 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
 
   @Override
   public void process(Node externs, Node root) {
-    CollectFileOverviewVisibility collectPass =
-        new CollectFileOverviewVisibility(compiler);
+    CollectFileOverviewVisibility collectPass = new CollectFileOverviewVisibility(compiler);
     collectPass.process(externs, root);
     defaultVisibilityForFiles = collectPass.getFileOverviewVisibilityMap();
 
@@ -215,8 +208,7 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
    *   <li>CLASS extends clause: secondary root of the scope defined by the CLASS.
    * </ul>
    */
-  @Nullable
-  private static Node primaryAccessControlScopeRootFor(Node node) {
+  private static @Nullable Node primaryAccessControlScopeRootFor(Node node) {
     if (isExtendsTarget(node)) {
       return node.getParent();
     } else if (isFunctionOrClass(node)) {
@@ -237,73 +229,71 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
    *   <li>Object-literal members => The object-literal type
    * </ul>
    */
-  @Nullable
-  private ObjectType bestInstanceTypeForMethodOrCtor(Node n) {
+  private @Nullable ObjectType bestInstanceTypeForMethodOrCtor(Node n) {
     checkState(isFunctionOrClass(n), n);
     Node parent = n.getParent();
 
     // We need to handle declaration syntaxes separately in a way that we can't determine based on
     // the type of just one node.
     // TODO(nickreid): Determine if these can be replaced with FUNCTION and CLASS cases below.
-    if (NodeUtil.isFunctionDeclaration(n) || NodeUtil.isClassDeclaration(n)) {
+    if (NodeUtil.isFunctionDeclaration(n)
+        // isClassDeclaration returns false for many instances that we need to handle here.
+        || n.isClass()) {
       return instanceTypeFor(n.getJSType());
     }
 
     // All the remaining cases can be isolated based on `parent`.
     switch (parent.getToken()) {
-      case NAME:
+      case NAME -> {
         return instanceTypeFor(n.getJSType());
-
-      case ASSIGN:
-        {
-          Node lValue = parent.getFirstChild();
-          if (NodeUtil.isNormalGet(lValue)) {
-            // We have an assignment of the form `a.b = ...`.
-            JSType lValueType = lValue.getJSType();
-            if (lValueType != null && (lValueType.isConstructor() || lValueType.isInterface())) {
-              // Case `a.B = ...`
-              return instanceTypeFor(lValueType);
-            } else if (NodeUtil.isPrototypeProperty(lValue)) {
-              // Case `a.B.prototype = ...`
-              return instanceTypeFor(NodeUtil.getPrototypeClassName(lValue).getJSType());
-            } else {
-              // Case `a.b = ...`
-              return instanceTypeFor(lValue.getFirstChild().getJSType());
-            }
+      }
+      case ASSIGN -> {
+        Node lValue = parent.getFirstChild();
+        if (NodeUtil.isNormalGet(lValue)) {
+          // We have an assignment of the form `a.b = ...`.
+          JSType lValueType = lValue.getJSType();
+          if (lValueType != null && (lValueType.isConstructor() || lValueType.isInterface())) {
+            // Case `a.B = ...`
+            return instanceTypeFor(lValueType);
+          } else if (NodeUtil.isPrototypeProperty(lValue)) {
+            // Case `a.B.prototype = ...`
+            return instanceTypeFor(NodeUtil.getPrototypeClassName(lValue).getJSType());
           } else {
-            // We have an assignment of the form "a = ...", so pull the type off the "a".
-            return instanceTypeFor(lValue.getJSType());
+            // Case `a.b = ...`
+            return instanceTypeFor(lValue.getFirstChild().getJSType());
           }
+        } else {
+          // We have an assignment of the form "a = ...", so pull the type off the "a".
+          return instanceTypeFor(lValue.getJSType());
         }
+      }
+      case STRING_KEY,
+          GETTER_DEF,
+          SETTER_DEF,
+          MEMBER_FUNCTION_DEF,
+          MEMBER_FIELD_DEF,
+          COMPUTED_PROP -> {
+        Node grandparent = parent.getParent();
+        Node greatGrandparent = grandparent.getParent();
 
-      case STRING_KEY:
-      case GETTER_DEF:
-      case SETTER_DEF:
-      case MEMBER_FUNCTION_DEF:
-      case MEMBER_FIELD_DEF:
-      case COMPUTED_PROP:
-        {
-          Node grandparent = parent.getParent();
-          Node greatGrandparent = grandparent.getParent();
-
-          if (grandparent.isObjectLit()) {
-            return grandparent.getJSType().isFunctionPrototypeType()
-                // Case: `grandparent` is an object-literal prototype.
-                // Example: `Foo.prototype = { a: function() {} };` where `parent` is "a".
-                ? instanceTypeFor(grandparent.getJSType())
-                : null;
-          } else if (greatGrandparent.isClass()) {
-            // Case: `n` is a class member definition.
-            // Example: `class Foo { a() {} }` where `parent` is "a".
-            return instanceTypeFor(greatGrandparent.getJSType());
-          } else {
-            // This would indicate the AST is malformed.
-            throw new AssertionError(greatGrandparent);
-          }
+        if (grandparent.isObjectLit()) {
+          return grandparent.getJSType().isFunctionPrototypeType()
+              // Case: `grandparent` is an object-literal prototype.
+              // Example: `Foo.prototype = { a: function() {} };` where `parent` is "a".
+              ? instanceTypeFor(grandparent.getJSType())
+              : null;
+        } else if (greatGrandparent.isClass()) {
+          // Case: `n` is a class member definition.
+          // Example: `class Foo { a() {} }` where `parent` is "a".
+          return instanceTypeFor(greatGrandparent.getJSType());
+        } else {
+          // This would indicate the AST is malformed.
+          throw new AssertionError(greatGrandparent);
         }
-
-      default:
+      }
+      default -> {
         return null;
+      }
     }
   }
 
@@ -317,8 +307,7 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
    *   <li>Object-literal type => The type
    * </ul>
    */
-  @Nullable
-  private static ObjectType instanceTypeFor(JSType type) {
+  private static @Nullable ObjectType instanceTypeFor(JSType type) {
     if (type == null) {
       return null;
     } else if (type.isUnionType()) {
@@ -371,22 +360,16 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
       NodeTraversal traversal) {
 
     switch (identifierBehaviour) {
-      case ES5_CLASS_INVOCATION:
-      case ES6_CLASS_INVOCATION:
-      case ES6_CLASS_NAMESPACE:
-        // At these usages, treat the deprecation applied to type-declaration as referring to the
-        // type, not the identifier (e.g. "the use of class `Foo` is deprecated").
-        checkTypeDeprecation(traversal, node);
-        break;
-
-      case NON_CONSTRUCTOR:
-        // For all identifiers that are not constructors, deprecation refers to the identifier (e.g.
-        // "the use of variable `x` is deprecated").
-        checkNameDeprecation(traversal, node);
-        break;
-
-      default:
-        break;
+      case ES5_CLASS_INVOCATION, ES6_CLASS_INVOCATION, ES6_CLASS_NAMESPACE ->
+          // At these usages, treat the deprecation applied to type-declaration as referring to the
+          // type, not the identifier (e.g. "the use of class `Foo` is deprecated").
+          checkTypeDeprecation(traversal, node);
+      case NON_CONSTRUCTOR ->
+          // For all identifiers that are not constructors, deprecation refers to the identifier
+          // (e.g.
+          // "the use of variable `x` is deprecated").
+          checkNameDeprecation(traversal, node);
+      default -> {}
     }
 
     if (propRef != null && !identifierBehaviour.equals(IdentifierBehaviour.ES5_CLASS_NAMESPACE)) {
@@ -463,21 +446,20 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
     }
 
     // Don't bother checking constructors.
-    if (propRef.getSourceNode().getParent().isNew()) {
+    if (propRef.sourceNode().getParent().isNew()) {
       return;
     }
 
-    ObjectType objectType = castToObject(dereference(propRef.getReceiverType()));
-    String propertyName = propRef.getName();
+    ObjectType objectType = castToObject(dereference(propRef.receiverType()));
+    String propertyName = propRef.name();
 
     if (objectType != null) {
-      String deprecationInfo
-          = getPropertyDeprecationInfo(objectType, propertyName);
+      String deprecationInfo = getPropertyDeprecationInfo(objectType, propertyName);
       if (deprecationInfo != null) {
         if (!deprecationInfo.isEmpty()) {
           compiler.report(
               JSError.make(
-                  propRef.getSourceNode(),
+                  propRef.sourceNode(),
                   DEPRECATED_PROP_REASON,
                   propertyName,
                   propRef.getReadableTypeNameOrDefault(),
@@ -485,7 +467,7 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
         } else {
           compiler.report(
               JSError.make(
-                  propRef.getSourceNode(),
+                  propRef.sourceNode(),
                   DEPRECATED_PROP,
                   propertyName,
                   propRef.getReadableTypeNameOrDefault()));
@@ -514,7 +496,7 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
         AccessControlUtils.getEffectiveNameVisibility(name, var, defaultVisibilityForFiles);
 
     switch (v) {
-      case PACKAGE:
+      case PACKAGE -> {
         if (!isPackageAccessAllowed(var, name)) {
           compiler.report(
               JSError.make(
@@ -523,8 +505,8 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
                   name.getString(),
                   var.getSourceFile().getName()));
         }
-        break;
-      case PRIVATE:
+      }
+      case PRIVATE -> {
         if (!isPrivateAccessAllowed(var, name)) {
           compiler.report(
               JSError.make(
@@ -533,11 +515,11 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
                   name.getString(),
                   var.getSourceFile().getName()));
         }
-        break;
-      default:
+      }
+      default -> {
         // Nothing to do for PUBLIC and PROTECTED
         // (which is irrelevant for names).
-        break;
+      }
     }
   }
 
@@ -577,15 +559,14 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
         && fileOverview != Visibility.INHERITED) {
       compiler.report(
           JSError.make(
-              propRef.getSourceNode(),
+              propRef.sourceNode(),
               BAD_PROPERTY_OVERRIDE_IN_FILE_WITH_FILEOVERVIEW_VISIBILITY,
-              propRef.getName(),
+              propRef.name(),
               fileOverview.name()));
     }
   }
 
-  @Nullable
-  private static Visibility getOverridingPropertyVisibility(PropertyReference propRef) {
+  private static @Nullable Visibility getOverridingPropertyVisibility(PropertyReference propRef) {
     JSDocInfo overridingInfo = propRef.getJSDocInfo();
     return overridingInfo == null || !overridingInfo.isOverride()
         ? null
@@ -623,22 +604,22 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
       return;
     }
 
-    ObjectType objectType = dereference(propRef.getReceiverType());
-    String propertyName = propRef.getName();
-    Node sourceNode = propRef.getSourceNode();
+    ObjectType objectType = dereference(propRef.receiverType());
+    String propertyName = propRef.name();
+    Node sourceNode = propRef.sourceNode();
 
     Constancy constness = isPropertyDeclaredConstant(objectType, propertyName);
     if (constness.equals(Constancy.MUTABLE)) {
       return;
     }
 
-    if (sourceNode.isFromExterns() && propRef.isDeclaration()) {
+    if (sourceNode.isFromExterns() && propRef.declaration()) {
       // Treat stub declarations in externs as inits, but never warn on them.
       this.recordConstPropertyInit(propRef, objectType, constness);
       return;
     }
 
-    if (!propRef.isMutation()) {
+    if (!propRef.mutation()) {
       return;
     }
 
@@ -654,7 +635,7 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
       return;
     }
 
-    if (objectType.isStructuralType() && !propRef.isDeclaration()) {
+    if (objectType.isStructuralType() && !propRef.declaration()) {
       // We don't know the claess this structural type matches, so assume all assignments are bad.
       compiler.report(
           JSError.make(
@@ -677,9 +658,9 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
     this.recordConstPropertyInit(propRef, objectType, constness);
   }
 
-  @Nullable
-  private ConstantDeclaration getConstPropertyInit(PropertyReference ref, ObjectType type) {
-    String name = ref.getName();
+  private @Nullable ConstantDeclaration getConstPropertyInit(
+      PropertyReference ref, ObjectType type) {
+    String name = ref.name();
     while (type != null) {
       ConstantDeclaration init = this.constPropertyInits.get(type, name);
       if (init != null) {
@@ -701,22 +682,22 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
       PropertyReference ref, ObjectType type, Constancy annotation) {
     this.constPropertyInits
         .row(type)
-        .putIfAbsent(ref.getName(), new ConstantDeclaration(ref.getSourceNode(), annotation));
+        .putIfAbsent(ref.name(), new ConstantDeclaration(ref.sourceNode(), annotation));
 
     // Add the prototype when we're looking at an instance object
     if (type.isInstanceType()) {
       ObjectType prototype = type.getImplicitPrototype();
-      if (prototype != null && prototype.hasProperty(ref.getName())) {
+      if (prototype != null && prototype.hasProperty(ref.name())) {
         this.constPropertyInits
             .row(prototype)
-            .putIfAbsent(ref.getName(), new ConstantDeclaration(ref.getSourceNode(), annotation));
+            .putIfAbsent(ref.name(), new ConstantDeclaration(ref.sourceNode(), annotation));
       }
     }
   }
 
   /**
-   * Return an object with the same nominal type as obj,
-   * but without any possible extra properties that exist on obj.
+   * Return an object with the same nominal type as obj, but without any possible extra properties
+   * that exist on obj.
    */
   static ObjectType getCanonicalInstance(ObjectType obj) {
     FunctionType ctor = obj.getConstructor();
@@ -724,8 +705,7 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
   }
 
   /** Dereference a type, autoboxing it and filtering out null. */
-  @Nullable
-  private static ObjectType dereference(JSType type) {
+  private static @Nullable ObjectType dereference(JSType type) {
     return type == null ? null : type.dereference();
   }
 
@@ -756,7 +736,7 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
    * definitions of "is this an override".
    */
   private void checkPropertyVisibility(PropertyReference propRef) {
-    if (NodeUtil.isEs6ConstructorMemberFunctionDef(propRef.getSourceNode())) {
+    if (NodeUtil.isEs6ConstructorMemberFunctionDef(propRef.sourceNode())) {
       // Class ctor *declarations* can never violate visibility restrictions. They are not
       // accesses and we don't consider them overrides.
       //
@@ -767,23 +747,22 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
       return;
     }
 
-    JSType rawReferenceType = typeOrUnknown(propRef.getReceiverType()).autobox();
+    JSType rawReferenceType = typeOrUnknown(propRef.receiverType()).autobox();
     ObjectType referenceType = castToObject(rawReferenceType);
 
-    String propertyName = propRef.getName();
+    String propertyName = propRef.name();
 
     StaticSourceFile definingSource =
-        AccessControlUtils.getDefiningSource(propRef.getSourceNode(), referenceType, propertyName);
+        AccessControlUtils.getDefiningSource(propRef.sourceNode(), referenceType, propertyName);
 
     // Is this a normal property access, or are we trying to override
     // an existing property?
-    boolean isOverride = propRef.isDocumentedDeclaration() || propRef.isOverride();
+    boolean isOverride = propRef.isDocumentedDeclaration() || propRef.override();
 
-    ObjectType objectType = AccessControlUtils.getObjectType(
-        referenceType, isOverride, propertyName);
+    ObjectType objectType =
+        AccessControlUtils.getObjectType(referenceType, isOverride, propertyName);
 
-    Visibility fileOverviewVisibility =
-        defaultVisibilityForFiles.get(definingSource);
+    Visibility fileOverviewVisibility = defaultVisibilityForFiles.get(definingSource);
 
     Visibility visibility =
         getEffectivePropertyVisibility(propRef, referenceType, defaultVisibilityForFiles);
@@ -812,11 +791,11 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
       return;
     }
 
-    StaticSourceFile referenceSource = propRef.getSourceNode().getStaticSourceFile();
+    StaticSourceFile referenceSource = propRef.sourceNode().getStaticSourceFile();
 
     if (isOverride) {
-      boolean sameInput = referenceSource != null
-          && referenceSource.getName().equals(definingSource.getName());
+      boolean sameInput =
+          referenceSource != null && referenceSource.getName().equals(definingSource.getName());
       checkPropertyOverrideVisibility(
           propRef, visibility, fileOverviewVisibility, reportType, sameInput);
     } else {
@@ -883,28 +862,34 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
       JSType objectType,
       boolean sameInput) {
     Visibility overridingVisibility =
-        propRef.isOverride() ? propRef.getJSDocInfo().getVisibility() : Visibility.INHERITED;
+        propRef.override() ? propRef.getJSDocInfo().getVisibility() : Visibility.INHERITED;
 
     // Check that:
     // (a) the property *can* be overridden,
-    // (b) the visibility of the override is the same as the
+    // (b) the visibility of the override is the same as (or broader than) the
     //     visibility of the original property,
     // (c) the visibility is explicitly redeclared if the override is in
     //     a file with default visibility in the @fileoverview block.
     if (visibility == Visibility.PRIVATE && !sameInput) {
-      compiler.report(
-          JSError.make(propRef.getSourceNode(), PRIVATE_OVERRIDE, objectType.toString()));
-    } else if (overridingVisibility != Visibility.INHERITED
-        && overridingVisibility != visibility
+      compiler.report(JSError.make(propRef.sourceNode(), PRIVATE_OVERRIDE, objectType.toString()));
+    } else if (!canOverrideVisibility(visibility, overridingVisibility)
         && fileOverviewVisibility == null) {
       compiler.report(
           JSError.make(
-              propRef.getSourceNode(),
+              propRef.sourceNode(),
               VISIBILITY_MISMATCH,
               visibility.name(),
               objectType.toString(),
               overridingVisibility.name()));
     }
+  }
+
+  private static boolean canOverrideVisibility(
+      Visibility superclassVisibility, Visibility subclassVisibility) {
+    // This allows INHERITED to override anything, PUBLIC to override anything (except INHERITED),
+    // and PROTECTED to override anything (except PUBLIC or INHERITED). PRIVATE was already handled
+    // in a previous check, leaving PACKAGE as the lowest visibility.
+    return superclassVisibility.compareTo(subclassVisibility) <= 0;
   }
 
   private void checkPropertyAccessVisibility(
@@ -923,17 +908,10 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
     @Nullable ObjectType ownerType = instanceTypeFor(objectType);
 
     switch (visibility) {
-      case PACKAGE:
-        checkPackagePropertyVisibility(propRef, referenceSource, definingSource);
-        break;
-      case PRIVATE:
-        checkPrivatePropertyVisibility(propRef, ownerType);
-        break;
-      case PROTECTED:
-        checkProtectedPropertyVisibility(propRef, ownerType);
-        break;
-      default:
-        break;
+      case PACKAGE -> checkPackagePropertyVisibility(propRef, referenceSource, definingSource);
+      case PRIVATE -> checkPrivatePropertyVisibility(propRef, ownerType);
+      case PROTECTED -> checkProtectedPropertyVisibility(propRef, ownerType);
+      default -> {}
     }
   }
 
@@ -944,35 +922,29 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
     CodingConvention codingConvention = compiler.getCodingConvention();
     String refPackage = codingConvention.getPackageName(referenceSource);
     String defPackage = codingConvention.getPackageName(definingSource);
-    if (refPackage == null
-        || defPackage == null
-        || !refPackage.equals(defPackage)) {
+    if (refPackage == null || defPackage == null || !refPackage.equals(defPackage)) {
       compiler.report(
           JSError.make(
-              propRef.getSourceNode(),
+              propRef.sourceNode(),
               BAD_PACKAGE_PROPERTY_ACCESS,
-              propRef.getName(),
+              propRef.name(),
               propRef.getReadableTypeNameOrDefault()));
-      }
+    }
   }
 
   private void checkPrivatePropertyVisibility(
-      PropertyReference propRef,
-      @Nullable ObjectType ownerType) {
+      PropertyReference propRef, @Nullable ObjectType ownerType) {
 
     // private access is not allowed outside the file from a different
     // enclosing class.
     // TODO(tbreisacher): Should we also include the filename where ownerType is defined?
     String readableTypeName =
-        ownerType == null || ownerType.equals(propRef.getReceiverType())
+        ownerType == null || ownerType.equals(propRef.receiverType())
             ? propRef.getReadableTypeNameOrDefault()
             : ownerType.toString();
     compiler.report(
         JSError.make(
-            propRef.getSourceNode(),
-            BAD_PRIVATE_PROPERTY_ACCESS,
-            propRef.getName(),
-            readableTypeName));
+            propRef.sourceNode(), BAD_PRIVATE_PROPERTY_ACCESS, propRef.name(), readableTypeName));
   }
 
   private void checkProtectedPropertyVisibility(
@@ -994,9 +966,9 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
 
     compiler.report(
         JSError.make(
-            propRef.getSourceNode(),
+            propRef.sourceNode(),
             BAD_PROTECTED_PROPERTY_ACCESS,
-            propRef.getName(),
+            propRef.name(),
             propRef.getReadableTypeNameOrDefault()));
   }
 
@@ -1030,19 +1002,19 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
     // 2) Instantiations of deprecated classes.
     // For now, we just let everything else by.
     if (t.inGlobalScope()) {
-      if (!NodeUtil.isInvocationTarget(propRef.getSourceNode())) {
+      if (!NodeUtil.isInvocationTarget(propRef.sourceNode())) {
         return false;
       }
     }
 
     // We can always assign to a deprecated property, to keep it up to date.
-    if (propRef.isMutation()) {
+    if (propRef.mutation()) {
       return false;
     }
 
     // Don't warn if the node is just declaring the property, not reading it.
     JSDocInfo jsdoc = propRef.getJSDocInfo();
-    if (propRef.isDeclaration() && (jsdoc != null) && jsdoc.isDeprecated()) {
+    if (propRef.declaration() && (jsdoc != null) && jsdoc.isDeprecated()) {
       return false;
     }
 
@@ -1050,14 +1022,14 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
   }
 
   /**
-   * Returns whether it's currently OK to access deprecated names and
-   * properties.
+   * Returns whether it's currently OK to access deprecated names and properties.
    *
-   * There are 3 exceptions when we're allowed to use a deprecated
-   * type or property:
+   * <pre>
+   * There are 3 exceptions when we're allowed to use a deprecated type or property:
    * 1) When we're in a deprecated function.
    * 2) When we're in a deprecated class.
    * 3) When we're in a static method of a deprecated class.
+   * </pre>
    */
   private boolean canAccessDeprecatedTypes(NodeTraversal t) {
     Node scopeRoot = t.getClosestHoistScopeRoot();
@@ -1066,6 +1038,8 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
     }
     Node scopeRootParent = scopeRoot.getParent();
 
+    // Cases 2 and 3 are required to handle ES5-style class methods since they aren't nested inside
+    // their class. This is tested in the CheckAccessControlsOldSyntaxTest class.
     return
     // Case #1
     (deprecationDepth > 0)
@@ -1086,11 +1060,11 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
   }
 
   /**
-   * Returns the deprecation reason for the type if it is marked
-   * as being deprecated. Returns empty string if the type is deprecated
-   * but no reason was given. Returns null if the type is not deprecated.
+   * Returns the deprecation reason for the type if it is marked as being deprecated. Returns empty
+   * string if the type is deprecated but no reason was given. Returns null if the type is not
+   * deprecated.
    */
-  private static String getTypeDeprecationInfo(JSType type) {
+  private static @Nullable String getTypeDeprecationInfo(JSType type) {
     if (type == null) {
       return null;
     }
@@ -1098,7 +1072,7 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
     return getDeprecationReason(type.getJSDocInfo());
   }
 
-  private static String getDeprecationReason(JSDocInfo info) {
+  private static @Nullable String getDeprecationReason(JSDocInfo info) {
     if (info != null && info.isDeprecated()) {
       if (info.getDeprecationReason() != null) {
         return info.getDeprecationReason();
@@ -1124,12 +1098,11 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
   }
 
   /**
-   * Returns the deprecation reason for the property if it is marked
-   * as being deprecated. Returns empty string if the property is deprecated
-   * but no reason was given. Returns null if the property is not deprecated.
+   * Returns the deprecation reason for the property if it is marked as being deprecated. Returns
+   * empty string if the property is deprecated but no reason was given. Returns null if the
+   * property is not deprecated.
    */
-  @Nullable
-  private static String getPropertyDeprecationInfo(ObjectType type, String prop) {
+  private static @Nullable String getPropertyDeprecationInfo(ObjectType type, String prop) {
     String depReason = getDeprecationReason(type.getOwnPropertyJSDocInfo(prop));
     if (depReason != null) {
       return depReason;
@@ -1143,8 +1116,7 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
   }
 
   /** If the superclass is final, this method returns an instance of the superclass. */
-  @Nullable
-  private static ObjectType getSuperClassInstanceIfFinal(FunctionType subCtor) {
+  private static @Nullable ObjectType getSuperClassInstanceIfFinal(FunctionType subCtor) {
     FunctionType ctor = subCtor.getSuperClassConstructor();
     JSDocInfo doc = (ctor == null) ? null : ctor.getJSDocInfo();
     if (doc != null && doc.isFinal()) {
@@ -1154,8 +1126,7 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
     return null;
   }
 
-  @Nullable
-  private static ObjectType castToObject(@Nullable JSType type) {
+  private static @Nullable ObjectType castToObject(@Nullable JSType type) {
     return type == null ? null : type.toMaybeObjectType();
   }
 
@@ -1168,12 +1139,14 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
     return parent.isClass() && node.isSecondChildOf(parent);
   }
 
-  @Nullable
-  private JSType getTypeOfThis(Node scopeRoot) {
+  private @Nullable JSType getTypeOfThis(Node scopeRoot) {
     if (scopeRoot.isRoot() || scopeRoot.isScript()) {
       return castToObject(scopeRoot.getJSType());
     } else if (scopeRoot.isModuleBody()) {
       return null;
+    } else if (NodeUtil.isClassStaticBlock(scopeRoot)) {
+      Node classNode = NodeUtil.getEnclosingClass(scopeRoot);
+      return classNode.getJSType();
     }
 
     checkArgument(scopeRoot.isFunction(), scopeRoot);
@@ -1211,7 +1184,7 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
     ES6_CLASS_INVOCATION,
     ES6_CLASS_NAMESPACE;
 
-    public static IdentifierBehaviour select(Node target) {
+    static IdentifierBehaviour select(Node target) {
       JSType type = target.getJSType();
       if (type == null || !type.isFunctionType()) {
         // If we aren't sure what we're dealing with be more strict.
@@ -1246,36 +1219,34 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
    *
    * <p>This class should only be used within {@link CheckAccessControls}. Having package-private
    * visibility is a quirk of {@link AutoValue}.
+   *
+   * @param sourceNode The {@link Node} that spawned this reference.
+   * @param receiverType The type from which the property is referenced, not necessarily the one
+   *     that declared it.
+   * @param readableTypeName A lazy source for a human-readable type name to use when generating
+   *     messages.
+   *     <p>Most users probably want {@link #getReadableTypeNameOrDefault()}.
    */
-  @AutoValue
-  abstract static class PropertyReference {
-
-    public static Builder builder() {
-      return new AutoValue_CheckAccessControls_PropertyReference.Builder();
+  record PropertyReference(
+      Node sourceNode,
+      String name,
+      ObjectType receiverType,
+      boolean mutation,
+      boolean declaration,
+      boolean override,
+      Supplier<String> readableTypeName) {
+    PropertyReference {
+      requireNonNull(sourceNode, "sourceNode");
+      requireNonNull(name, "name");
+      requireNonNull(receiverType, "receiverType");
+      requireNonNull(readableTypeName, "readableTypeName");
     }
 
-    /** The {@link Node} that spawned this reference. */
-    public abstract Node getSourceNode();
+    public static Builder builder() {
+      return new AutoBuilder_CheckAccessControls_PropertyReference_Builder();
+    }
 
-    public abstract String getName();
-
-    /** The type from which the property is referenced, not necessarily the one that declared it. */
-    public abstract ObjectType getReceiverType();
-
-    public abstract boolean isMutation();
-
-    public abstract boolean isDeclaration();
-
-    public abstract boolean isOverride();
-
-    /**
-     * A lazy source for a human-readable type name to use when generating messages.
-     *
-     * <p>Most users probably want {@link #getReadableTypeNameOrDefault()}.
-     */
-    public abstract Supplier<String> getReadableTypeName();
-
-    @AutoValue.Builder
+    @AutoBuilder
     abstract interface Builder {
       Builder setSourceNode(Node node);
 
@@ -1297,41 +1268,39 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
     // Derived properties.
 
     public final Node getParentNode() {
-      return getSourceNode().getParent();
+      return sourceNode().getParent();
     }
 
     public final JSType getJSType() {
-      return getSourceNode().getJSType();
+      return sourceNode().getJSType();
     }
 
-    @Nullable
-    public final JSDocInfo getJSDocInfo() {
-      return NodeUtil.getBestJSDocInfo(getSourceNode());
+    public final @Nullable JSDocInfo getJSDocInfo() {
+      return NodeUtil.getBestJSDocInfo(sourceNode());
     }
 
     public final boolean isDocumentedDeclaration() {
-      return isDeclaration() && (getJSDocInfo() != null);
+      return declaration() && (getJSDocInfo() != null);
     }
 
     public final boolean isDeletion() {
-      return getSourceNode().getParent().isDelProp();
+      return sourceNode().getParent().isDelProp();
     }
 
     public final String getReadableTypeNameOrDefault() {
-      String preferred = getReadableTypeName().get();
-      return preferred.isEmpty() ? getReceiverType().toString() : preferred;
+      String preferred = readableTypeName().get();
+      return preferred.isEmpty() ? receiverType().toString() : preferred;
     }
   }
 
-  @Nullable
-  private PropertyReference createPropertyReference(Node sourceNode) {
+  private @Nullable PropertyReference createPropertyReference(Node sourceNode) {
     Node parent = sourceNode.getParent();
     @Nullable JSDocInfo jsdoc = NodeUtil.getBestJSDocInfo(sourceNode);
 
     PropertyReference.Builder builder = PropertyReference.builder();
 
     switch (sourceNode.getToken()) {
-      case GETPROP:
+      case GETPROP -> {
         {
           boolean isLValue = NodeUtil.isLValue(sourceNode);
 
@@ -1348,13 +1317,8 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
               .setReadableTypeName(
                   () -> typeRegistry.getReadableTypeName(sourceNode.getFirstChild()));
         }
-        break;
-
-      case STRING_KEY:
-      case GETTER_DEF:
-      case SETTER_DEF:
-      case MEMBER_FUNCTION_DEF:
-      case MEMBER_FIELD_DEF:
+      }
+      case STRING_KEY, GETTER_DEF, SETTER_DEF, MEMBER_FUNCTION_DEF, MEMBER_FIELD_DEF -> {
         {
           switch (parent.getToken()) {
             case OBJECTLIT:
@@ -1390,7 +1354,7 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
               builder
                   .setName(sourceNode.getString())
                   .setReceiverType(typeRegistry.getNativeObjectType(JSTypeNative.UNKNOWN_TYPE))
-                  .setMutation(true)
+                  .setMutation(!(sourceNode.isMemberFieldDef() && !sourceNode.hasChildren()))
                   .setDeclaration(true)
                   // TODO(b/113704668): This definition is way too loose. It was used to prevent
                   // breakages during refactoring and should be tightened.
@@ -1416,10 +1380,10 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
               throw new AssertionError();
           }
         }
-        break;
-
-      default:
+      }
+      default -> {
         return null;
+      }
     }
     return builder.setSourceNode(sourceNode).build();
   }
@@ -1442,11 +1406,11 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
       PropertyReference propRef,
       ObjectType referenceType,
       ImmutableMap<StaticSourceFile, Visibility> fileVisibilityMap) {
-    String propertyName = propRef.getName();
-    boolean isOverride = propRef.isOverride();
+    String propertyName = propRef.name();
+    boolean isOverride = propRef.override();
 
     StaticSourceFile definingSource =
-        AccessControlUtils.getDefiningSource(propRef.getSourceNode(), referenceType, propertyName);
+        AccessControlUtils.getDefiningSource(propRef.sourceNode(), referenceType, propertyName);
     Visibility fileOverviewVisibility = fileVisibilityMap.get(definingSource);
     ObjectType objectType =
         AccessControlUtils.getObjectType(referenceType, isOverride, propertyName);
@@ -1474,7 +1438,7 @@ class CheckAccessControls implements NodeTraversal.Callback, CompilerPass {
       PropertyReference propRef,
       ObjectType objectType,
       @Nullable Visibility fileOverviewVisibility) {
-    String propertyName = propRef.getName();
+    String propertyName = propRef.name();
     Visibility raw = Visibility.INHERITED;
     if (objectType != null) {
       JSDocInfo jsdoc = objectType.getOwnPropertyJSDocInfo(propertyName);

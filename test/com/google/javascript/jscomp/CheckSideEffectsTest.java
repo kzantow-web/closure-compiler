@@ -88,19 +88,22 @@ public final class CheckSideEffectsTest extends CompilerTestCase {
     testSame("var a, b; a = (b = 7, 6)");
     testSame("var a, b; a ||= (b ||= 7, 6)");
     testSame(
-        lines(
-            "function x(){}",
-            "function f(a, b){}",
-            "f(1,(x(), 2));"));
+        """
+        function x(){}
+        function f(a, b){}
+        f(1,(x(), 2));
+        """);
     test(
-        lines(
-            "function x(){}",
-            "function f(a, b){}",
-            "f(1,(2, 3));"),
-        lines(
-            "function x(){}",
-            "function f(a, b){}",
-            "f(1,(JSCOMPILER_PRESERVE(2), 3));"),
+        """
+        function x(){}
+        function f(a, b){}
+        f(1,(2, 3));
+        """,
+        """
+        function x(){}
+        function f(a, b){}
+        f(1,(JSCOMPILER_PRESERVE(2), 3));
+        """,
         warning(e));
   }
 
@@ -113,17 +116,30 @@ public final class CheckSideEffectsTest extends CompilerTestCase {
         warning(e));
     test("`LoneTemplate`", "JSCOMPILER_PRESERVE(`LoneTemplate`)", warning(e));
     test(
-        lines("var name = 'Bad';", "`${name}Template`;"),
-        lines("var name = 'Bad';", "JSCOMPILER_PRESERVE(`${name}Template`)"),
+        """
+        var name = 'Bad';
+        `${name}Template`;
+        """,
+        """
+        var name = 'Bad';
+        JSCOMPILER_PRESERVE(`${name}Template`)
+        """,
         warning(e));
     test(
-        lines("var name = 'BadTail';", "`Template${name}`;"),
-        lines("var name = 'BadTail';", "JSCOMPILER_PRESERVE(`Template${name}`)"),
+        """
+        var name = 'BadTail';
+        `Template${name}`;
+        """,
+        """
+        var name = 'BadTail';
+        JSCOMPILER_PRESERVE(`Template${name}`)
+        """,
         warning(e));
     testSame(
-        lines(
-            "var name = 'Good';",
-            "var templateString = `${name}Template`;"));
+        """
+        var name = 'Good';
+        var templateString = `${name}Template`;
+        """);
     testSame("var templateString = `Template`;");
     testSame("tagged`Template`;");
     testSame("tagged`${name}Template`;");
@@ -131,28 +147,38 @@ public final class CheckSideEffectsTest extends CompilerTestCase {
 
   @Test
   public void testUselessCodeDestructuring() {
-    testSame(lines(
-        "var obj = {",
-        "  itm1: 1,",
-        "  itm2: 2",
-        "}",
-        "var { itm1: de_item1, itm2: de_item2 } = obj;"));
-    testSame(lines(
-        "var obj = {",
-        "  itm1: 1,",
-        "  itm2: 2",
-        "}",
-        "var { itm1, itm2 } = obj;"));
-    testSame(lines(
-        "var arr = ['item1', 'item2', 'item3'];",
-        "var [ itm1 = 1, itm2 = 2 ] = arr;"));
-    testSame(lines(
-        "var arr = ['item1', 'item2', 'item3'];",
-        "var [ itm1 = 1, itm2 = 2 ] = badArr;"));
-    testSame(lines(
-        "var arr = ['item1', 'item2', 'item3'];",
-        "function f(){}",
-        "var [ itm1 = f(), itm2 = 2 ] = badArr;"));
+    testSame(
+        """
+        var obj = {
+          itm1: 1,
+          itm2: 2
+        }
+        var { itm1: de_item1, itm2: de_item2 } = obj;
+        """);
+    testSame(
+        """
+        var obj = {
+          itm1: 1,
+          itm2: 2
+        }
+        var { itm1, itm2 } = obj;
+        """);
+    testSame(
+        """
+        var arr = ['item1', 'item2', 'item3'];
+        var [ itm1 = 1, itm2 = 2 ] = arr;
+        """);
+    testSame(
+        """
+        var arr = ['item1', 'item2', 'item3'];
+        var [ itm1 = 1, itm2 = 2 ] = badArr;
+        """);
+    testSame(
+        """
+        var arr = ['item1', 'item2', 'item3'];
+        function f(){}
+        var [ itm1 = f(), itm2 = 2 ] = badArr;
+        """);
   }
 
   @Test
@@ -183,12 +209,12 @@ public final class CheckSideEffectsTest extends CompilerTestCase {
     testSame("for(; true; ) { bar() }");
     testSame("for(foo(); true; foo()) { bar() }");
     test(
-        "for(void 0; true; foo()) { bar() }",
-        "for(JSCOMPILER_PRESERVE(void 0); true; foo()) { bar() }",
+        "for(i < 5; true; foo()) { bar() }",
+        "for(JSCOMPILER_PRESERVE(i < 5); true; foo()) { bar() }",
         warning(e));
     test(
-        "for(foo(); true; void 0) { bar() }",
-        "for(foo(); true; JSCOMPILER_PRESERVE(void 0)) { bar() }",
+        "for(var i = foo(); i++; i < 5) { bar() }",
+        "for(var i = foo(); i++; JSCOMPILER_PRESERVE(i < 5)) { bar() }",
         warning(e));
     test(
         "for(foo(); true; (1, bar())) { bar() }",
@@ -198,6 +224,76 @@ public final class CheckSideEffectsTest extends CompilerTestCase {
     testSame("for(foo in bar) { foo() }");
     testSame("for (i = 0; el = el.previousSibling; i++) {}");
     testSame("for (i = 0; el = el.previousSibling; i++);");
+  }
+
+  @Test
+  public void testUslessCodeInClassStaticBlock() {
+    testSame(
+        """
+        class C {
+          static {
+            function f(x) { if(x) return; }
+          }
+        }
+        """);
+    testWarning(
+        """
+        class C {
+          static {
+            function f(x) { if(x); }
+          }
+        }
+        """,
+        e);
+    testSame(
+        """
+        class C {
+          static {
+            var f = x=>x;
+          }
+        }
+        """);
+    testWarning(
+        """
+        class C {
+          static {
+            var f = (x)=>{ if(x); }
+          }
+        }
+        """,
+        e);
+    testSame(
+        """
+        class C {
+          static {
+            x = 3;
+          }
+        }
+        """);
+    test(
+        """
+        class C {
+          static {
+            x == 3;
+          }
+        }
+        """,
+        """
+        class C {
+          static {
+            JSCOMPILER_PRESERVE(x == 3);
+          }
+        }
+        """,
+        warning(e));
+    testSame(
+        """
+        class C {
+          static {
+             foo();;;;bar();;;;
+          }
+        }
+        """);
   }
 
   @Test
@@ -245,24 +341,29 @@ public final class CheckSideEffectsTest extends CompilerTestCase {
 
   @Test
   public void testIssue504() {
+    // See https://blickly.github.io/closure-compiler-issues/#504, though the `void` idiom in the
+    // original issue is still relevant externally (see ESLint's ignoreVoid option for the
+    // no-floating-promises rule), so it's no longer an error.
     test(
-        "void f();",
-        "JSCOMPILER_PRESERVE(void f());",
-        warning(e).withMessage(
-            "Suspicious code. The result of the 'void' operator is not being used."));
+        "+f();",
+        "JSCOMPILER_PRESERVE(+f());",
+        warning(e)
+            .withMessage("Suspicious code. The result of the 'pos' operator is not being used."));
   }
 
   @Test
   public void testExternFunctions() {
-    String externs = lines(
-        "/** @return {boolean}",
-        "  * @nosideeffects */",
-        "function noSideEffectsExtern(){}",
-        "/** @return {boolean}",
-        "  * @nosideeffects */",
-        "var noSideEffectsExtern2 = function(){};",
-        "/** @return {boolean} */ function hasSideEffectsExtern(){}",
-        "/** @return {boolean} */ var hasSideEffectsExtern2 = function(){}");
+    String externs =
+        """
+        /** @return {boolean}
+          * @nosideeffects */
+        function noSideEffectsExtern(){}
+        /** @return {boolean}
+          * @nosideeffects */
+        var noSideEffectsExtern2 = function(){};
+        /** @return {boolean} */ function hasSideEffectsExtern(){}
+        /** @return {boolean} */ var hasSideEffectsExtern2 = function(){}
+        """;
 
     testSame(externs(externs), srcs("alert(noSideEffectsExtern());"));
 
@@ -270,17 +371,23 @@ public final class CheckSideEffectsTest extends CompilerTestCase {
         externs(externs),
         srcs("noSideEffectsExtern();"),
         expected("JSCOMPILER_PRESERVE(noSideEffectsExtern());"),
-        warning(e).withMessage(
-            "Suspicious code. The result of the extern function call "
-                + "'noSideEffectsExtern' is not being used."));
+        warning(e)
+            .withMessage(
+                """
+                Suspicious code. The result of the extern function call \
+                'noSideEffectsExtern' is not being used.\
+                """));
 
     test(
         externs(externs),
         srcs("noSideEffectsExtern2();"),
         expected("JSCOMPILER_PRESERVE(noSideEffectsExtern2());"),
-        warning(e).withMessage(
-            "Suspicious code. The result of the extern function call "
-                + "'noSideEffectsExtern2' is not being used."));
+        warning(e)
+            .withMessage(
+                """
+                Suspicious code. The result of the extern function call \
+                'noSideEffectsExtern2' is not being used.\
+                """));
 
     testSame(externs(externs), srcs("hasSideEffectsExtern()"));
 
@@ -294,11 +401,13 @@ public final class CheckSideEffectsTest extends CompilerTestCase {
 
   @Test
   public void testExternPropertyFunctions() {
-    String externs = lines(
-        "/** @const */ var foo = {};",
-        "/** @return {boolean}",
-        "  * @nosideeffects */",
-        "foo.noSideEffectsExtern = function(){}");
+    String externs =
+        """
+        /** @const */ var foo = {};
+        /** @return {boolean}
+          * @nosideeffects */
+        foo.noSideEffectsExtern = function(){}
+        """;
 
     testSame(externs(externs), srcs("alert(foo.noSideEffectsExtern());"));
 
@@ -306,20 +415,23 @@ public final class CheckSideEffectsTest extends CompilerTestCase {
         externs(externs),
         srcs("foo.noSideEffectsExtern();"),
         expected("JSCOMPILER_PRESERVE(foo.noSideEffectsExtern());"),
-        warning(e).withMessage(
-            "Suspicious code. The result of the extern function call "
-                + "'foo.noSideEffectsExtern' is not being used."));
-
+        warning(e)
+            .withMessage(
+                """
+                Suspicious code. The result of the extern function call \
+                'foo.noSideEffectsExtern' is not being used.\
+                """));
     // Methods redefined in inner scopes should not trigger a warning
     testSame(
         externs(externs),
         srcs(
-            lines(
-                "(function() {",
-                "  var foo = {};",
-                "  foo.noSideEffectsExtern = function() {};",
-                "  noSideEffectsExtern();",
-                " })()")));
+            """
+            (function() {
+              var foo = {};
+              foo.noSideEffectsExtern = function() {};
+              noSideEffectsExtern();
+             })()
+            """));
   }
 
   @Test
@@ -339,5 +451,15 @@ public final class CheckSideEffectsTest extends CompilerTestCase {
     testWarning(
         srcs(SourceFile.fromCode("other/file.js", "'require base'")),
         warning(CheckSideEffects.USELESS_CODE_ERROR));
+  }
+
+  @Test
+  public void testToStringWithRadixIsUselessCode() {
+    testWarning("({}).toString(16);", e);
+  }
+
+  @Test
+  public void testOptionalChainToStringWithRadixIsUselessCode() {
+    testWarning("({})?.toString(16);", e);
   }
 }

@@ -31,13 +31,13 @@ import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.jstype.JSType;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Creates an externs file containing all exported symbols and properties
@@ -74,8 +74,8 @@ final class ExternExportsPass extends NodeTraversal.AbstractPostOrderCallback
   private ImmutableSet<String> exportPropertyFunctionNames;
 
   private abstract class Export {
-    protected final String symbolName;
-    protected final Node value;
+    final String symbolName;
+    final Node value;
 
     Export(String symbolName, Node value) {
       this.symbolName = checkNotNull(symbolName);
@@ -107,7 +107,7 @@ final class ExternExportsPass extends NodeTraversal.AbstractPostOrderCallback
      * </pre>
      */
     void appendExtern(String path, Node valueToExport) {
-      List<String> pathPrefixes = computePathPrefixes(path);
+      ImmutableList<String> pathPrefixes = computePathPrefixes(path);
 
       for (int i = 0; i < pathPrefixes.size(); ++i) {
         String pathPrefix = pathPrefixes.get(i);
@@ -223,7 +223,6 @@ final class ExternExportsPass extends NodeTraversal.AbstractPostOrderCallback
      * the same instead of generating arbitrary parameter names.
      *
      * @param exportedFunction FUNCTION Node of the original function
-     * @return
      */
     private Node createExternsParamListFromOriginalFunction(Node exportedFunction) {
       final Node originalParamList = NodeUtil.getFunctionParameters(exportedFunction);
@@ -269,7 +268,9 @@ final class ExternExportsPass extends NodeTraversal.AbstractPostOrderCallback
       final Node paramList = IR.paramList();
       NameGenerator nameGenerator =
           new DefaultNameGenerator(
-              ImmutableSet.copyOf(originalParamNames), "", /* reservedCharacters= */ null);
+              ImmutableSet.copyOf(originalParamNames),
+              "",
+              /* reservedCharacters= */ ImmutableSet.of());
       for (String originalParamName : originalParamNames) {
         String externParamName =
             originalParamName.isEmpty() ? nameGenerator.generateNextName() : originalParamName;
@@ -372,11 +373,10 @@ final class ExternExportsPass extends NodeTraversal.AbstractPostOrderCallback
     }
 
     /**
-     * If the given value is a qualified name which refers
-     * a function or object literal, the node is returned. Otherwise,
-     * {@code null} is returned.
+     * If the given value is a qualified name which refers a function or object literal, the node is
+     * returned. Otherwise, {@code null} is returned.
      */
-    protected Node getValue() {
+    @Nullable Node getValue() {
       String qualifiedName = value.getQualifiedName();
 
       if (qualifiedName == null) {
@@ -413,7 +413,7 @@ final class ExternExportsPass extends NodeTraversal.AbstractPostOrderCallback
    */
   private class SymbolExport extends Export {
 
-    public SymbolExport(String symbolName, Node value) {
+    SymbolExport(String symbolName, Node value) {
       super(symbolName, value);
 
       String qualifiedName = value.getQualifiedName();
@@ -435,7 +435,7 @@ final class ExternExportsPass extends NodeTraversal.AbstractPostOrderCallback
   private class PropertyExport extends Export {
     private final String exportPath;
 
-    public PropertyExport(String exportPath, String symbolName, Node value) {
+    PropertyExport(String exportPath, String symbolName, Node value) {
       super(symbolName, value);
 
       this.exportPath = checkNotNull(exportPath);
@@ -492,10 +492,10 @@ final class ExternExportsPass extends NodeTraversal.AbstractPostOrderCallback
   ExternExportsPass(AbstractCompiler compiler) {
     this.exports = new ArrayList<>();
     this.compiler = compiler;
-    this.definitionMap = new HashMap<>();
+    this.definitionMap = new LinkedHashMap<>();
     this.externsRoot = IR.script();
-    this.alreadyExportedPaths = new HashSet<>();
-    this.mappedPaths = new HashMap<>();
+    this.alreadyExportedPaths = new LinkedHashSet<>();
+    this.mappedPaths = new LinkedHashMap<>();
 
     initExportMethods();
   }
@@ -537,12 +537,14 @@ final class ExternExportsPass extends NodeTraversal.AbstractPostOrderCallback
       .setOutputTypes(true)
       .setTypeRegistry(compiler.getTypeRegistry());
 
-    compiler.setExternExports(Joiner.on("\n").join(
-        "/**",
-        " * @fileoverview Generated externs.",
-        " * @externs",
-        " */",
-        builder.build()));
+    compiler.setExternExports(
+        """
+        /**
+         * @fileoverview Generated externs.
+         * @externs
+         */
+        """
+            + builder.build());
   }
 
   @Override

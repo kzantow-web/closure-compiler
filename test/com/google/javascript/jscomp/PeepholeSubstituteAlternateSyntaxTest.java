@@ -16,7 +16,6 @@
 
 package com.google.javascript.jscomp;
 
-
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -33,11 +32,13 @@ public final class PeepholeSubstituteAlternateSyntaxTest extends CompilerTestCas
   // Needed for testFoldLiteralObjectConstructors(),
   // testFoldLiteralArrayConstructors() and testFoldRegExp...()
   private static final String FOLD_CONSTANTS_TEST_EXTERNS =
-      "var window = {};\n" +
-      "var Object = function f(){};\n" +
-      "var RegExp = function f(a){};\n" +
-      "var Array = function f(a){};\n" +
-      "window.foo = null;\n";
+      """
+      var window = {};
+      var Object = function f(){};
+      var RegExp = function f(a){};
+      var Array = function f(a){};
+      window.foo = null;
+      """;
 
   private boolean late;
   private boolean retraverseOnChange;
@@ -78,6 +79,8 @@ public final class PeepholeSubstituteAlternateSyntaxTest extends CompilerTestCas
   @Test
   public void testFoldLiteralObjectConstructors() {
     enableNormalize();
+    // TODO(bradfordcsmith): Stop normalizing the expected output or document why it is necessary.
+    enableNormalizeExpectedOutput();
 
     // Can fold when normalized
     test("x = new Object", "x = ({})");
@@ -93,12 +96,18 @@ public final class PeepholeSubstituteAlternateSyntaxTest extends CompilerTestCas
     enableNormalize();
 
     // Cannot fold, the constructor being used is actually a local function
-    testSame("x = " + "(function f(){function Object(){this.x=4};return new Object();})();");
+    testSame(
+        """
+        x =
+        (function f(){function Object(){this.x=4};return new Object();})();
+        """);
   }
 
   @Test
   public void testFoldLiteralObjectConstructors_onWindow() {
     enableNormalize();
+    // TODO(bradfordcsmith): Stop normalizing the expected output or document why it is necessary.
+    enableNormalizeExpectedOutput();
 
     // Can fold when normalized
     test("x = new window.Object", "x = ({})");
@@ -182,13 +191,23 @@ public final class PeepholeSubstituteAlternateSyntaxTest extends CompilerTestCas
     testSame("x = Array('a', 1, 2, 'bc', 3, {}, 'abc')");
     testSame("x = new Array(Array(1, '2', 3, '4'))");
     testSame("x = Array(Array(1, '2', 3, '4'))");
-    testSame("x = new Array(" + "Object(), Array(\"abc\", Object(), Array(Array())))");
-    testSame("x = new Array(" + "Object(), Array(\"abc\", Object(), Array(Array())))");
+    testSame(
+        """
+        x = new Array(
+        Object(), Array("abc", Object(), Array(Array())))
+        """);
+    testSame(
+        """
+        x = new Array(
+        Object(), Array("abc", Object(), Array(Array())))
+        """);
   }
 
   @Test
   public void testRemoveWindowRefs() {
     enableNormalize();
+    // TODO(bradfordcsmith): Stop normalizing the expected output or document why it is necessary.
+    enableNormalizeExpectedOutput();
     test("x = window.Object", "x = Object");
     test("x = window.Object.keys", "x = Object.keys");
     test("if (window.Object) {}", "if (Object) {}");
@@ -211,8 +230,10 @@ public final class PeepholeSubstituteAlternateSyntaxTest extends CompilerTestCas
 
     enableNormalize();
     testSame(
-        "var x = "
-            + "(function f(){var window = {Object: function() {}};return new window.Object;})();");
+        """
+        var x =
+        (function f(){var window = {Object: function() {}};return new window.Object;})();
+        """);
   }
 
   /**
@@ -314,8 +335,14 @@ public final class PeepholeSubstituteAlternateSyntaxTest extends CompilerTestCas
     testSame("var x = undefined");
     testSame("function f(f) {var undefined=2;var x = undefined;}");
     enableNormalize();
+    // TODO(bradfordcsmith): Stop normalizing the expected output or document why it is necessary.
+    enableNormalizeExpectedOutput();
     test("var x = undefined", "var x=void 0");
-    testSame("var undefined = 1;" + "function f() {var undefined=2;var x = undefined;}");
+    testSame(
+        """
+        var undefined = 1;
+        function f() {var undefined=2;var x = undefined;}
+        """);
     testSame("function f(undefined) {}");
     testSame("try {} catch(undefined) {}");
     testSame("for (undefined in {}) {}");
@@ -406,20 +433,13 @@ public final class PeepholeSubstituteAlternateSyntaxTest extends CompilerTestCas
   public void testStringArraySplitting() {
     testSame("var x=['1','2','3','4']");
     testSame("var x=['1','2','3','4','5']");
-    test("var x=['1','2','3','4','5','6']",
-         "var x='123456'.split('')");
-    test("var x=['1','2','3','4','5','00']",
-         "var x='1 2 3 4 5 00'.split(' ')");
-    test("var x=['1','2','3','4','5','6','7']",
-        "var x='1234567'.split('')");
-    test("var x=['1','2','3','4','5','6','00']",
-         "var x='1 2 3 4 5 6 00'.split(' ')");
-    test("var x=[' ,',',',',',',',',',',']",
-         "var x=' ,;,;,;,;,;,'.split(';')");
-    test("var x=[',,',' ',',',',',',',',']",
-         "var x=',,; ;,;,;,;,'.split(';')");
-    test("var x=['a,',' ',',',',',',',',']",
-         "var x='a,; ;,;,;,;,'.split(';')");
+    test("var x=['1','2','3','4','5','6']", "var x='123456'.split('')");
+    test("var x=['1','2','3','4','5','00']", "var x='1 2 3 4 5 00'.split(' ')");
+    test("var x=['1','2','3','4','5','6','7']", "var x='1234567'.split('')");
+    test("var x=['1','2','3','4','5','6','00']", "var x='1 2 3 4 5 6 00'.split(' ')");
+    test("var x=[' ,',',',',',',',',',',']", "var x=' ,;,;,;,;,;,'.split(';')");
+    test("var x=[',,',' ',',',',',',',',']", "var x=',,; ;,;,;,;,'.split(';')");
+    test("var x=['a,',' ',',',',',',',',']", "var x='a,; ;,;,;,;,'.split(';')");
 
     // all possible delimiters used, leave it alone
     testSame("var x=[',', ' ', ';', '{', '}']");
@@ -570,16 +590,21 @@ public final class PeepholeSubstituteAlternateSyntaxTest extends CompilerTestCas
 
   @Test
   public void testRotateAssociativeOperators() {
-    test("a || (b || c); a * (b * c); a | (b | c)",
-        "(a || b) || c; (a * b) * c; (a | b) | c");
+    // Multiplication is not associative because it can include floating point numbers e.g.
+    // 1e-300 * 1e300 * 1e9 does not equal 1e-300 * (1e300 * 1e9).
+    test("a || (b || c); a * (b * c); a | (b | c)", "a || b || c; b * c * a; a | b | c");
     testSame("a % (b % c); a / (b / c); a - (b - c);");
-    test("a * (b % c);", "b % c * a");
-    test("a * b * (c / d)", "c / d * b * a");
+    testSame("(a / b) & (c % d)");
+    testSame("(c = 5) & (c % d)");
+    testSame("(a + b) * c * (d % e)");
     test("(a + b) * (c % d)", "c % d * (a + b)");
-    testSame("(a / b) * (c % d)");
-    testSame("(c = 5) * (c % d)");
-    test("(a + b) * c * (d % e)", "d % e * c * (a + b)");
-    test("!a * c * (d % e)", "d % e * c * !a");
+  }
+
+  @Test
+  public void testRotateCommutativeeOperators() {
+    test("a * (b % c);", "b % c * a");
+    testSame("a * b * (c / d)");
+    testSame("!a * c * (d % e)");
   }
 
   @Test
@@ -589,7 +614,7 @@ public final class PeepholeSubstituteAlternateSyntaxTest extends CompilerTestCas
 
   @Test
   public void testNoRotateInfiniteLoop() {
-    test("1/x * (y/1 * (1/z))", "1/x * (y/1) * (1/z)");
-    testSame("1/x * (y/1) * (1/z)");
+    test("1/x || (y/1 ||(1/z))", "1/x || (y/1) || (1/z)");
+    testSame("1/x || (y/1) || (1/z)");
   }
 }

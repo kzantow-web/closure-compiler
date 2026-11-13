@@ -17,6 +17,7 @@ package com.google.javascript.jscomp;
 
 import static com.google.common.base.Preconditions.checkState;
 
+import com.google.common.collect.ImmutableList;
 import com.google.javascript.jscomp.NodeTraversal.AbstractPreOrderCallback;
 import com.google.javascript.jscomp.deps.ModuleLoader;
 import com.google.javascript.jscomp.parsing.parser.FeatureSet;
@@ -29,6 +30,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Finds all references to global symbols in a different output chunk and add ES Module imports and
@@ -78,7 +80,8 @@ final class ConvertChunksToESModules implements CompilerPass {
 
   static final DiagnosticType ASSIGNMENT_TO_IMPORT =
       DiagnosticType.error(
-          "JSC_IMPORT_ASSIGN", "Imported symbol \"{0}\" in chunk \"{1}\" cannot be assigned");
+          "JSC_IMPORT_ASSIGN",
+          "Imported symbol \"{0}\" in chunk \"{1}\" cannot be assigned (defined in \"{2}\")");
 
   static final DiagnosticType UNABLE_TO_COMPUTE_RELATIVE_PATH =
       DiagnosticType.error(
@@ -108,7 +111,7 @@ final class ConvertChunksToESModules implements CompilerPass {
     // Force every output chunk to parse as an ES Module. If a chunk has no imports and
     // no exports, add an empty export list to generate an empty export statement:
     // example: export {};
-    for (JSChunk chunk : compiler.getModuleGraph().getAllChunks()) {
+    for (JSChunk chunk : compiler.getChunkGraph().getAllChunks()) {
       if (!crossChunkExports.containsKey(chunk)
           && !crossChunkImports.containsKey(chunk)
           && !chunk.getInputs().isEmpty()) {
@@ -121,7 +124,7 @@ final class ConvertChunksToESModules implements CompilerPass {
     addImportStatements();
     rewriteDynamicImportCallbacks();
 
-    compiler.setFeatureSet(compiler.getFeatureSet().with(FeatureSet.Feature.MODULES));
+    NodeUtil.addFeatureToAllScripts(root, FeatureSet.Feature.MODULES, compiler);
   }
 
   /**
@@ -129,7 +132,7 @@ final class ConvertChunksToESModules implements CompilerPass {
    * compilation, all input files should be scripts.
    */
   private void convertChunkSourcesToModules() {
-    for (JSChunk chunk : compiler.getModuleGraph().getAllChunks()) {
+    for (JSChunk chunk : compiler.getChunkGraph().getAllChunks()) {
       if (chunk.getInputs().isEmpty()) {
         continue;
       }
@@ -142,7 +145,7 @@ final class ConvertChunksToESModules implements CompilerPass {
         if (firstInput == null) {
           firstInput = input;
           scriptFeatures = scriptFeatures.union(FeatureSet.ES2015_MODULES);
-          astRoot.putProp(Node.FEATURE_SET, scriptFeatures);
+          astRoot.setFeatureSet(scriptFeatures);
           Node moduleBody = new Node(Token.MODULE_BODY);
           moduleBody.srcref(astRoot);
           moduleBody.addChildrenToFront(astRoot.removeChildren());
@@ -153,7 +156,7 @@ final class ConvertChunksToESModules implements CompilerPass {
           FeatureSet firstInputScriptFeatures = NodeUtil.getFeatureSetOfScript(firstInputAstRoot);
           FeatureSet combinedFeatureSet =
               firstInputScriptFeatures.union(NodeUtil.getFeatureSetOfScript(astRoot));
-          astRoot.putProp(Node.FEATURE_SET, combinedFeatureSet);
+          astRoot.setFeatureSet(combinedFeatureSet);
           Node moduleBody = firstInputAstRoot.getFirstChild();
           checkState(moduleBody != null && moduleBody.isModuleBody());
           moduleBody.addChildrenToBack(astRoot.removeChildren());
@@ -252,7 +255,8 @@ final class ConvertChunksToESModules implements CompilerPass {
   }
 
   /** Find and return the module namespace name node in a dynamic import callback function */
-  public static Node getDynamicImportCallbackModuleNamespace(AbstractCompiler compiler, Node call) {
+  public static @Nullable Node getDynamicImportCallbackModuleNamespace(
+      AbstractCompiler compiler, Node call) {
     checkState(call.isCall());
     Node callbackFn = NodeUtil.getArgumentForCallOrNew(call, 0);
     if (callbackFn == null
@@ -328,7 +332,7 @@ final class ConvertChunksToESModules implements CompilerPass {
     }
   }
 
-  /** Find names in a module that are defined in a different module. */
+  /** Find names in a chunk that are defined in a different chunk. */
   private class FindCrossChunkReferences extends AbstractPreOrderCallback {
     @Override
     public boolean shouldTraverse(NodeTraversal t, Node n, Node parent) {
@@ -344,20 +348,20 @@ final class ConvertChunksToESModules implements CompilerPass {
       return true;
     }
 
-    public void visitScript(NodeTraversal t, Node script) {
+    void visitScript(NodeTraversal t, Node script) {
       checkState(script.isScript());
       JSChunk chunk = t.getChunk();
-      List<JSChunk> chunkDependencies = chunk.getDependencies();
+      ImmutableList<JSChunk> chunkDependencies = chunk.getDependencies();
 
       crossChunkExports.putIfAbsent(chunk, new LinkedHashSet<>());
 
       // Ensure every chunk dependency is explicitly listed with an import
       // Dependent chunks may have side effects even if there isn't an explicit name reference
       if (!chunkDependencies.isEmpty()) {
-        Map<JSChunk, Set<String>> namesToImportByModule =
+        Map<JSChunk, Set<String>> namesToImportByChunk =
             crossChunkImports.computeIfAbsent(chunk, (JSChunk k) -> new LinkedHashMap<>());
         for (JSChunk dependency : chunkDependencies) {
-          namesToImportByModule.computeIfAbsent(dependency, (JSChunk k) -> new LinkedHashSet<>());
+          namesToImportByChunk.computeIfAbsent(dependency, (JSChunk k) -> new LinkedHashSet<>());
         }
       }
     }
@@ -406,7 +410,7 @@ final class ConvertChunksToESModules implements CompilerPass {
     checkState(nameNode.isName());
     String name = nameNode.getString();
 
-    if ("".equals(name)) {
+    if (name.isEmpty()) {
       return false;
     }
 
@@ -425,7 +429,11 @@ final class ConvertChunksToESModules implements CompilerPass {
     if (definingChunk != referencingChunk) {
       if (NodeUtil.isLhsOfAssign(nameNode)) {
         t.report(
-            nameNode, ASSIGNMENT_TO_IMPORT, nameNode.getString(), getChunkName(referencingChunk));
+            nameNode,
+            ASSIGNMENT_TO_IMPORT,
+            nameNode.getString(),
+            getChunkName(referencingChunk),
+            getChunkName(definingChunk));
       }
 
       // Mark the chunk where the name is declared as needing an export for this name
@@ -433,14 +441,14 @@ final class ConvertChunksToESModules implements CompilerPass {
           crossChunkExports.computeIfAbsent(definingChunk, (JSChunk k) -> new LinkedHashSet<>());
       namesToExport.add(name);
 
-      // Add an import for this name to this module from the source module
-      Map<JSChunk, Set<String>> namesToImportByModule =
+      // Add an import for this name to this chunk from the source chunk
+      Map<JSChunk, Set<String>> namesToImportByChunk =
           crossChunkImports.computeIfAbsent(referencingChunk, (JSChunk k) -> new LinkedHashMap<>());
       if (importType == ImportType.STATIC) {
-        Set<String> importsForModule =
-            namesToImportByModule.computeIfAbsent(
+        Set<String> importsForChunk =
+            namesToImportByChunk.computeIfAbsent(
                 definingChunk, (JSChunk k) -> new LinkedHashSet<>());
-        importsForModule.add(name);
+        importsForChunk.add(name);
       }
     }
     return true;

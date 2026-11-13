@@ -15,14 +15,14 @@
  */
 package com.google.javascript.jscomp;
 
-import static com.google.javascript.jscomp.Es6ToEs3Util.CANNOT_CONVERT_YET;
+import static com.google.javascript.jscomp.TranspilationUtil.CANNOT_CONVERT;
+import static com.google.javascript.jscomp.TranspilationUtil.CANNOT_CONVERT_YET;
 import static com.google.javascript.jscomp.testing.CodeSubTree.findClassDefinition;
 import static com.google.javascript.rhino.testing.NodeSubject.assertNode;
 
 import com.google.javascript.jscomp.CompilerOptions.LanguageMode;
 import com.google.javascript.jscomp.colors.Color;
 import com.google.javascript.jscomp.colors.StandardColors;
-import com.google.javascript.jscomp.testing.NoninjectingCompiler;
 import com.google.javascript.jscomp.testing.TestExternsBuilder;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
@@ -46,38 +46,29 @@ import org.junit.runners.JUnit4;
 @RunWith(JUnit4.class)
 @SuppressWarnings("RhinoNodeGetFirstFirstChild")
 public final class Es6ConvertSuperTest extends CompilerTestCase {
-
   public Es6ConvertSuperTest() {
     super(MINIMAL_EXTERNS);
-  }
-
-  @Override
-  protected Compiler createCompiler() {
-    return new NoninjectingCompiler();
-  }
-
-  @Override
-  protected NoninjectingCompiler getLastCompiler() {
-    return (NoninjectingCompiler) super.getLastCompiler();
   }
 
   @Override
   @Before
   public void setUp() throws Exception {
     super.setUp();
-
+    enableNormalize();
     setAcceptedLanguage(LanguageMode.ECMASCRIPT_2016);
     setLanguageOut(LanguageMode.ECMASCRIPT5);
     enableTypeCheck();
     enableTypeInfoValidation();
-    enableScriptFeatureValidation();
     replaceTypesWithColors();
     enableMultistageCompilation();
   }
 
   @Override
   protected CompilerPass getProcessor(final Compiler compiler) {
-    return new Es6ConvertSuper(compiler);
+    PhaseOptimizer optimizer = new PhaseOptimizer(compiler, null);
+    optimizer.addOneTimePass(makePassFactory("es6NormalizeClasses", Es6NormalizeClasses::new));
+    optimizer.addOneTimePass(makePassFactory("es6ConvertSuper", Es6ConvertSuper::new));
+    return optimizer;
   }
 
   // Instance `super` resolution
@@ -86,27 +77,30 @@ public final class Es6ConvertSuperTest extends CompilerTestCase {
   public void testCallingSuperInstanceProperty() {
     test(
         externs(
-            lines(
-                "class A {",
-                "  constructor() { }",
-                "",
-                "  /** @param {number} x @return {string} */",
-                "  g(x) { }",
-                "}")),
+            """
+            class A {
+              constructor() { }
+
+              /** @param {number} x @return {string} */
+              g(x) { }
+            }
+            """),
         srcs(
-            lines(
-                "class B extends A {",
-                "  constructor() { super(); }",
-                "",
-                "  f() { super.g(3); }",
-                "}")),
+            """
+            class B extends A {
+              constructor() { super(); }
+
+              f() { super.g(3); }
+            }
+            """),
         expected(
-            lines(
-                "class B extends A {",
-                "  constructor() { super(); }",
-                "",
-                "  f() { A.prototype.g.call(this, 3); }",
-                "}")));
+            """
+            class B extends A {
+              constructor() { super(); }
+
+              f() { A.prototype.g.call(this, 3); }
+            }
+            """));
 
     // get types we need to check
     Color classAPrototypeType =
@@ -179,31 +173,34 @@ public final class Es6ConvertSuperTest extends CompilerTestCase {
   public void testCallingSuperInstanceElement() {
     test(
         externs(
-            lines(
-                "/** @dict */",
-                "class A {",
-                "  constructor() { }",
-                "",
-                "  /** @param {number} x */",
-                "  ['g'](x) { };",
-                "}")),
+            """
+            /** @dict */
+            class A {
+              constructor() { }
+
+              /** @param {number} x */
+              ['g'](x) { };
+            }
+            """),
         srcs(
-            lines(
-                "/** @dict */",
-                "class B extends A {",
-                "  constructor() { super(); }",
-                "",
-                "  ['f']() { super['g'](4); }",
-                "}")),
+            """
+            /** @dict */
+            class B extends A {
+              constructor() { super(); }
+
+              ['f']() { super['g'](4); }
+            }
+            """),
         expected(
-            lines(
-                "class B extends A {",
-                "  constructor() {",
-                "    super();",
-                "  }",
-                "",
-                "  ['f']() { A.prototype['g'].call(this, 4); }",
-                "}")));
+            """
+            class B extends A {
+              constructor() {
+                super();
+              }
+
+              ['f']() { A.prototype['g'].call(this, 4); }
+            }
+            """));
 
     // get types we need to check
     Color classAPrototypeType =
@@ -276,27 +273,30 @@ public final class Es6ConvertSuperTest extends CompilerTestCase {
   public void testAccessingSuperInstanceProperty() {
     test(
         externs(
-            lines(
-                "class A {",
-                "  constructor() { }",
-                "",
-                "  /** @param {number} x */",
-                "  g(x) { }",
-                "}")),
+            """
+            class A {
+              constructor() { }
+
+              /** @param {number} x */
+              g(x) { }
+            }
+            """),
         srcs(
-            lines(
-                "class B extends A {",
-                "  constructor() { super(); }",
-                "",
-                "  f() { var t = super.g; }",
-                "}")),
+            """
+            class B extends A {
+              constructor() { super(); }
+
+              f() { var t = super.g; }
+            }
+            """),
         expected(
-            lines(
-                "class B extends A {",
-                "  constructor() { super(); }",
-                "",
-                "  f() { var t = A.prototype.g; }",
-                "}")));
+            """
+            class B extends A {
+              constructor() { super(); }
+
+              f() { var t = A.prototype.g; }
+            }
+            """));
 
     // get types we need to check
     Color classAPrototypeType =
@@ -342,31 +342,34 @@ public final class Es6ConvertSuperTest extends CompilerTestCase {
   public void testAccessingSuperInstanceElement() {
     test(
         externs(
-            lines(
-                "/** @dict */",
-                "class A {",
-                "  constructor() { }",
-                "",
-                "  /** @param {number} x */",
-                "  ['g'](x) { };",
-                "}")),
+            """
+            /** @dict */
+            class A {
+              constructor() { }
+
+              /** @param {number} x */
+              ['g'](x) { };
+            }
+            """),
         srcs(
-            lines(
-                "/** @dict */",
-                "class B extends A {",
-                "  constructor() { super(); }",
-                "",
-                "  ['f']() { var t = super['g']; }",
-                "}")),
+            """
+            /** @dict */
+            class B extends A {
+              constructor() { super(); }
+
+              ['f']() { var t = super['g']; }
+            }
+            """),
         expected(
-            lines(
-                "class B extends A {",
-                "  constructor() {",
-                "    super();",
-                "  }",
-                "",
-                "  ['f']() { var t = A.prototype['g']; }",
-                "}")));
+            """
+            class B extends A {
+              constructor() {
+                super();
+              }
+
+              ['f']() { var t = A.prototype['g']; }
+            }
+            """));
 
     // get types we need to check
     Color classAPrototypeType =
@@ -406,39 +409,41 @@ public final class Es6ConvertSuperTest extends CompilerTestCase {
   @Test
   public void testCannotAssignToSuperInstanceProperty() {
     testError(
-        lines(
-            "class A {",
-            "  constructor() { }",
-            "",
-            "  /** @param {number} x */",
-            "  g(x) { }",
-            "}",
-            "",
-            "class B extends A {",
-            "  constructor() { super(); }",
-            "",
-            "  f() { super.g = 5; }",
-            "}"),
+        """
+        class A {
+          constructor() { }
+
+          /** @param {number} x */
+          g(x) { }
+        }
+
+        class B extends A {
+          constructor() { super(); }
+
+          f() { super.g = 5; }
+        }
+        """,
         CANNOT_CONVERT_YET);
   }
 
   @Test
   public void testCannotAssignToSuperInstanceElement() {
     testError(
-        lines(
-            "/** @dict */",
-            "class A {",
-            "  constructor() { }",
-            "",
-            "  /** @param {number} x */",
-            "  ['g'](x) { }",
-            "}",
-            "",
-            "class B extends A {",
-            "  constructor() { super(); }",
-            "",
-            "  ['f']() { super['g'] = 5; }",
-            "}"),
+        """
+        /** @dict */
+        class A {
+          constructor() { }
+
+          /** @param {number} x */
+          ['g'](x) { }
+        }
+
+        class B extends A {
+          constructor() { super(); }
+
+          ['f']() { super['g'] = 5; }
+        }
+        """,
         CANNOT_CONVERT_YET);
   }
 
@@ -448,27 +453,34 @@ public final class Es6ConvertSuperTest extends CompilerTestCase {
   public void testCallingSuperStaticProperty() {
     test(
         externs(
-            lines(
-                "class A {",
-                "  constructor() { }",
-                "",
-                "  /** @param {number} x @return {string} */",
-                "  static g(x) { }",
-                "}")),
+            """
+            class A {
+              constructor() { }
+
+              /** @param {number} x @return {string} */
+              static g(x) { }
+            }
+            """),
         srcs(
-            lines(
-                "class B extends A {",
-                "  constructor() { super(); }",
-                "",
-                "  static f() { super.g(3); }",
-                "}")),
+            """
+            class B extends A {
+              constructor() { super(); }
+
+              static f() { super.g(3); }
+            }
+            """),
         expected(
-            lines(
-                "class B extends A {",
-                "  constructor() { super(); }",
-                "",
-                "  static f() { A.g.call(this, 3); }",
-                "}")));
+            """
+            class B extends A {
+              constructor() {
+                super();
+              }
+              /** @nocollapse */
+              static f() {
+                A.g.call(this, 3);
+              }
+            }
+            """));
 
     // get types we need to check
     Color classAType = findClassDefinition(getLastCompiler(), "A").getRootNode().getColor();
@@ -534,31 +546,36 @@ public final class Es6ConvertSuperTest extends CompilerTestCase {
   public void testCallingSuperStaticElement() {
     test(
         externs(
-            lines(
-                "/** @dict */",
-                "class A {",
-                "  constructor() { }",
-                "",
-                "  /** @param {number} x */",
-                "  static ['g'](x) { };",
-                "}")),
+            """
+            /** @dict */
+            class A {
+              constructor() { }
+
+              /** @param {number} x */
+              static ['g'](x) { };
+            }
+            """),
         srcs(
-            lines(
-                "/** @dict */",
-                "class B extends A {",
-                "  constructor() { super(); }",
-                "",
-                "  static ['f']() { super['g'](4); }",
-                "}")),
+            """
+            /** @dict */
+            class B extends A {
+              constructor() { super(); }
+
+              static ['f']() { super['g'](4); }
+            }
+            """),
         expected(
-            lines(
-                "class B extends A {",
-                "  constructor() {",
-                "    super();",
-                "  }",
-                "",
-                "  static ['f']() { A['g'].call(this, 4); }",
-                "}")));
+            """
+            class B extends A {
+              constructor() {
+                super();
+              }
+              /** @nocollapse */
+              static ["f"]() {
+                A["g"].call(this, 4);
+              }
+            }
+            """));
 
     // get types we need to check
     Color classAType = findClassDefinition(getLastCompiler(), "A").getRootNode().getColor();
@@ -623,27 +640,30 @@ public final class Es6ConvertSuperTest extends CompilerTestCase {
   public void testAccessingSuperStaticProperty() {
     test(
         externs(
-            lines(
-                "class A {",
-                "  constructor() { }",
-                "",
-                "  /** @param {number} x */",
-                "  static g(x) { }",
-                "}")),
+            """
+            class A {
+              constructor() { }
+
+              /** @param {number} x */
+              static g(x) { }
+            }
+            """),
         srcs(
-            lines(
-                "class B extends A {",
-                "  constructor() { super(); }",
-                "",
-                "  static f() { var t = super.g; }",
-                "}")),
+            """
+            class B extends A {
+              constructor() { super(); }
+
+              static f() { var t = super.g; }
+            }
+            """),
         expected(
-            lines(
-                "class B extends A {",
-                "  constructor() { super(); }",
-                "",
-                "  static f() { var t = A.g; }",
-                "}")));
+            """
+            class B extends A {
+              constructor() { super(); }
+
+              static f() { var t = A.g; }
+            }
+            """));
 
     // get types we need to check
     Color classAType = findClassDefinition(getLastCompiler(), "A").getRootNode().getColor();
@@ -687,31 +707,34 @@ public final class Es6ConvertSuperTest extends CompilerTestCase {
   public void testAccessingSuperStaticElement() {
     test(
         externs(
-            lines(
-                "/** @dict */",
-                "class A {",
-                "  constructor() { }",
-                "",
-                "  /** @param {number} x */",
-                "  static ['g'](x) { };",
-                "}")),
+            """
+            /** @dict */
+            class A {
+              constructor() { }
+
+              /** @param {number} x */
+              static ['g'](x) { };
+            }
+            """),
         srcs(
-            lines(
-                "/** @dict */",
-                "class B extends A {",
-                "  constructor() { super(); }",
-                "",
-                "  static ['f']() { var t = super['g']; }",
-                "}")),
+            """
+            /** @dict */
+            class B extends A {
+              constructor() { super(); }
+
+              static ['f']() { var t = super['g']; }
+            }
+            """),
         expected(
-            lines(
-                "class B extends A {",
-                "  constructor() {",
-                "    super();",
-                "  }",
-                "",
-                "  static ['f']() { var t = A['g']; }",
-                "}")));
+            """
+            class B extends A {
+              constructor() {
+                super();
+              }
+
+              static ['f']() { var t = A['g']; }
+            }
+            """));
 
     // get types we need to check
     Color classAType = findClassDefinition(getLastCompiler(), "A").getRootNode().getColor();
@@ -752,27 +775,30 @@ public final class Es6ConvertSuperTest extends CompilerTestCase {
   public void testResolvingSuperInGetter() {
     test(
         externs(
-            lines(
-                "class A {",
-                "  constructor() { }",
-                "",
-                "  /** @param {number} x @return {number} */",
-                "  g(x) { }",
-                "}")),
+            """
+            class A {
+              constructor() { }
+
+              /** @param {number} x @return {number} */
+              g(x) { }
+            }
+            """),
         srcs(
-            lines(
-                "class B extends A {",
-                "  constructor() { super(); }",
-                "",
-                "  get f() { super.g(3); }",
-                "}")),
+            """
+            class B extends A {
+              constructor() { super(); }
+
+              get f() { super.g(3); }
+            }
+            """),
         expected(
-            lines(
-                "class B extends A {",
-                "  constructor() { super(); }",
-                "",
-                "  get f() { A.prototype.g.call(this, 3); }",
-                "}")));
+            """
+            class B extends A {
+              constructor() { super(); }
+
+              get f() { A.prototype.g.call(this, 3); }
+            }
+            """));
 
     // get types we need to check
     Color classAPrototypeType =
@@ -850,28 +876,31 @@ public final class Es6ConvertSuperTest extends CompilerTestCase {
   public void testResolvingSuperInSetter() {
     test(
         externs(
-            lines(
-                "class A {",
-                "  constructor() { }",
-                "",
-                "  /** @param {number} x @return {string} */",
-                "  g(x) { }",
-                "}")),
+            """
+            class A {
+              constructor() { }
+
+              /** @param {number} x @return {string} */
+              g(x) { }
+            }
+            """),
         srcs(
-            lines(
-                "class B extends A {",
-                "  constructor() { super(); }",
-                "",
-                "  /** @param {number} x */",
-                "  set f(x) { super.g(x); }",
-                "}")),
+            """
+            class B extends A {
+              constructor() { super(); }
+
+              /** @param {number} y */
+              set f(y) { super.g(y); }
+            }
+            """),
         expected(
-            lines(
-                "class B extends A {",
-                "  constructor() { super(); }",
-                "",
-                "  set f(x) { A.prototype.g.call(this, x); }",
-                "}")));
+            """
+            class B extends A {
+              constructor() { super(); }
+
+              set f(y) { A.prototype.g.call(this, y); }
+            }
+            """));
 
     // get types we need to check
     Color classAPrototypeType =
@@ -945,6 +974,105 @@ public final class Es6ConvertSuperTest extends CompilerTestCase {
     assertNode(thisNode).hasColorThat().isEqualTo(classBInstanceType);
   }
 
+  @Test
+  public void testAccessingStaticGetterViaSuper() {
+    test(
+        externs(
+            """
+            class Parent {
+              constructor() {}
+              /** @return {string} */
+              static getName() {}
+              /** @return {string} */
+              static get greeting() {}
+            }
+            """),
+        srcs(
+            """
+            class Child extends Parent {
+              constructor() {
+                super();
+              }
+              static getName() {
+                return 'Child';
+              }
+              static getGreeting() {
+                return super.greeting;
+              }
+            }
+            """),
+        expected(
+            """
+            class Child extends Parent {
+              constructor() {
+                super();
+              }
+              static getName() {
+                return 'Child';
+              }
+              /** @nocollapse */
+              static getGreeting() {
+                return Reflect.get(
+                    Parent, JSCompiler_renameProperty('greeting', Parent), this);
+              }
+            }
+            """));
+
+    // get types we need to check
+    Color parentType = findClassDefinition(getLastCompiler(), "Parent").getRootNode().getColor();
+    Color childType = findClassDefinition(getLastCompiler(), "Child").getRootNode().getColor();
+
+    // return Reflect.get(Parent, JSCompiler_renameProperty("greeting", Parent), this);
+    Node returnStmt =
+        findClassDefinition(getLastCompiler(), "Child")
+            .findMethodDefinition("getGreeting")
+            .getRootNode() // MEMBER_FUNCTION_DEF
+            .getOnlyChild() // FUNCTION
+            .getLastChild() // BLOCK
+            .getOnlyChild(); // RETURN
+    assertNode(returnStmt).hasToken(Token.RETURN);
+
+    // Reflect.get(Parent, JSCompiler_renameProperty("greeting", Parent), this)
+    Node reflectGetCall = returnStmt.getOnlyChild();
+    assertNode(reflectGetCall).hasToken(Token.CALL).hasColorThat().isEqualTo(StandardColors.STRING);
+
+    // Reflect.get
+    Node callee = reflectGetCall.getFirstChild();
+    assertNode(callee).matchesQualifiedName("Reflect.get");
+
+    // Parent
+    Node parentName = callee.getNext();
+    assertNode(parentName)
+        .matchesQualifiedName("Parent")
+        .hasOriginalName("super")
+        .hasColorThat()
+        .isEqualTo(parentType);
+
+    // JSCompiler_renameProperty("greeting", Parent)
+    Node renamePropertyCall = parentName.getNext();
+    assertNode(renamePropertyCall)
+        .hasToken(Token.CALL)
+        .hasColorThat()
+        .isEqualTo(StandardColors.STRING);
+
+    {
+      // "greeting"
+      Node greetingString = renamePropertyCall.getSecondChild();
+      assertNode(greetingString)
+          .isString("greeting")
+          .hasColorThat()
+          .isEqualTo(StandardColors.STRING);
+
+      // Parent
+      Node parentNameArg = greetingString.getNext();
+      assertNode(parentNameArg).matchesQualifiedName("Parent").hasColorThat().isEqualTo(parentType);
+    }
+
+    // this
+    Node thisNode = renamePropertyCall.getNext();
+    assertNode(thisNode).hasToken(Token.THIS).hasColorThat().isEqualTo(childType);
+  }
+
   // Constructor synthesis
 
   @Test
@@ -952,21 +1080,23 @@ public final class Es6ConvertSuperTest extends CompilerTestCase {
     test(
         externs(""),
         srcs(
-            lines(
-                "class A { }", // Force wrapping.
-                "",
-                "class B extends A {",
-                "  constructor() { super(); }",
-                "}")),
+            """
+            class A { } // Force wrapping.
+
+            class B extends A {
+              constructor() { super(); }
+            }
+            """),
         expected(
-            lines(
-                "class A {",
-                "  constructor() { }",
-                "}",
-                "",
-                "class B extends A {",
-                "  constructor() { super(); }",
-                "}")));
+            """
+            class A {
+              constructor() { }
+            }
+
+            class B extends A {
+              constructor() { super(); }
+            }
+            """));
 
     // class A { ... }
     Node classANode = findClassDefinition(getLastCompiler(), "A").getRootNode();
@@ -998,21 +1128,23 @@ public final class Es6ConvertSuperTest extends CompilerTestCase {
     test(
         externs(new TestExternsBuilder().addArguments().build()),
         srcs(
-            lines(
-                "class A {", // Force wrapping.
-                "  constructor() { }",
-                "}",
-                "",
-                "class B extends A { }")),
+            """
+            class A { // Force wrapping.
+              constructor() { }
+            }
+
+            class B extends A { }
+            """),
         expected(
-            lines(
-                "class A {",
-                "  constructor() { }",
-                "}",
-                "",
-                "class B extends A {",
-                "  constructor() { super(...arguments); }",
-                "}")));
+            """
+            class A {
+              constructor() { }
+            }
+
+            class B extends A {
+              constructor() { super(...arguments); }
+            }
+            """));
 
     // class A { ... }
     Node classANode = findClassDefinition(getLastCompiler(), "A").getRootNode();
@@ -1111,42 +1243,94 @@ public final class Es6ConvertSuperTest extends CompilerTestCase {
   public void testSynthesizingConstructorOfDerivedInterface() {
     test(
         externs(
-            lines(
-                "/** @interface */", // Force wrapping.
-                "class A {",
-                "  constructor() { }",
-                "}")),
+            """
+            /** @interface */ // Force wrapping.
+            class A {
+              constructor() { }
+            }
+            """),
         srcs("/** @interface */ class B extends A { }"),
         expected(
-            lines(
-                "/** @interface */", //
-                "class B extends A {",
-                "  constructor() { }",
-                "}")));
+            """
+            /** @interface */
+            class B extends A {
+              constructor() { }
+            }
+            """));
   }
 
   @Test
   public void testStrippingSuperCallFromConstructorOfDerivedInterface() {
     test(
         externs(
-            lines(
-                "const namespace = {};",
-                "",
-                "/** @interface */",
-                "namespace.A = class {",
-                "  constructor() { }",
-                "}")),
+            """
+            const namespace = {};
+
+            /** @interface */
+            namespace.A = class {
+              constructor() { }
+            }
+            """),
         srcs(
-            lines(
-                "/** @interface */",
-                "class B extends namespace.A {",
-                "  constructor() { super(); }",
-                "}")),
+            """
+            /** @interface */
+            class B extends namespace.A {
+              constructor() { super(); }
+            }
+            """),
         expected(
-            lines(
-                "/** @interface */", //
-                "class B extends namespace.A {",
-                "  constructor() { }",
-                "}")));
+            """
+            /** @interface */
+            class B extends namespace.A {
+              constructor() { }
+            }
+            """));
+  }
+
+  @Test
+  public void testSuperCallInObjectLiteralMethodFails() {
+    testError(
+        """
+        class B {
+          render() {}
+        }
+        class C extends B {
+          make() {
+            return {
+              render() { return super.render(); }
+            };
+          }
+        }
+        """,
+        CANNOT_CONVERT);
+  }
+
+  @Test
+  public void testSuperAccessInObjectLiteralMethodFails() {
+    testError(
+        """
+        class B {
+          get render() { return 1; }
+        }
+        class C extends B {
+          make() {
+            return {
+              render() { return super.render; }
+            };
+          }
+        }
+        """,
+        CANNOT_CONVERT);
+  }
+
+  @Test
+  public void testSuperInNonNestedObjectLiteralMethodFails() {
+    testError(
+        """
+        const obj = {
+          render() { return super.render(); }
+        };
+        """,
+        CANNOT_CONVERT);
   }
 }

@@ -20,10 +20,12 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 
+import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableSet;
 import com.google.javascript.jscomp.AbstractCompiler;
 import com.google.javascript.jscomp.CompilerPass;
 import com.google.javascript.jscomp.DefaultNameGenerator;
+import com.google.javascript.jscomp.DotFormatter;
 import com.google.javascript.jscomp.GatherGetterAndSetterProperties;
 import com.google.javascript.jscomp.NameGenerator;
 import com.google.javascript.jscomp.NodeTraversal;
@@ -32,28 +34,29 @@ import com.google.javascript.jscomp.NodeUtil;
 import com.google.javascript.jscomp.colors.Color;
 import com.google.javascript.jscomp.colors.ColorRegistry;
 import com.google.javascript.jscomp.colors.StandardColors;
+import com.google.javascript.jscomp.diagnostic.LogFile;
 import com.google.javascript.jscomp.graph.AdjacencyGraph;
 import com.google.javascript.jscomp.graph.Annotation;
-import com.google.javascript.jscomp.graph.DiGraph;
 import com.google.javascript.jscomp.graph.FixedPointGraphTraversal;
 import com.google.javascript.jscomp.graph.GraphColoring;
 import com.google.javascript.jscomp.graph.GraphColoring.GreedyGraphColoring;
 import com.google.javascript.jscomp.graph.GraphNode;
+import com.google.javascript.jscomp.graph.LinkedDirectedGraph;
 import com.google.javascript.jscomp.graph.LowestCommonAncestorFinder;
 import com.google.javascript.jscomp.graph.SubGraph;
 import com.google.javascript.rhino.Node;
 import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.Comparator;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Renames unrelated properties to the same name, using {@link Color}s provided by the typechecker.
@@ -73,16 +76,15 @@ import java.util.logging.Logger;
  * </code>
  */
 public class AmbiguateProperties implements CompilerPass {
-  private static final Logger logger = Logger.getLogger(
-      AmbiguateProperties.class.getName());
+  private static final Logger logger = Logger.getLogger(AmbiguateProperties.class.getName());
 
   private final AbstractCompiler compiler;
 
   private final List<Node> stringNodesToRename = new ArrayList<>();
   // Can't use these to start property names.
-  private final char[] reservedFirstCharacters;
+  private final Set<Character> reservedFirstCharacters;
   // Can't use these at all in property names.
-  private final char[] reservedNonFirstCharacters;
+  private final Set<Character> reservedNonFirstCharacters;
 
   /** Map from property name to Property object */
   private final Map<String, Property> propertyMap = new LinkedHashMap<>();
@@ -91,14 +93,14 @@ public class AmbiguateProperties implements CompilerPass {
   private final ImmutableSet<String> externedNames;
 
   /** Names to which properties shouldn't be renamed, to avoid name conflicts */
-  private final Set<String> quotedNames = new HashSet<>();
+  private final Set<String> quotedNames = new LinkedHashSet<>();
 
   private final ColorRegistry colorRegistry;
 
   /** Map from original property name to new name. Only used by tests. */
-  private Map<String, String> renamingMap = null;
+  private @Nullable Map<String, String> renamingMap = null;
 
-  private ColorGraphNodeFactory graphNodeFactory = null;
+  private @Nullable ColorGraphNodeFactory graphNodeFactory = null;
 
   /**
    * Sorts Property objects by their count, breaking ties alphabetically to ensure a deterministic
@@ -114,8 +116,8 @@ public class AmbiguateProperties implements CompilerPass {
 
   public AmbiguateProperties(
       AbstractCompiler compiler,
-      char[] reservedFirstCharacters,
-      char[] reservedNonFirstCharacters,
+      Set<Character> reservedFirstCharacters,
+      Set<Character> reservedNonFirstCharacters,
       Set<String> externProperties) {
     checkState(compiler.getLifeCycleStage().isNormalized());
     this.compiler = compiler;
@@ -129,13 +131,13 @@ public class AmbiguateProperties implements CompilerPass {
 
   static AmbiguateProperties makePassForTesting(
       AbstractCompiler compiler,
-      char[] reservedFirstCharacters,
-      char[] reservedNonFirstCharacters,
+      Set<Character> reservedFirstCharacters,
+      Set<Character> reservedNonFirstCharacters,
       Set<String> externProperties) {
     AmbiguateProperties ap =
         new AmbiguateProperties(
             compiler, reservedFirstCharacters, reservedNonFirstCharacters, externProperties);
-    ap.renamingMap = new HashMap<>();
+    ap.renamingMap = new LinkedHashMap<>();
     return ap;
   }
 
@@ -156,14 +158,17 @@ public class AmbiguateProperties implements CompilerPass {
         new ColorGraphBuilder(
             graphNodeFactory, LowestCommonAncestorFinder::new, this.colorRegistry);
     graphBuilder.addAll(graphNodeFactory.getAllKnownTypes());
-    DiGraph<ColorGraphNode, Object> colorGraph = graphBuilder.build();
+    LinkedDirectedGraph<ColorGraphNode, Object> colorGraph = graphBuilder.build();
+    try (LogFile chunkGraphLog = compiler.createOrReopenLog(this.getClass(), "color_graph.dot")) {
+      chunkGraphLog.log(() -> DotFormatter.toDot(colorGraph));
+    }
     for (ColorGraphNode node : graphNodeFactory.getAllKnownTypes()) {
       node.getSubtypeIndices().set(node.getIndex()); // Init subtyping as reflexive.
     }
 
     FixedPointGraphTraversal.<ColorGraphNode, Object>newReverseTraversal(
             (subtype, e, supertype) -> {
-              /**
+              /*
                * Cheap path for when we're sure there's going to be a change.
                *
                * <p>Since bits only ever turn on, using more bits means there are definitely more
@@ -195,9 +200,8 @@ public class AmbiguateProperties implements CompilerPass {
       prop.relatedColorsSeeds = null;
     }
 
-    ImmutableSet.Builder<String> reservedNames = ImmutableSet.<String>builder()
-        .addAll(externedNames)
-        .addAll(quotedNames);
+    ImmutableSet.Builder<String> reservedNames =
+        ImmutableSet.<String>builder().addAll(externedNames).addAll(quotedNames);
     int numRenamedPropertyNames = 0;
     int numSkippedPropertyNames = 0;
     ArrayList<PropertyGraphNode> nodes = new ArrayList<>(propertyMap.size());
@@ -210,6 +214,8 @@ public class AmbiguateProperties implements CompilerPass {
         nodes.add(new PropertyGraphNode(prop));
       }
     }
+    final int finalNumRenamedPropertyNames = numRenamedPropertyNames;
+    final int finalNumSkippedPropertyNames = numSkippedPropertyNames;
 
     PropertyGraph propertyGraph = new PropertyGraph(nodes);
     GraphColoring<Property, Void> coloring =
@@ -219,7 +225,10 @@ public class AmbiguateProperties implements CompilerPass {
     // Generate new names for the properties that will be renamed.
     NameGenerator nameGen =
         new DefaultNameGenerator(
-            reservedNames.build(), "", reservedFirstCharacters, reservedNonFirstCharacters);
+            reservedNames.build(),
+            "",
+            this.reservedFirstCharacters,
+            this.reservedNonFirstCharacters);
     String[] colorMap = new String[numNewPropertyNames];
     for (int i = 0; i < numNewPropertyNames; ++i) {
       colorMap[i] = nameGen.generateNextName();
@@ -250,14 +259,23 @@ public class AmbiguateProperties implements CompilerPass {
     // TODO(b/161947315): this shouldn't be the responsibility of AmbiguateProperties
     GatherGetterAndSetterProperties.update(compiler, externs, root);
 
+    Supplier<String> summarySupplier =
+        Suppliers.memoize(
+            () ->
+                "Collapsed "
+                    + finalNumRenamedPropertyNames
+                    + " properties into "
+                    + numNewPropertyNames
+                    + " and skipped renaming "
+                    + finalNumSkippedPropertyNames
+                    + " properties.");
     if (logger.isLoggable(Level.FINE)) {
-      logger.fine("Collapsed " + numRenamedPropertyNames + " properties into "
-                  + numNewPropertyNames + " and skipped renaming "
-                  + numSkippedPropertyNames + " properties.");
+      logger.fine(summarySupplier.get());
     }
+    compiler.reportAmbiguatePropertiesSummary(summarySupplier);
   }
 
-  class PropertyGraph implements AdjacencyGraph<Property, Void> {
+  static class PropertyGraph implements AdjacencyGraph<Property, Void> {
     private final ArrayList<PropertyGraphNode> nodes;
 
     PropertyGraph(ArrayList<PropertyGraphNode> nodes) {
@@ -298,17 +316,16 @@ public class AmbiguateProperties implements CompilerPass {
   }
 
   /**
-   * A {@link SubGraph} that represents properties. The related types of
-   * the properties are used to efficiently calculate adjacency information.
+   * A {@link SubGraph} that represents properties. The related types of the properties are used to
+   * efficiently calculate adjacency information.
    */
-  class PropertySubGraph implements SubGraph<Property, Void> {
+  static class PropertySubGraph implements SubGraph<Property, Void> {
     /** Types related to properties referenced in this subgraph. */
     final BitSet relatedTypes = new BitSet();
 
     /**
-     * Returns true if prop is in an independent set from all properties in this
-     * sub graph.  That is, if none of its related types intersects with the
-     * related types for this sub graph.
+     * Returns true if prop is in an independent set from all properties in this sub graph. That is,
+     * if none of its related types intersects with the related types for this sub graph.
      */
     @Override
     public boolean isIndependentOf(Property prop) {
@@ -316,8 +333,8 @@ public class AmbiguateProperties implements CompilerPass {
     }
 
     /**
-     * Adds the node to the sub graph, adding all its related types to the
-     * related types for the sub graph.
+     * Adds the node to the sub graph, adding all its related types to the related types for the sub
+     * graph.
      */
     @Override
     public void addNode(Property prop) {
@@ -345,7 +362,7 @@ public class AmbiguateProperties implements CompilerPass {
     }
 
     @Override
-    public void setAnnotation(Annotation data) {
+    public void setAnnotation(@Nullable Annotation data) {
       annotation = data;
     }
   }
@@ -358,37 +375,36 @@ public class AmbiguateProperties implements CompilerPass {
     @Override
     public void visit(NodeTraversal t, Node n, Node parent) {
       switch (n.getToken()) {
-        case GETPROP:
-        case OPTCHAIN_GETPROP:
+        case GETPROP, OPTCHAIN_GETPROP -> {
           processGetProp(n);
           return;
-
-        case CALL:
+        }
+        case CALL -> {
           processCall(n);
           return;
-
-        case NAME:
+        }
+        case NAME -> {
           // handle ES5-style classes
           if (NodeUtil.isNameDeclaration(parent) || parent.isFunction()) {
             graphNodeFactory.createNode(getColor(n));
           }
           return;
-
-        case OBJECTLIT:
-        case OBJECT_PATTERN:
+        }
+        case OBJECTLIT, OBJECT_PATTERN -> {
           processObjectLitOrPattern(n);
           return;
-
-        case GETELEM:
+        }
+        case GETELEM -> {
           processGetElem(n);
           return;
-
-        case CLASS:
+        }
+        case CLASS -> {
           processClass(n);
           return;
-
-        default:
+        }
+        default -> {
           // Nothing to do.
+        }
       }
     }
 
@@ -435,7 +451,7 @@ public class AmbiguateProperties implements CompilerPass {
     private void processObjectProperty(Node objectLit, Node key, Color type) {
       checkArgument(objectLit.isObjectLit() || objectLit.isObjectPattern(), objectLit);
       switch (key.getToken()) {
-        case COMPUTED_PROP:
+        case COMPUTED_PROP -> {
           if (key.getFirstChild().isStringLit()) {
             // If this quoted prop name is statically determinable, ensure we don't rename some
             // other property in a way that could conflict with it.
@@ -444,27 +460,22 @@ public class AmbiguateProperties implements CompilerPass {
             // want to be consistent with how other quoted properties invalidate property names.
             quotedNames.add(key.getFirstChild().getString());
           }
-          break;
-        case MEMBER_FUNCTION_DEF:
-        case GETTER_DEF:
-        case SETTER_DEF:
-        case STRING_KEY:
-          if (key.isQuotedString()) {
+        }
+        case MEMBER_FUNCTION_DEF, GETTER_DEF, SETTER_DEF, STRING_KEY -> {
+          if (key.isQuotedStringKey()) {
             // If this quoted prop name is statically determinable, ensure we don't rename some
             // other property in a way that could conflict with it
             quotedNames.add(key.getString());
           } else {
             maybeMarkCandidate(key, type);
           }
-          break;
-
-        case OBJECT_REST:
-        case OBJECT_SPREAD:
-          break; // Nothing to do.
-
-        default:
-          throw new IllegalStateException(
-              "Unexpected child of " + objectLit.getToken() + ": " + key.toStringTree());
+        }
+        case OBJECT_REST, OBJECT_SPREAD -> {
+          // Nothing to do.
+        }
+        default ->
+            throw new IllegalStateException(
+                "Unexpected child of " + objectLit.getToken() + ": " + key.toStringTree());
       }
     }
 
@@ -508,7 +519,7 @@ public class AmbiguateProperties implements CompilerPass {
       for (Node member = NodeUtil.getClassMembers(classNode).getFirstChild();
           member != null;
           member = member.getNext()) {
-        if (member.isQuotedString()) {
+        if (member.isQuotedStringKey()) {
           // ignore get 'foo'() {} and prevent property name collisions
           // Note that only getters/setters are represented as quoted strings, not 'foo'() {}
           // see https://github.com/google/closure-compiler/issues/3071
@@ -525,6 +536,10 @@ public class AmbiguateProperties implements CompilerPass {
           // don't rename `class C { constructor() {} }` !
           // This only applies for ES6 classes, not generic properties called 'constructor', which
           // is why it's handled in this method specifically.
+          continue;
+        } else if (member.isBlock()) {
+          // ES2022 static initialization blocks don't have names so can't be renamed.
+          // Example: `class C { static { alert('foo'); } }`
           continue;
         }
 
@@ -589,7 +604,7 @@ public class AmbiguateProperties implements CompilerPass {
     int numOccurrences;
     boolean skipAmbiguating;
     // All colors upon which this property was directly accessed. For "a.b" this includes "a"'s type
-    IdentityHashMap<ColorGraphNode, Integer> relatedColorsSeeds = null;
+    @Nullable LinkedHashMap<ColorGraphNode, Integer> relatedColorsSeeds = null;
     // includes relatedTypesSeeds + all subtypes of those seed colors. For example if this property
     // was accessed off of Iterable, then this bitset will include Array as well.
     final BitSet relatedColors = new BitSet();
@@ -612,7 +627,7 @@ public class AmbiguateProperties implements CompilerPass {
       }
 
       if (relatedColorsSeeds == null) {
-        this.relatedColorsSeeds = new IdentityHashMap<>();
+        this.relatedColorsSeeds = new LinkedHashMap<>();
       }
 
       ColorGraphNode newColorGraphNode = graphNodeFactory.createNode(color);

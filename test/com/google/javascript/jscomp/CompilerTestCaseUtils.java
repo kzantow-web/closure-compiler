@@ -15,14 +15,12 @@
  */
 package com.google.javascript.jscomp;
 
-import com.google.common.annotations.GwtIncompatible;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.util.List;
 
-/** CompilerTestCase utilities that can be super sourced out for GWT/J2CL implementation. */
-public class CompilerTestCaseUtils {
-  @GwtIncompatible
+/** CompilerTestCase utilities */
+public final class CompilerTestCaseUtils {
   public static Compiler multistageSerializeAndDeserialize(
       CompilerTestCase testCase,
       Compiler compiler,
@@ -32,7 +30,7 @@ public class CompilerTestCaseUtils {
     new RemoveCastNodes(compiler).process(compiler.getExternsRoot(), compiler.getJsRoot());
     ErrorManager errorManager = compiler.getErrorManager();
     try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
-      compiler.removeChangeHandler(changeHandler);
+      compiler.getChangeTracker().removeChangeHandler(changeHandler);
       compiler.disableThreads();
       compiler.saveState(baos);
 
@@ -42,7 +40,7 @@ public class CompilerTestCaseUtils {
         compiler.init(externs, inputs, testCase.getOptions());
         compiler.restoreState(bais);
         compiler.setErrorManager(errorManager);
-        compiler.addChangeHandler(changeHandler);
+        compiler.getChangeTracker().addChangeHandler(changeHandler);
       }
     } catch (Exception e) {
       throw new RuntimeException(e);
@@ -50,7 +48,8 @@ public class CompilerTestCaseUtils {
     return compiler;
   }
 
-  @GwtIncompatible
   public static void setDebugLogDirectoryOn(CompilerOptions options) {
   }
+
+  private CompilerTestCaseUtils() {}
 }

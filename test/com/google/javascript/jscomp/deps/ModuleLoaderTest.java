@@ -17,7 +17,7 @@
 package com.google.javascript.jscomp.deps;
 
 import static com.google.common.truth.Truth.assertThat;
-import static com.google.javascript.rhino.testing.Asserts.assertThrows;
+import static org.junit.Assert.assertThrows;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -32,7 +32,7 @@ import com.google.javascript.jscomp.deps.ModuleLoader.PathEscaper;
 import com.google.javascript.jscomp.deps.ModuleLoader.PathResolver;
 import java.util.ArrayList;
 import java.util.List;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -64,7 +64,7 @@ public final class ModuleLoaderTest {
             .setModuleRoots(ImmutableList.of("."))
             .setInputs(inputs("js/a.js", "js/b.js"))
             .setFactory(new NodeModuleResolver.Factory(PACKAGE_JSON_MAIN_ENTRIES))
-            .setPathResolver(ModuleLoader.PathResolver.RELATIVE)
+            .setPathResolver(PathResolver.RELATIVE)
             .build();
     assertUri("js/a.js", loader.resolve("js/a.js"));
     assertUri("js/b.js", resolveJsModule(loader.resolve("js/a.js"), "./b"));
@@ -78,7 +78,7 @@ public final class ModuleLoaderTest {
             .setModuleRoots(ImmutableList.of("."))
             .setInputs(inputs("A/index.js", "B/index.js", "app.js"))
             .setFactory(new NodeModuleResolver.Factory(PACKAGE_JSON_MAIN_ENTRIES))
-            .setPathResolver(ModuleLoader.PathResolver.RELATIVE)
+            .setPathResolver(PathResolver.RELATIVE)
             .build();
 
     input("A/index.js");
@@ -113,7 +113,7 @@ public final class ModuleLoaderTest {
             .setModuleRoots(ImmutableList.of())
             .setInputs(compilerInputs)
             .setFactory(new NodeModuleResolver.Factory(PACKAGE_JSON_MAIN_ENTRIES))
-            .setPathResolver(ModuleLoader.PathResolver.RELATIVE)
+            .setPathResolver(PathResolver.RELATIVE)
             .build();
 
     assertUri("/A/index.js", resolveJsModule(loader.resolve(" /foo.js"), "/A"));
@@ -261,6 +261,13 @@ public final class ModuleLoaderTest {
   }
 
   @Test
+  public void testToJSIdentifier() {
+    assertThat(ModuleNames.toJSIdentifier("com/example/test")).isEqualTo("com$example$test");
+    assertThat(ModuleNames.toJSIdentifier("file://a/b.jar!com/example/test"))
+        .isEqualTo("file_$$a$b_jar$com$example$test");
+  }
+
+  @Test
   public void testEscapePath() {
     ModuleLoader loader =
         ModuleLoader.builder()
@@ -321,7 +328,7 @@ public final class ModuleLoaderTest {
             .setModuleRoots(ImmutableList.of())
             .setInputs(compilerInputs)
             .setFactory(new NodeModuleResolver.Factory(PACKAGE_JSON_MAIN_ENTRIES))
-            .setPathResolver(ModuleLoader.PathResolver.RELATIVE)
+            .setPathResolver(PathResolver.RELATIVE)
             .build();
 
     assertUri("/A/index.js", resolveJsModule(loader.resolve(" /foo.js"), "/A"));
@@ -378,7 +385,7 @@ public final class ModuleLoaderTest {
             .setModuleRoots(ImmutableList.of())
             .setInputs(compilerInputs)
             .setFactory(new NodeModuleResolver.Factory(packageJsonMainEntries))
-            .setPathResolver(ModuleLoader.PathResolver.RELATIVE)
+            .setPathResolver(PathResolver.RELATIVE)
             .build();
 
     assertUri(
@@ -420,7 +427,7 @@ public final class ModuleLoaderTest {
             .setModuleRoots(ImmutableList.of("generated_files/"))
             .setInputs(compilerInputs)
             .setFactory(new NodeModuleResolver.Factory(ImmutableMap.of()))
-            .setPathResolver(ModuleLoader.PathResolver.RELATIVE)
+            .setPathResolver(PathResolver.RELATIVE)
             .build();
 
     assertUri("/node_modules/second.js", resolveJsModule(loader.resolve("/foo.js"), "second"));
@@ -451,7 +458,7 @@ public final class ModuleLoaderTest {
             .setModuleRoots(ImmutableList.of("generated_files/"))
             .setInputs(compilerInputs)
             .setFactory(new NodeModuleResolver.Factory(ImmutableMap.of()))
-            .setPathResolver(ModuleLoader.PathResolver.RELATIVE)
+            .setPathResolver(PathResolver.RELATIVE)
             .build();
 
     // 'first' and 'second' should resolve from foo.js
@@ -475,7 +482,7 @@ public final class ModuleLoaderTest {
             .setModuleRoots(ImmutableList.of("."))
             .setInputs(inputs("A/index.js", "B/index.js", "app.js"))
             .setFactory(new WebpackModuleResolver.Factory(webpackModulesById))
-            .setPathResolver(ModuleLoader.PathResolver.RELATIVE)
+            .setPathResolver(PathResolver.RELATIVE)
             .build();
 
     input("A/index.js");
@@ -537,9 +544,7 @@ public final class ModuleLoaderTest {
                         .buildOrThrow()))
             .build();
 
-    assertUri(
-        "index.js",
-        loader.resolve("fake.js").resolveModuleAsPath("@project0/index.js"));
+    assertUri("index.js", loader.resolve("fake.js").resolveModuleAsPath("@project0/index.js"));
     assertUri(
         "foo/bar/index.js",
         loader.resolve("fake.js").resolveModuleAsPath("+project1/foo/bar/index.js"));
@@ -587,7 +592,7 @@ public final class ModuleLoaderTest {
 
     resolveJsModule(loader.resolve("fake.js"), "invalid/file.js");
     assertThat(errors).hasSize(1);
-    assertThat(errors.get(0).getType())
+    assertThat(errors.get(0).type())
         .isSameInstanceAs(BrowserWithTransformedPrefixesModuleResolver.INVALID_AMBIGUOUS_PATH);
   }
 
@@ -603,9 +608,8 @@ public final class ModuleLoaderTest {
                     ErrorHandler errorHandler,
                     PathEscaper pathEscaper) ->
                     new ModuleResolver(modulePaths, moduleRootPaths, errorHandler, pathEscaper) {
-                      @Nullable
                       @Override
-                      public String resolveJsModule(
+                      public @Nullable String resolveJsModule(
                           String scriptAddress,
                           String moduleAddress,
                           String sourcename,
@@ -615,6 +619,12 @@ public final class ModuleLoaderTest {
                           moduleAddress = moduleAddress.substring(8);
                         }
                         return super.locate(scriptAddress, moduleAddress);
+                      }
+
+                      @Override
+                      public @Nullable String resolveJsModuleSilently(
+                          String scriptAddress, String moduleAddress) {
+                        return resolveJsModule(scriptAddress, moduleAddress, "", 0, 0);
                       }
                     })
             .build();
@@ -639,6 +649,242 @@ public final class ModuleLoaderTest {
             .build();
 
     assertUri("file.js", loader.resolve("/path/to/project/file.js"));
+  }
+
+  @Test
+  public void testBrowserResolverSilentHandlesExternalUrl() {
+    List<JSError> errors = new ArrayList<>();
+
+    ModuleLoader loader =
+        ModuleLoader.builder()
+            .setErrorHandler((CheckLevel level, JSError error) -> errors.add(error))
+            .setModuleRoots(ImmutableList.of("."))
+            .setInputs(inputs("app.js", "local/module.js"))
+            .setFactory(BrowserModuleResolver.FACTORY)
+            .build();
+
+    ModulePath appPath = loader.resolve("app.js");
+    ModulePath result = appPath.resolveJsModuleSilently("https://cdn.example.com/library.js");
+
+    assertThat(result).isNull();
+    assertThat(errors).isEmpty();
+  }
+
+  @Test
+  public void testBrowserResolverSilentHandlesBareModuleName() {
+    List<JSError> errors = new ArrayList<>();
+
+    ModuleLoader loader =
+        ModuleLoader.builder()
+            .setErrorHandler((CheckLevel level, JSError error) -> errors.add(error))
+            .setModuleRoots(ImmutableList.of("."))
+            .setInputs(inputs("app.js"))
+            .setFactory(BrowserModuleResolver.FACTORY)
+            .build();
+
+    ModulePath appPath = loader.resolve("app.js");
+    assertThat(appPath.resolveJsModuleSilently("react")).isNull();
+    assertThat(appPath.resolveJsModuleSilently("lodash")).isNull();
+    assertThat(appPath.resolveJsModuleSilently("@babel/core")).isNull();
+    assertThat(errors).isEmpty();
+  }
+
+  @Test
+  public void testBrowserResolverSilentResolvesRelativePath() {
+    List<JSError> errors = new ArrayList<>();
+
+    ModuleLoader loader =
+        ModuleLoader.builder()
+            .setErrorHandler((CheckLevel level, JSError error) -> errors.add(error))
+            .setModuleRoots(ImmutableList.of("."))
+            .setInputs(inputs("app.js", "lib/utils.js"))
+            .setFactory(BrowserModuleResolver.FACTORY)
+            .build();
+
+    ModulePath appPath = loader.resolve("app.js");
+    ModulePath result = appPath.resolveJsModuleSilently("./lib/utils.js");
+
+    assertThat(result).isNotNull();
+    assertThat(result.toString()).isEqualTo("lib/utils.js");
+    assertThat(errors).isEmpty();
+  }
+
+  @Test
+  public void testBrowserResolverSilentHandlesUnresolvableRelativePath() {
+    List<JSError> errors = new ArrayList<>();
+
+    ModuleLoader loader =
+        ModuleLoader.builder()
+            .setErrorHandler((CheckLevel level, JSError error) -> errors.add(error))
+            .setModuleRoots(ImmutableList.of("."))
+            .setInputs(inputs("app.js"))
+            .setFactory(BrowserModuleResolver.FACTORY)
+            .build();
+
+    ModulePath appPath = loader.resolve("app.js");
+    ModulePath result = appPath.resolveJsModuleSilently("./missing/module.js");
+
+    assertThat(result).isNull();
+    assertThat(errors).isEmpty();
+  }
+
+  @Test
+  public void testBrowserResolverDoesNotHandleUnresolvableRelativePath() {
+    List<JSError> errorsFromRegular = new ArrayList<>();
+
+    ModuleLoader regularLoader =
+        ModuleLoader.builder()
+            .setErrorHandler((CheckLevel level, JSError error) -> errorsFromRegular.add(error))
+            .setModuleRoots(ImmutableList.of("."))
+            .setInputs(inputs("app.js"))
+            .setFactory(BrowserModuleResolver.FACTORY)
+            .build();
+
+    ModulePath appPath1 = regularLoader.resolve("app.js");
+    appPath1.resolveJsModule("https://cdn.example.com/lib.js", "test.js", 1, 1);
+    assertThat(errorsFromRegular).hasSize(1);
+  }
+
+  @Test
+  public void testNodeResolverDoesNotHandleUnresolvableRelativePath() {
+    List<JSError> errorsFromRegular = new ArrayList<>();
+
+    ModuleLoader regularLoader =
+        ModuleLoader.builder()
+            .setErrorHandler((CheckLevel level, JSError error) -> errorsFromRegular.add(error))
+            .setModuleRoots(ImmutableList.of("."))
+            .setInputs(inputs("app.js"))
+            .setFactory(new NodeModuleResolver.Factory(PACKAGE_JSON_MAIN_ENTRIES))
+            .build();
+
+    ModulePath appPath = regularLoader.resolve("app.js");
+    appPath.resolveJsModule("https://cdn.example.com/lib.js", "test.js", 1, 1);
+    assertThat(errorsFromRegular).hasSize(1);
+  }
+
+  @Test
+  public void testNodeResolverSilentHandlesAmbiguousIdentifier() {
+    List<JSError> errors = new ArrayList<>();
+
+    ModuleLoader loader =
+        ModuleLoader.builder()
+            .setErrorHandler((CheckLevel level, JSError error) -> errors.add(error))
+            .setModuleRoots(ImmutableList.of("."))
+            .setInputs(inputs("app.js"))
+            .setFactory(new NodeModuleResolver.Factory(PACKAGE_JSON_MAIN_ENTRIES))
+            .build();
+
+    ModulePath appPath = loader.resolve("app.js");
+    ModulePath result = appPath.resolveJsModuleSilently("https://cdn.example.com/lib.js");
+
+    assertThat(result).isNull();
+    assertThat(errors).isEmpty();
+  }
+
+  @Test
+  public void testNodeResolverSilentResolvesRelativePath() {
+    List<JSError> errors = new ArrayList<>();
+
+    ModuleLoader loader =
+        ModuleLoader.builder()
+            .setErrorHandler((CheckLevel level, JSError error) -> errors.add(error))
+            .setModuleRoots(ImmutableList.of("."))
+            .setInputs(inputs("app.js", "lib/utils.js"))
+            .setFactory(new NodeModuleResolver.Factory(PACKAGE_JSON_MAIN_ENTRIES))
+            .build();
+
+    ModulePath appPath = loader.resolve("app.js");
+    ModulePath result = appPath.resolveJsModuleSilently("./lib/utils.js");
+
+    assertThat(result).isNotNull();
+    assertThat(result.toString()).isEqualTo("lib/utils.js");
+    assertThat(errors).isEmpty();
+  }
+
+  @Test
+  public void testBrowserWithPrefixesSilentHandlesAmbiguousIdentifier() {
+    List<JSError> errors = new ArrayList<>();
+
+    ModuleLoader loader =
+        ModuleLoader.builder()
+            .setErrorHandler((CheckLevel level, JSError error) -> errors.add(error))
+            .setModuleRoots(ImmutableList.of("."))
+            .setInputs(inputs("/p0/p1/p2/file.js"))
+            .setFactory(
+                new BrowserWithTransformedPrefixesModuleResolver.Factory(
+                    ImmutableMap.<String, String>builder()
+                        .put("0/1/2/", "/p0/p1/p2/")
+                        .put("0/", "/p0/")
+                        .put("0/1/", "/p0/p1/")
+                        .buildOrThrow()))
+            .build();
+
+    ModulePath appPath = loader.resolve("/p0/file.js");
+    ModulePath result = appPath.resolveJsModuleSilently("lodash");
+
+    assertThat(result).isNull();
+    assertThat(errors).isEmpty();
+  }
+
+  @Test
+  public void testBrowserWithPrefixesSilentResolvesTransformedPrefixes() {
+    List<JSError> errors = new ArrayList<>();
+
+    ModuleLoader loader =
+        ModuleLoader.builder()
+            .setErrorHandler((CheckLevel level, JSError error) -> errors.add(error))
+            .setModuleRoots(ImmutableList.of("."))
+            .setInputs(inputs("/p0/p1/p2/file.js"))
+            .setFactory(
+                new BrowserWithTransformedPrefixesModuleResolver.Factory(
+                    ImmutableMap.<String, String>builder()
+                        .put("0/1/2/", "/p0/p1/p2/")
+                        .put("0/", "/p0/")
+                        .put("0/1/", "/p0/p1/")
+                        .buildOrThrow()))
+            .build();
+
+    ModulePath appPath = loader.resolve("fake.js");
+    ModulePath result = appPath.resolveJsModuleSilently("0/1/2/file.js");
+
+    assertThat(result).isNotNull();
+    assertThat(result.toString()).isEqualTo("/p0/p1/p2/file.js");
+    assertThat(errors).isEmpty();
+  }
+
+  @Test
+  public void testRelativeIdentifierDotAndDotDot() {
+    assertThat(ModuleLoader.isRelativeIdentifier(".")).isTrue();
+    assertThat(ModuleLoader.isRelativeIdentifier("..")).isTrue();
+    assertThat(ModuleLoader.isAmbiguousIdentifier(".")).isFalse();
+    assertThat(ModuleLoader.isAmbiguousIdentifier("..")).isFalse();
+  }
+
+  @Test
+  public void testLocateDotAndDotDotNode() {
+    ImmutableList<CompilerInput> compilerInputs =
+        inputs(
+            "/app/index.js",
+            "/app/sub/sub.js",
+            "/app/sub/index.js",
+            "/app/sub/sub2/sub2.js",
+            "/B/package.json",
+            "/B/lib/b.js",
+            "/B/lib/index.js");
+
+    ModuleLoader loader =
+        ModuleLoader.builder()
+            .setModuleRoots(ImmutableList.of())
+            .setInputs(compilerInputs)
+            .setFactory(new NodeModuleResolver.Factory(PACKAGE_JSON_MAIN_ENTRIES))
+            .setPathResolver(PathResolver.RELATIVE)
+            .build();
+
+    assertUri("/app/sub/index.js", resolveJsModule(loader.resolve("/app/sub/sub.js"), "."));
+    assertUri("/app/sub/index.js", resolveJsModule(loader.resolve("/app/sub/sub2/sub2.js"), ".."));
+    assertUri("/app/index.js", resolveJsModule(loader.resolve("/app/sub/sub.js"), ".."));
+    assertUri("/B/lib/b.js", resolveJsModule(loader.resolve("/B/lib/sub.js"), ".."));
+    assertUri("/B/lib/index.js", resolveJsModule(loader.resolve("/B/lib/sub.js"), "."));
   }
 
   CompilerInput input(String name) {

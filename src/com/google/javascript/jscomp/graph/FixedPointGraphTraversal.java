@@ -125,7 +125,7 @@ public final class FixedPointGraphTraversal<N, E> {
       workSet.add(graph.getNode(n));
     }
     for (; !workSet.isEmpty() && cycleCount < maxIterations; cycleCount++) {
-      visitNode(workSet.iterator().next(), workSet);
+      visitNode(workSet.getFirst(), workSet);
     }
 
     checkState(cycleCount != maxIterations, NON_HALTING_ERROR_MSG);
@@ -138,7 +138,7 @@ public final class FixedPointGraphTraversal<N, E> {
     // on the next iteration.
     workSet.remove(node);
     switch (traversalDirection) {
-      case OUTWARDS:
+      case OUTWARDS -> {
         N sourceValue = node.getValue();
         for (DiGraphEdge<N, E> edge : node.getOutEdges()) {
           N destValue = edge.getDestination().getValue();
@@ -147,7 +147,8 @@ public final class FixedPointGraphTraversal<N, E> {
           }
         }
         return;
-      case INWARDS:
+      }
+      case INWARDS -> {
         N revSourceValue = node.getValue();
         for (DiGraphEdge<N, E> edge : node.getInEdges()) {
           N revDestValue = edge.getSource().getValue();
@@ -156,12 +157,13 @@ public final class FixedPointGraphTraversal<N, E> {
           }
         }
         return;
+      }
     }
     throw new AssertionError("Unrecognized direction " + traversalDirection);
   }
 
   /** Edge callback */
-  public interface EdgeCallback<Node, Edge> {
+  public interface EdgeCallback<NodeT, EdgeT> {
     /**
      * Update the state of the destination node when the given edge is traversed.
      *
@@ -174,6 +176,6 @@ public final class FixedPointGraphTraversal<N, E> {
      * @param destination The end node.
      * @return Whether the state of the destination node changed.
      */
-    boolean traverseEdge(Node source, Edge e, Node destination);
+    boolean traverseEdge(NodeT source, EdgeT e, NodeT destination);
   }
 }

@@ -71,7 +71,7 @@ public final class TranspileResult {
   }
 
   // sourcemaps must escape :, and cannot escape space as +, so we need a custom escaper.
-  private static final Escaper ESCAPER = new PercentEscaper("-_.*", false /* plusForSpace */);
+  private static final Escaper ESCAPER = new PercentEscaper("-_.*", /* plusForSpace= */ false);
 
   public TranspileResult embedSourcemap() {
     if (sourceMap.isEmpty()) {
@@ -104,11 +104,11 @@ public final class TranspileResult {
 
   @Override
   public boolean equals(Object other) {
-    return other instanceof TranspileResult
-        && ((TranspileResult) other).path.equals(path)
-        && ((TranspileResult) other).original.equals(original)
-        && ((TranspileResult) other).transpiled.equals(transpiled)
-        && ((TranspileResult) other).sourceMap.equals(sourceMap);
+    return other instanceof TranspileResult transpileResult
+        && transpileResult.path.equals(path)
+        && transpileResult.original.equals(original)
+        && transpileResult.transpiled.equals(transpiled)
+        && transpileResult.sourceMap.equals(sourceMap);
   }
 
   @Override

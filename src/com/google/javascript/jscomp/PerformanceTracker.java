@@ -27,23 +27,18 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableMultiset;
 import com.google.javascript.jscomp.CompilerOptions.TracerMode;
-import com.google.javascript.jscomp.parsing.parser.util.format.SimpleFormat;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
-import java.io.FilterOutputStream;
-import java.io.IOException;
 import java.io.PrintStream;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map.Entry;
 
 /**
- * A PerformanceTracker collects statistics about the runtime of each pass, and
- * how much a pass impacts the size of the compiled output, before and after
- * gzip.
+ * A PerformanceTracker collects statistics about the runtime of each pass, and how much a pass
+ * impacts the size of the compiled output, before and after gzip.
  */
 public final class PerformanceTracker {
   private static final int DEFAULT_WHEN_SIZE_UNTRACKED = -1;
@@ -75,6 +70,13 @@ public final class PerformanceTracker {
   private int jsSources = 0;
   private int externLines = 0;
   private int externSources = 0;
+
+  private int transitiveSummaryLines = 0;
+  private int transitiveSummarySources = 0;
+  private int transitiveSummaryLinesParsed = 0;
+  private int transitiveSummarySourcesParsed = 0;
+
+  private boolean prePruningRecorded = false;
 
   // The following fields for tracking size changes are just estimates.
   // They do not take into account preserved license blocks, newline padding,
@@ -119,10 +121,7 @@ public final class PerformanceTracker {
     }
   }
 
-  /**
-   * Updates the saved jsRoot and resets the size tracking fields accordingly.
-   * @param jsRoot
-   */
+  /** Updates the saved jsRoot and resets the size tracking fields accordingly. */
   void updateAfterDeserialize(Node jsRoot) {
     // TODO(bradfordcsmith): Restore line counts for inputs and externs.
     this.jsRoot = jsRoot;
@@ -142,8 +141,8 @@ public final class PerformanceTracker {
   }
 
   /**
-   * Collects information about a pass P after P finishes running, eg, how much
-   * time P took and what was its impact on code size.
+   * Collects information about a pass P after P finishes running, eg, how much time P took and what
+   * was its impact on code size.
    *
    * @param passName short name of the pass
    * @param runtime execution time in milliseconds
@@ -209,8 +208,13 @@ public final class PerformanceTracker {
 
   private void recordInputCount() {
     for (Node n = this.externsRoot.getFirstChild(); n != null; n = n.getNext()) {
-      this.externSources += 1;
-      this.externLines += estimateNumLines(n);
+      if (NodeUtil.isFromTypeSummary(n)) {
+        this.transitiveSummarySources += 1;
+        this.transitiveSummaryLines += estimateNumLines(n);
+      } else {
+        this.externSources += 1;
+        this.externLines += estimateNumLines(n);
+      }
     }
 
     for (Node n = this.jsRoot.getFirstChild(); n != null; n = n.getNext()) {
@@ -301,8 +305,7 @@ public final class PerformanceTracker {
 
     populatePassSummary();
 
-    for (Entry<String, Stats> entry : this.passSummary.entrySet()) {
-      Stats stats = entry.getValue();
+    for (Stats stats : this.passSummary.values()) {
       this.passesRuntime = (int) (this.passesRuntime + stats.runtime);
       this.maxMem = max(this.maxMem, stats.allocMem);
       this.runs += stats.runs;
@@ -321,7 +324,7 @@ public final class PerformanceTracker {
   }
 
   private void populatePassSummary() {
-    HashMap<String, Stats> tmpPassSummary = new HashMap<>();
+    LinkedHashMap<String, Stats> tmpPassSummary = new LinkedHashMap<>();
 
     for (Stats logStat : this.log) {
       String passName = logStat.pass;
@@ -352,6 +355,43 @@ public final class PerformanceTracker {
     this.astManifest = builder.build();
   }
 
+  private String pruningAnalysisSummary = "not executed";
+
+  public void setPruningAnalysisSummary(String summary) {
+    this.pruningAnalysisSummary = summary;
+  }
+
+  void recordPrePruningInputCount(
+      Iterable<CompilerInput> originalInputs, Iterable<CompilerInput> originalExterns) {
+    for (CompilerInput input : originalExterns) {
+      String name = input.getSourceFile().getName();
+      if (name.endsWith(".i.js")) {
+        this.transitiveSummarySourcesParsed += 1;
+        this.transitiveSummaryLinesParsed += input.getSourceFile().getNumLines();
+      }
+    }
+    for (CompilerInput input : originalInputs) {
+      String name = input.getSourceFile().getName();
+      if (name.endsWith(".i.js")) {
+        this.transitiveSummarySourcesParsed += 1;
+        this.transitiveSummaryLinesParsed += input.getSourceFile().getNumLines();
+      }
+    }
+    this.prePruningRecorded = true;
+  }
+
+  private String disambiguatePropertiesSummary = "not executed";
+
+  public void setDisambiguatePropertiesSummary(String summary) {
+    this.disambiguatePropertiesSummary = summary;
+  }
+
+  private String ambiguatePropertiesSummary = "not executed";
+
+  public void setAmbiguatePropertiesSummary(String summary) {
+    this.ambiguatePropertiesSummary = summary;
+  }
+
   /**
    * Prints a summary, which contains aggregate stats for all runs of each pass and a log, which
    * contains stats for each individual run.
@@ -378,7 +418,10 @@ public final class PerformanceTracker {
             "Estimated GzReduction(bytes): " + this.gzDiff,
             "Estimated AST size(#nodes): " + this.astSize,
             "Estimated Size(bytes): " + this.codeSize,
-            "Estimated GzSize(bytes): " + this.gzCodeSize));
+            "Estimated GzSize(bytes): " + this.gzCodeSize,
+            "",
+            "DisambiguateProperties: " + this.disambiguatePropertiesSummary,
+            "AmbiguateProperties: " + this.ambiguatePropertiesSummary));
 
     output.println(
         lines(
@@ -387,7 +430,19 @@ public final class PerformanceTracker {
             "JS lines:   " + this.jsLines,
             "JS sources: " + this.jsSources,
             "Extern lines:   " + this.externLines,
-            "Extern sources: " + this.externSources));
+            "Extern sources: " + this.externSources,
+            "Type summary lines (raw input):   "
+                + (this.prePruningRecorded
+                    ? this.transitiveSummaryLinesParsed
+                    : transitiveSummaryLines),
+            "Type summary lines (post-pruning):   " + this.transitiveSummaryLines,
+            "Type summary sources (raw input):   "
+                + (this.prePruningRecorded
+                    ? this.transitiveSummarySourcesParsed
+                    : transitiveSummarySources),
+            "Type summary sources (post-pruning):   " + this.transitiveSummarySources,
+            "",
+            "Dependency pruning analysis: " + this.pruningAnalysisSummary));
 
     output.println(
         lines(
@@ -400,7 +455,7 @@ public final class PerformanceTracker {
             (entry) -> {
               String key = entry.getKey();
               Stats stats = entry.getValue();
-              return SimpleFormat.format(
+              return String.format(
                   "%s,%d,%d,%d,%d,%d,%d,%d",
                   key,
                   stats.runtime,
@@ -419,19 +474,18 @@ public final class PerformanceTracker {
             "Log:",
             "pass,runtime,allocMem,codeChanged,astReduction,reduction,gzReduction,astSize,size,gzSize"));
     for (Stats stats : this.log) {
-      output.print(
-          SimpleFormat.format(
-              "%s,%d,%d,%b,%d,%d,%d,%d,%d,%d\n",
-              stats.pass,
-              stats.runtime,
-              stats.allocMem,
-              stats.changes == 1,
-              stats.astDiff,
-              stats.diff,
-              stats.gzDiff,
-              stats.astSize,
-              stats.size,
-              stats.gzSize));
+      output.printf(
+          "%s,%d,%d,%b,%d,%d,%d,%d,%d,%d\n",
+          stats.pass,
+          stats.runtime,
+          stats.allocMem,
+          stats.changes == 1,
+          stats.astDiff,
+          stats.diff,
+          stats.gzDiff,
+          stats.astSize,
+          stats.size,
+          stats.gzSize);
     }
 
     if (this.astManifest != null) {
@@ -441,33 +495,26 @@ public final class PerformanceTracker {
               "Input AST Manifest:",
               "token,count"));
       this.astManifest.entrySet().stream()
-          .map((e) -> SimpleFormat.format("%s,%d", e.getElement(), e.getCount()))
+          .map((e) -> String.format("%s,%d", e.getElement(), e.getCount()))
           .sorted()
           .forEach(output::println);
     }
 
     output.println();
-
     // this.output can be System.out, so don't close it to not lose subsequent
     // error messages. Flush to ensure that you will see the tracer report.
-    try {
-      // TODO(johnlenz): Remove this cast and try/catch.
-      // This is here to workaround GWT http://b/30943295
-      ((FilterOutputStream) output).flush();
-    } catch (IOException e) {
-      throw new RuntimeException("Unreachable.");
-    }
+    output.flush();
   }
 
   /**
-   * A Stats object contains statistics about a pass run, such as running time,
-   * size changes, etc
+   * A Stats object contains statistics about a pass run, such as running time, size changes, etc
    */
   public static class Stats {
     Stats(String pass, boolean iot) {
       this.pass = pass;
       this.isOneTime = iot;
     }
+
     public final String pass;
     public final boolean isOneTime;
     public long runtime = 0;

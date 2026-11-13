@@ -36,9 +36,9 @@ import com.google.javascript.jscomp.modules.ModuleMetadataMap.ModuleMetadata;
 import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.InputId;
 import com.google.javascript.rhino.Node;
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.Set;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Checks all goog.requires, goog.module.gets, goog.forwardDeclares, and goog.requireTypes in all
@@ -114,6 +114,28 @@ final class CheckClosureImports implements CompilerPass {
       String callName() {
         return "goog.requireType";
       }
+    },
+
+    REQUIRE_DYNAMIC {
+      @Override
+      boolean allowDestructuring() {
+        return true;
+      }
+
+      @Override
+      boolean aliasMustBeConstant() {
+        return true;
+      }
+
+      @Override
+      boolean mustBeOrdered() {
+        return false;
+      }
+
+      @Override
+      String callName() {
+        return "goog.requireDynamic";
+      }
     };
 
     /**
@@ -188,6 +210,7 @@ final class CheckClosureImports implements CompilerPass {
   private static final Node GOOG_MODULE_GET = IR.getprop(IR.name("goog"), "module", "get");
   private static final Node GOOG_FORWARD_DECLARE = IR.getprop(IR.name("goog"), "forwardDeclare");
   private static final Node GOOG_REQUIRE_TYPE = IR.getprop(IR.name("goog"), "requireType");
+  private static final Node GOOG_REQUIRE_DYNAMIC = IR.getprop(IR.name("goog"), "requireDynamic");
 
   private final AbstractCompiler compiler;
   private final Checker checker;
@@ -197,8 +220,8 @@ final class CheckClosureImports implements CompilerPass {
   CheckClosureImports(AbstractCompiler compiler, ModuleMetadataMap moduleMetadataMap) {
     this.compiler = compiler;
     this.checker = new Checker(compiler, moduleMetadataMap);
-    this.namespacesSeen = new HashSet<>();
-    this.chunkGraph = compiler.getModuleGraph();
+    this.namespacesSeen = new LinkedHashSet<>();
+    this.chunkGraph = compiler.getChunkGraph();
   }
 
   @Override
@@ -249,8 +272,7 @@ final class CheckClosureImports implements CompilerPass {
      * Given a call node determines what kind of {@link ClosureImport} it is. Returns null if not a
      * {@link ClosureImport}.
      */
-    @Nullable
-    private ClosureImport kindOfCall(Node callNode) {
+    private @Nullable ClosureImport kindOfCall(Node callNode) {
       checkState(callNode.isCall());
       if (callNode.getFirstChild().matchesQualifiedName(GOOG_REQUIRE)) {
         return ClosureImport.REQUIRE;
@@ -258,6 +280,8 @@ final class CheckClosureImports implements CompilerPass {
         return ClosureImport.FORWARD_DECLARE;
       } else if (callNode.getFirstChild().matchesQualifiedName(GOOG_REQUIRE_TYPE)) {
         return ClosureImport.REQUIRE_TYPE;
+      } else if (callNode.getFirstChild().matchesQualifiedName(GOOG_REQUIRE_DYNAMIC)) {
+        return ClosureImport.REQUIRE_DYNAMIC;
       }
       return null;
     }
@@ -300,7 +324,7 @@ final class CheckClosureImports implements CompilerPass {
 
       if (!currentModule.isEs6Module()
           && !currentModule.isGoogModule()
-          && compiler.getOptions().moduleResolutionMode != ResolutionMode.WEBPACK) {
+          && compiler.getOptions().getModuleResolutionMode() != ResolutionMode.WEBPACK) {
         // Here we are making a heuristic check of the use of goog.module.get.  There are many
         // different ways to deliberately subvert these checks.  What we are trying to avoid
         // is accidential use of a `goog.provide` file as module scoped. So we want to avoid:
@@ -386,7 +410,7 @@ final class CheckClosureImports implements CompilerPass {
         if (!stringKey.isStringKey()) {
           return false;
         }
-        if (!stringKey.getFirstChild().isName()) {
+        if (!stringKey.hasChildren() || !stringKey.getFirstChild().isName()) {
           return false;
         }
       }
@@ -421,7 +445,8 @@ final class CheckClosureImports implements CompilerPass {
       boolean validAssignment = isModule || parent.isExprResult();
       boolean isAliased = NodeUtil.isNameDeclaration(parent.getParent());
 
-      if (!atTopLevelScope || !validAssignment) {
+      // goog.requireDynamic() can be in non-top scope.
+      if ((!atTopLevelScope || !validAssignment) && importType != ClosureImport.REQUIRE_DYNAMIC) {
         t.report(call, INVALID_CLOSURE_CALL_SCOPE_ERROR);
         return;
       }
@@ -456,7 +481,7 @@ final class CheckClosureImports implements CompilerPass {
           } else {
             t.report(declaration, NO_CLOSURE_IMPORT_DESTRUCTURING, importType.callName());
           }
-        } else {
+        } else if (lhs.isName()) {
           checkShortName(t, lhs, call.getLastChild().getString());
         }
       }

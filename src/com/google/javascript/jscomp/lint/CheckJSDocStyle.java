@@ -33,7 +33,7 @@ import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.JSTypeExpression;
 import com.google.javascript.rhino.Node;
 import java.util.List;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Checks for various JSDoc-related style issues, such as function definitions without JsDoc, params
@@ -82,6 +82,13 @@ public final class CheckJSDocStyle extends AbstractPostOrderCallback implements 
       DiagnosticType.disabled("JSC_EXTERNS_FILES_SHOULD_BE_ANNOTATED",
           "Externs files should be annotated with @externs in the @fileoverview block.");
 
+  public static final DiagnosticType LICENSE_CONTAINS_AT_EXTERNS =
+      DiagnosticType.disabled(
+          "JSC_LICENSE_CONTAINS_AT_EXTERNS",
+          "@license block contains an @externs annotation, which will be parsed as plain "
+              + "license text instead of an actual @externs annotation. You probably meant to put "
+              + "@externs in a separate @fileoverview block.");
+
   public static final DiagnosticType PREFER_BACKTICKS_TO_AT_SIGN_CODE =
       DiagnosticType.disabled(
           "JSC_PREFER_BACKTICKS_TO_AT_SIGN_CODE",
@@ -99,6 +106,7 @@ public final class CheckJSDocStyle extends AbstractPostOrderCallback implements 
           WRONG_NUMBER_OF_PARAMS,
           INCORRECT_PARAM_NAME,
           EXTERNS_FILES_SHOULD_BE_ANNOTATED,
+          LICENSE_CONTAINS_AT_EXTERNS,
           PREFER_BACKTICKS_TO_AT_SIGN_CODE);
 
   public static final DiagnosticGroup ALL_DIAGNOSTICS = new DiagnosticGroup(LINT_DIAGNOSTICS);
@@ -118,32 +126,19 @@ public final class CheckJSDocStyle extends AbstractPostOrderCallback implements 
   @Override
   public void visit(NodeTraversal t, Node n, Node unused) {
     switch (n.getToken()) {
-      case FUNCTION:
-        visitFunction(t, n);
-        break;
-      case CLASS:
-        visitClass(t, n);
-        break;
-      case ASSIGN:
-        checkStyleForPrivateProperties(t, n);
-        break;
-      case VAR:
-      case LET:
-      case CONST:
-      case STRING_KEY:
-      case SCRIPT:
-        break;
-      case MEMBER_FUNCTION_DEF:
-      case GETTER_DEF:
-      case SETTER_DEF:
+      case FUNCTION -> visitFunction(t, n);
+      case CLASS -> visitClass(t, n);
+      case ASSIGN -> checkStyleForPrivateProperties(t, n);
+      case VAR, LET, CONST, STRING_KEY -> {}
+      case MEMBER_FUNCTION_DEF, GETTER_DEF, SETTER_DEF -> {
         // Don't need to call visitFunction because this JSDoc will be visited when the function is
         // visited.
         if (NodeUtil.getEnclosingClass(n) != null) {
           checkStyleForPrivateProperties(t, n);
         }
-        break;
-      default:
-        visitNonFunction(t, n);
+      }
+      case SCRIPT -> checkLicenseComment(t, n);
+      default -> visitNonFunction(t, n);
     }
   }
 
@@ -438,9 +433,7 @@ public final class CheckJSDocStyle extends AbstractPostOrderCallback implements 
       }
 
       // Shallow traversal, since we don't need to inspect within functions or expressions.
-      if (parent == null
-          || NodeUtil.isControlStructure(parent)
-          || NodeUtil.isStatementBlock(parent)) {
+      if (NodeUtil.isShallowStatementTree(parent)) {
         if (n.isReturn() && n.hasChildren()) {
           found = true;
           return false;
@@ -465,6 +458,16 @@ public final class CheckJSDocStyle extends AbstractPostOrderCallback implements 
           t.report(n, EXTERNS_FILES_SHOULD_BE_ANNOTATED);
         }
       }
+    }
+  }
+
+  private void checkLicenseComment(NodeTraversal t, Node n) {
+    if (n.getJSDocInfo() == null || n.getJSDocInfo().getLicense() == null) {
+      return;
+    }
+    String license = n.getJSDocInfo().getLicense();
+    if (license.contains("@externs")) {
+      t.report(n, LICENSE_CONTAINS_AT_EXTERNS);
     }
   }
 }

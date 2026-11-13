@@ -19,7 +19,6 @@ import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkState;
 
 import com.google.common.base.CaseFormat;
-import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableList;
 import com.google.javascript.jscomp.PolymerBehaviorExtractor.BehaviorDefinition;
 import com.google.javascript.jscomp.PolymerPass.MemberDefinition;
@@ -29,14 +28,14 @@ import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.Node;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Parsed Polymer class (element) definition. Includes convenient fields for rewriting the class.
@@ -53,6 +52,8 @@ final class PolymerClassDefinition {
   /** The Polymer call or class node which defines the Element. */
   final Node definition;
 
+  final CompilerInput input;
+
   /** The target node (LHS) for the Polymer element definition. */
   final Node target;
 
@@ -66,7 +67,7 @@ final class PolymerClassDefinition {
   final MemberDefinition constructor;
 
   /** The name of the native HTML element which this element extends. */
-  @Nullable final String nativeBaseElement;
+  final @Nullable String nativeBaseElement;
 
   /** Properties declared in the Polymer "properties" block. */
   final List<MemberDefinition> props;
@@ -75,15 +76,15 @@ final class PolymerClassDefinition {
   final Map<MemberDefinition, BehaviorDefinition> behaviorProps;
 
   /** Methods on the element. */
-  @Nullable final List<MemberDefinition> methods;
+  final @Nullable List<MemberDefinition> methods;
 
   /** Flattened list of behavior definitions used by this element. */
-  @Nullable final ImmutableList<BehaviorDefinition> behaviors;
+  final @Nullable ImmutableList<BehaviorDefinition> behaviors;
 
   /** Language features that should be carried over to the extraction destination. */
-  @Nullable final FeatureSet features;
+  final @Nullable FeatureSet features;
 
-  private String interfaceName = null;
+  private @Nullable String interfaceName = null;
 
   PolymerClassDefinition(
       DefinitionType defType,
@@ -93,12 +94,13 @@ final class PolymerClassDefinition {
       Node descriptor,
       JSDocInfo classInfo,
       MemberDefinition constructor,
-      String nativeBaseElement,
+      @Nullable String nativeBaseElement,
       List<MemberDefinition> props,
-      Map<MemberDefinition, BehaviorDefinition> behaviorProps,
+      @Nullable Map<MemberDefinition, BehaviorDefinition> behaviorProps,
       List<MemberDefinition> methods,
-      ImmutableList<BehaviorDefinition> behaviors,
-      FeatureSet features) {
+      @Nullable ImmutableList<BehaviorDefinition> behaviors,
+      @Nullable FeatureSet features,
+      CompilerInput input) {
     this.defType = defType;
     this.definition = definition;
     this.target = target;
@@ -112,14 +114,14 @@ final class PolymerClassDefinition {
     this.methods = methods;
     this.behaviors = behaviors;
     this.features = features;
+    this.input = input;
   }
 
   /**
    * Validates the class definition and if valid, destructively extracts the class definition from
    * the AST.
    */
-  @Nullable
-  static PolymerClassDefinition extractFromCallNode(
+  static @Nullable PolymerClassDefinition extractFromCallNode(
       Node callNode,
       AbstractCompiler compiler,
       ModuleMetadata moduleMetadata,
@@ -142,6 +144,7 @@ final class PolymerClassDefinition {
       compiler.report(JSError.make(callNode, PolymerPassErrors.POLYMER_MISSING_IS));
       return null;
     }
+    Node enclosingModule = NodeUtil.getEnclosingModuleIfPresent(callNode);
 
     boolean hasGeneratedLhs = false;
     Node target;
@@ -195,11 +198,7 @@ final class PolymerClassDefinition {
     overwriteMembersIfPresent(
         properties,
         PolymerPassStaticUtils.extractProperties(
-            descriptor,
-            DefinitionType.ObjectLiteral,
-            compiler,
-            /** constructor= */
-            null));
+            descriptor, DefinitionType.ObjectLiteral, compiler, /* constructor= */ null));
 
     // Behaviors might get included multiple times for the same element. See test case
     // testDuplicatedBehaviorsAreCopiedOnce
@@ -225,9 +224,13 @@ final class PolymerClassDefinition {
       if (isFunctionDefinition) {
         methods.add(
             new MemberDefinition(
-                NodeUtil.getBestJSDocInfo(keyNode), keyNode, keyNode.getFirstChild()));
+                NodeUtil.getBestJSDocInfo(keyNode),
+                keyNode,
+                keyNode.getFirstChild(),
+                enclosingModule));
       }
     }
+    CompilerInput input = compiler.getInput(NodeUtil.getEnclosingScript(callNode).getInputId());
 
     return new PolymerClassDefinition(
         DefinitionType.ObjectLiteral,
@@ -236,13 +239,14 @@ final class PolymerClassDefinition {
         hasGeneratedLhs,
         descriptor,
         classInfo,
-        new MemberDefinition(ctorInfo, null, constructor),
+        new MemberDefinition(ctorInfo, null, constructor, enclosingModule),
         nativeBaseElement,
         properties,
         behaviorProps,
         methods,
         behaviors,
-        newFeatures);
+        newFeatures,
+        input);
   }
 
   private static boolean isGoogModuleExports(Node assign) {
@@ -289,9 +293,8 @@ final class PolymerClassDefinition {
    * Validates the class definition and if valid, extracts the class definition from the AST. As
    * opposed to the Polymer 1 extraction, this operation is non-destructive.
    */
-  @Nullable
-  static PolymerClassDefinition extractFromClassNode(
-      Node classNode, AbstractCompiler compiler, GlobalNamespace globalNames) {
+  static @Nullable PolymerClassDefinition extractFromClassNode(
+      Node classNode, AbstractCompiler compiler) {
     checkState(classNode != null && classNode.isClass());
 
     // The supported case is for the config getter to return an object literal descriptor.
@@ -335,30 +338,26 @@ final class PolymerClassDefinition {
       compiler.report(JSError.make(classNode, PolymerPassErrors.POLYMER_CLASS_UNNAMED));
       return null;
     }
+    Node enclosingModule = NodeUtil.getEnclosingModuleIfPresent(classNode);
 
     JSDocInfo classInfo = NodeUtil.getBestJSDocInfo(classNode);
 
-    JSDocInfo ctorInfo = null;
     Node constructor = NodeUtil.getEs6ClassConstructorMemberFunctionDef(classNode);
-    if (constructor != null) {
-      ctorInfo = NodeUtil.getBestJSDocInfo(constructor);
-    }
 
-    List<MemberDefinition> properties =
+    ImmutableList<MemberDefinition> properties =
         PolymerPassStaticUtils.extractProperties(
             propertiesDescriptor, DefinitionType.ES6Class, compiler, constructor);
 
-    List<MemberDefinition> methods = new ArrayList<>();
-    for (Node keyNode = NodeUtil.getClassMembers(classNode).getFirstChild();
-        keyNode != null;
-        keyNode = keyNode.getNext()) {
-      if (!keyNode.isMemberFunctionDef()) {
-        continue;
-      }
-      methods.add(
-          new MemberDefinition(
-              NodeUtil.getBestJSDocInfo(keyNode), keyNode, keyNode.getFirstChild()));
+    List<MemberDefinition> methods = extractClassMethods(classNode, enclosingModule);
+
+    JSDocInfo ctorInfo = null;
+    if (constructor != null) {
+      ctorInfo = NodeUtil.getBestJSDocInfo(constructor);
+
+      // Add properties assigned to functions in the constructor (i.e. `this.prop = function`).
+      addFunctionAssignmentsFromConstructor(constructor, enclosingModule, methods);
     }
+    CompilerInput input = compiler.getInput(NodeUtil.getEnclosingScript(classNode).getInputId());
 
     return new PolymerClassDefinition(
         DefinitionType.ES6Class,
@@ -367,13 +366,64 @@ final class PolymerClassDefinition {
         /* hasGeneratedLhs= */ false,
         propertiesDescriptor,
         classInfo,
-        new MemberDefinition(ctorInfo, null, constructor),
+        new MemberDefinition(ctorInfo, null, constructor, enclosingModule),
         null,
         properties,
         null,
         methods,
         null,
-        null);
+        null,
+        input);
+  }
+
+  /** Extracts true class methods and fields assigned to functions from an ES6 class node. */
+  private static List<MemberDefinition> extractClassMethods(Node classNode, Node enclosingModule) {
+    List<MemberDefinition> methods = new ArrayList<>();
+    for (Node keyNode = NodeUtil.getClassMembers(classNode).getFirstChild();
+        keyNode != null;
+        keyNode = keyNode.getNext()) {
+      if (keyNode.isMemberFunctionDef() || isFunctionField(keyNode)) {
+        methods.add(
+            new MemberDefinition(
+                NodeUtil.getBestJSDocInfo(keyNode),
+                keyNode,
+                keyNode.getFirstChild(),
+                enclosingModule));
+      }
+    }
+    return methods;
+  }
+
+  /** Detects patterns like {@code field = function() {}} and {@code field = () => {})}. */
+  private static boolean isFunctionField(Node field) {
+    if (!field.isMemberFieldDef()) {
+      return false;
+    }
+    Node value = field.getFirstChild();
+    return value != null && value.isFunction();
+  }
+
+  /**
+   * Adds properties assigned to functions in the constructor body (e.g., {@code this.prop =
+   * function()}) to the given list of methods.
+   */
+  private static void addFunctionAssignmentsFromConstructor(
+      Node constructor, Node enclosingModule, List<MemberDefinition> methods) {
+    Node body = NodeUtil.getFunctionBody(constructor.getFirstChild());
+    for (Node stmt = body.getFirstChild(); stmt != null; stmt = stmt.getNext()) {
+      if (!stmt.isExprResult() || !stmt.getFirstChild().isAssign()) {
+        continue;
+      }
+
+      var assignment = stmt.getFirstChild();
+      var propName = assignment.getFirstChild();
+      var propValue = assignment.getLastChild();
+      if (propName.isGetProp() && propName.getFirstChild().isThis() && propValue.isFunction()) {
+        methods.add(
+            new MemberDefinition(
+                NodeUtil.getBestJSDocInfo(propName), propName, propValue, enclosingModule));
+      }
+    }
   }
 
   /**
@@ -406,7 +456,7 @@ final class PolymerClassDefinition {
     }
     Iterator<Map.Entry<MemberDefinition, BehaviorDefinition>> behaviorsItr =
         behaviorProps.entrySet().iterator();
-    Set<String> seen = new HashSet<>();
+    Set<String> seen = new LinkedHashSet<>();
     while (behaviorsItr.hasNext()) {
       MemberDefinition memberDefinition = behaviorsItr.next().getKey();
       String propertyName = memberDefinition.name.getString();
@@ -453,13 +503,13 @@ final class PolymerClassDefinition {
         .toString();
   }
 
-  String getInterfaceName(Supplier<String> uniqueIdSupplier) {
+  String getInterfaceName(UniqueIdSupplier uniqueIdSupplier) {
     if (interfaceName == null) {
       interfaceName =
           "Polymer"
               + target.getQualifiedName().replace('.', '_')
-              + "Interface"
-              + uniqueIdSupplier.get();
+              + "Interface$"
+              + uniqueIdSupplier.getUniqueId(input);
     }
     return interfaceName;
   }

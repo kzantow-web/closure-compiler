@@ -13,6 +13,11 @@ message OptimizationJsdoc {
   int32 description_pointer = 3;
   int32 meaning_pointer = 4;
   int32 alternate_message_id_pointer = 5;
+
+  // Used by @closureUnaware rewriting. String pool value that corresponds to
+  // the PerFileClosureUnawareMode enum. Defined as a string for future
+  // extensibility.
+  int32 closure_unaware_mode_pointer = 6;
 }
 
 enum JsdocTag {
@@ -48,7 +53,6 @@ enum JsdocTag {
   JSDOC_ABSTRACT = 19;
 
   // Used by ReplaceMessage i18n
-  JSDOC_HIDDEN = 21;
   JSDOC_SUPPRESS_MESSAGE_CONVENTION = 22;
 
   // Used by CollapseProperties
@@ -61,8 +65,9 @@ enum JsdocTag {
   JSDOC_COLLAPSIBLE_OR_BREAK_MY_CODE = 25;
 
   // Used by unit tests
-  JSDOC_FILEOVERVIEW = 26;  // Used to specially mark the base.js file.
+  JSDOC_FILEOVERVIEW = 26;
 
+  // Used to specially mark the base.js file.
   JSDOC_PROVIDE_GOOG = 31;
 
   // Used to identify type summary (i.js) files.
@@ -70,4 +75,24 @@ enum JsdocTag {
 
   // Use by goog.provide rewriting
   JSDOC_PROVIDE_ALREADY_PROVIDED = 33;
+
+  // Used to identify Sass generated css (.css.closure.js) files.
+  JSDOC_SASS_GENERATED_CSS_TS = 34;
+
+  // Used to suppress warnings by ReportUntranspilableFeatures pass in stage2
+  JSDOC_SUPPRESS_UNTRANSPILABLE_FEATURES = 36;
+
+  // Used by CoverageInstrumentationCallback
+  JSDOC_NO_COVERAGE = 37;
+
+  // Used to require function inlining to enable other optimizations,
+  // especially constant folding of object literals.
+  JSDOC_REQUIRE_INLINING = 38;
+
+  // Used by OptimizeParameters
+  JSDOC_USED_VIA_DOT_CONSTRUCTOR = 39;
+
+  // Used to encourage function inlining to enable other optimizations,
+  // especially constant folding of object literals.
+  JSDOC_ENCOURAGE_INLINING = 40;
 }

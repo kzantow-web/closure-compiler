@@ -24,7 +24,7 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import java.util.LinkedHashSet;
 import java.util.Set;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** A simplified version of a Closure or TS type for use by optimizations */
 @AutoValue
@@ -49,8 +49,7 @@ public abstract class Color {
    */
   public abstract ImmutableSet<String> getOwnProperties();
 
-  @Nullable
-  public abstract ColorId getBoxId();
+  public abstract @Nullable ColorId getBoxId();
 
   /**
    * Whether this type is some Closure assertion function removable by Closure-specific
@@ -74,12 +73,11 @@ public abstract class Color {
 
   public static Color createUnion(Set<Color> elements) {
     switch (elements.size()) {
-      case 0:
-        throw new IllegalStateException();
-      case 1:
+      case 0 -> throw new IllegalStateException();
+      case 1 -> {
         return Iterables.getOnlyElement(elements);
-      default:
-        break;
+      }
+      default -> {}
     }
 
     ImmutableSet.Builder<Color> instanceColors = ImmutableSet.builder();
@@ -136,7 +134,7 @@ public abstract class Color {
    * "primitive" by this method.
    */
   public final boolean isPrimitive() {
-    /**
+    /*
      * Avoid the design headache about whether unions are primitives. The union *color* isn't
      * primitive, but the *value* held by a union reference may be.
      */
@@ -151,7 +149,7 @@ public abstract class Color {
 
   @Memoized
   public Color subtractNullOrVoid() {
-    /** Avoid defining NULL_OR_VOID.subtract(NULL_OR_VOID) */
+    /* Avoid defining NULL_OR_VOID.subtract(NULL_OR_VOID) */
     checkState(this.isUnion());
 
     if (!this.getUnionElements().contains(StandardColors.NULL_OR_VOID)) {

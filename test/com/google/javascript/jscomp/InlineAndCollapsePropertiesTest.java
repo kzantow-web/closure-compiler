@@ -16,12 +16,22 @@
 
 package com.google.javascript.jscomp;
 
+import static com.google.common.truth.Truth.assertThat;
 import static com.google.javascript.jscomp.InlineAndCollapseProperties.PARTIAL_NAMESPACE_WARNING;
 import static com.google.javascript.jscomp.InlineAndCollapseProperties.RECEIVER_AFFECTED_BY_COLLAPSE;
+import static com.google.javascript.rhino.testing.NodeSubject.assertNode;
+import static org.junit.Assert.assertThrows;
 
+import com.google.common.base.Throwables;
+import com.google.common.collect.ImmutableList;
 import com.google.javascript.jscomp.CompilerOptions.ChunkOutputType;
+import com.google.javascript.jscomp.CompilerOptions.LanguageMode;
 import com.google.javascript.jscomp.CompilerOptions.PropertyCollapseLevel;
 import com.google.javascript.jscomp.deps.ModuleLoader.ResolutionMode;
+import com.google.javascript.jscomp.testing.JSChunkGraphBuilder;
+import com.google.javascript.jscomp.testing.TestExternsBuilder;
+import com.google.javascript.rhino.Node;
+import com.google.javascript.rhino.testing.NodeSubject;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -32,12 +42,13 @@ import org.junit.runners.JUnit4;
 public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
 
   private static final String EXTERNS =
-      lines(
-          "var window;", //
-          "function alert(s) {}",
-          "function parseInt(s) {}",
-          "/** @constructor */ function String() {};",
-          "var arguments");
+      """
+      var window;
+      function alert(s) {}
+      function parseInt(s) {}
+      /** @constructor */ function String() {};
+      var arguments
+      """;
 
   public InlineAndCollapsePropertiesTest() {
     super(EXTERNS);
@@ -45,12 +56,19 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
 
   @Override
   protected CompilerPass getProcessor(final Compiler compiler) {
-    return InlineAndCollapseProperties.builder(compiler)
-        .setPropertyCollapseLevel(PropertyCollapseLevel.ALL)
-        .setChunkOutputType(ChunkOutputType.GLOBAL_NAMESPACE)
-        .setHaveModulesBeenRewritten(false)
-        .setModuleResolutionMode(ResolutionMode.BROWSER)
-        .build();
+    PhaseOptimizer optimizer = new PhaseOptimizer(compiler, null);
+    optimizer.addOneTimePass(makePassFactory("es6NormalizeClasses", Es6NormalizeClasses::new));
+    optimizer.addOneTimePass(
+        makePassFactory(
+            "inlineAndCollapseProperties",
+            (comp) ->
+                InlineAndCollapseProperties.builder(comp)
+                    .setPropertyCollapseLevel(PropertyCollapseLevel.ALL)
+                    .setChunkOutputType(ChunkOutputType.GLOBAL_NAMESPACE)
+                    .setHaveModulesBeenRewritten(false)
+                    .setModuleResolutionMode(ResolutionMode.BROWSER)
+                    .build()));
+    return optimizer;
   }
 
   @Override
@@ -58,196 +76,374 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
   public void setUp() throws Exception {
     super.setUp();
     enableNormalize();
+    // TODO(bradfordcsmith): Stop normalizing the expected output or document why it is necessary.
+    enableNormalizeExpectedOutput();
     disableCompareJsDoc();
+    setGenericNameReplacements(Es6NormalizeClasses.GENERIC_NAME_REPLACEMENTS);
+  }
+
+  @Test
+  public void testTs52OutputChange() {
+    test(
+        srcs(
+            """
+            var alias;
+            var module$exports$C = class {
+              method1() {
+                return alias.staticPropOnC;
+              }
+              method2() {
+                return alias.staticPropOnAlias;
+              }
+            };
+            alias = module$exports$C;
+            (() => {
+              alias.staticPropOnAlias = 1;
+            })();
+            module$exports$C.staticPropOnC = 2;
+            """),
+        expected(
+            """
+            var alias;
+            var module$exports$C = class {
+              method1() {
+                return module$exports$C$staticPropOnC;
+              }
+              method2() {
+                return module$exports$C$staticPropOnAlias;
+              }
+            };
+            var module$exports$C$staticPropOnAlias;
+            alias = null;
+            (() => {
+              module$exports$C$staticPropOnAlias = 1;
+            })();
+            var module$exports$C$staticPropOnC = 2;
+            """));
+  }
+
+  @Test
+  public void testTs52OutputChangeVariableReassignment() {
+    // This test case was created by executing
+    // AdvancedOptimizationsIntegrationTest#testTSVariableReassignmentAndAliasingDueToDecoration
+    // with `options.setPrintSourceAfterEachPass(true)`.
+    // The input source here is how the source code looks at the point just before
+    // InlineAndCollapseProperties runs in that test case except for the addition of one line of
+    // JSDoc to make the unit test recognize a function declaration as a class declaration.
+    test(
+        externs(
+            ImmutableList.of(
+                new TestExternsBuilder()
+                    .addObject()
+                    .addConsole()
+                    .addClosureExterns()
+                    .addExtra(
+                        // simulate "const tslib_1 = goog.require('tslib');",
+                        """
+                        var tslib_1 = {
+                          __decorate: function(decorators, clazz) {}
+                        };
+                        """)
+                    .buildExternsFile("externs.js"))),
+        srcs(
+            """
+            var module$exports$main = {};
+            var module$contents$main_module =
+                module$contents$main_module || {id: 'main.ts'};
+            var module$contents$main_Foo_1;
+            function module$contents$main_noopDecorator(arg) {
+              return arg;
+            }
+            // This JSDoc annotation makes this unit test recognize the declaration as a
+            // class definition.
+            /** @constructor */
+            var i0$classdecl$var0 = function() {};
+            i0$classdecl$var0.foo = function() {
+              console.log('Hello');
+            };
+            i0$classdecl$var0.prototype.bar = function() {
+              module$contents$main_Foo_1.foo();
+              console.log('ID: ' + module$contents$main_Foo_1.ID + '');
+            };
+            var module$contents$main_Foo = module$contents$main_Foo_1 = i0$classdecl$var0;
+            module$contents$main_Foo.ID = 'original';
+            module$contents$main_Foo.ID2 = module$contents$main_Foo_1.ID;
+            (function() {
+            module$contents$main_Foo_1.foo();
+            console.log('ID: ' + module$contents$main_Foo_1.ID + '');
+            })();
+            module$contents$main_Foo = module$contents$main_Foo_1 = tslib_1.__decorate(
+                [module$contents$main_noopDecorator], module$contents$main_Foo);
+            if (false) {
+              module$contents$main_Foo.ID;
+              module$contents$main_Foo.ID2;
+            }
+            (new module$contents$main_Foo()).bar();
+            """),
+        expected(
+            """
+            var module$contents$main_module =
+                module$contents$main_module || {id: 'main.ts'};
+            var module$contents$main_Foo_1;
+            function module$contents$main_noopDecorator(arg) {
+              return arg;
+            }
+            /** @constructor */
+            var i0$classdecl$var0 = function() {};
+            // TODO : b/299055739 - This property collapse breaks the output code.
+            var i0$classdecl$var0$foo = function() {
+            // "i0$classdecl$var0.foo = function() {", // this is the correct line
+              console.log('Hello');
+            };
+            i0$classdecl$var0.prototype.bar = function() {
+            // This reference to foo() is broken.
+              module$contents$main_Foo_1.foo();
+              console.log('ID: ' + module$contents$main_Foo_1.ID + '');
+            };
+            var module$contents$main_Foo = module$contents$main_Foo_1 = i0$classdecl$var0;
+            module$contents$main_Foo.ID = 'original';
+            module$contents$main_Foo.ID2 = module$contents$main_Foo_1.ID;
+            (function() {
+            module$contents$main_Foo_1.foo();
+            console.log('ID: ' + module$contents$main_Foo_1.ID + '');
+            })();
+            module$contents$main_Foo = module$contents$main_Foo_1 = tslib_1.__decorate(
+                [module$contents$main_noopDecorator], module$contents$main_Foo);
+            if (false) {
+              module$contents$main_Foo.ID;
+              module$contents$main_Foo.ID2;
+            }
+            (new module$contents$main_Foo()).bar();
+            """));
+  }
+
+  @Test
+  public void testDoNotCollapseDeletedProperty() {
+    testSame(
+        srcs(
+            """
+            const global = window;
+            delete global.HTMLElement;
+            global.HTMLElement = (class {});
+            """));
   }
 
   @Test
   public void testConstObjRefInTemplateLiteralComputedPropKey() {
     test(
         srcs(
-            lines(
-                "var module$name = {}", //
-                "module$name.cssClasses = {",
-                "  CLASS_A: 'class-a',",
-                "};",
-                "",
-                "module$name.oldCssClassesMap = {",
-                "  [`${module$name.cssClasses.CLASS_A}`]: 'old-class-a',",
-                "};",
-                "")),
-        // TODO(bradfordcsmith): Shouldn't we be leaving the computed property in place?
-        expected("var module$name$cssClasses$CLASS_A = 'class-a';"));
+            """
+            var module$name = {}
+            module$name.cssClasses = {
+              CLASS_A: 'class-a',
+            };
+
+            module$name.oldCssClassesMap = {
+              [`${module$name.cssClasses.CLASS_A}`]: 'old-class-a',
+            };
+            """),
+        expected(
+            """
+            var module$name$cssClasses$CLASS_A = 'class-a';
+            var module$name$oldCssClassesMap = {
+              [`${module$name$cssClasses$CLASS_A}`]:'old-class-a'
+            };
+            """));
   }
 
   @Test
   public void testObjLitSpread() {
     test(
-        lines(
-            "const other = {bar: 'some' };",
-            "let ns = {}",
-            "ns.foo = { ...other };",
-            "use(ns.foo.bar);"),
-        lines("const other = {bar: 'some' };", "var ns$foo = { ...other };", "use(ns$foo.bar);"));
+        """
+        const other = {bar: 'some' };
+        let ns = {}
+        ns.foo = { ...other };
+        use(ns.foo.bar);
+        """,
+        """
+        const other = {bar: 'some' };
+        var ns$foo = { ...other };
+        use(ns$foo.bar);
+        """);
   }
 
   // same behavior with transpiled version of above test
   @Test
   public void testObjAssign() {
     test(
-        lines(
-            "const other = {bar: 'some' };",
-            "let ns = {}",
-            "ns.foo = Object.assign({}, other);",
-            "use(ns.foo.bar);"),
-        lines(
-            "const other = {bar: 'some' };",
-            "var ns$foo = Object.assign({}, other);",
-            "use(ns$foo.bar);"));
+        """
+        const other = {bar: 'some' };
+        let ns = {}
+        ns.foo = Object.assign({}, other);
+        use(ns.foo.bar);
+        """,
+        """
+        const other = {bar: 'some' };
+        var ns$foo = Object.assign({}, other);
+        use(ns$foo.bar);
+        """);
   }
 
   @Test
   public void testObjLitSpread_twoSpreads() {
     test(
-        lines(
-            "const other = {bar: 'bar' };",
-            "const another = {baz: 'baz' };",
-            "let ns = {};",
-            "ns.foo = { ...other, ...another };",
-            "use(ns.foo.bar, ns.foo.baz);"),
-        lines(
-            "const other = {bar: 'bar' };",
-            "const another = {baz : 'baz'};",
-            "var ns$foo = { ...other, ...another };",
-            "use(ns$foo.bar, ns$foo.baz);"));
+        """
+        const other = {bar: 'bar' };
+        const another = {baz: 'baz' };
+        let ns = {};
+        ns.foo = { ...other, ...another };
+        use(ns.foo.bar, ns.foo.baz);
+        """,
+        """
+        const other = {bar: 'bar' };
+        const another = {baz : 'baz'};
+        var ns$foo = { ...other, ...another };
+        use(ns$foo.bar, ns$foo.baz);
+        """);
   }
 
   // same behavior with transpiled version of above test
   @Test
   public void testObjAssign_twoSpreads() {
     test(
-        lines(
-            "const other = {bar: 'bar'};",
-            "const another = {baz: 'baz'};",
-            "let ns = {};",
-            "ns.foo = Object.assign({}, other, another);",
-            "use(ns.foo.bar, ns.foo.baz);"),
-        lines(
-            "const other = {bar: 'bar'};",
-            "const another = {baz : 'baz'};",
-            "var ns$foo = Object.assign({}, other, another);",
-            "use(ns$foo.bar, ns$foo.baz);"));
+        """
+        const other = {bar: 'bar'};
+        const another = {baz: 'baz'};
+        let ns = {};
+        ns.foo = Object.assign({}, other, another);
+        use(ns.foo.bar, ns.foo.baz);
+        """,
+        """
+        const other = {bar: 'bar'};
+        const another = {baz : 'baz'};
+        var ns$foo = Object.assign({}, other, another);
+        use(ns$foo.bar, ns$foo.baz);
+        """);
   }
 
   @Test
   public void testObjLitSpread_withNormalPropAfter() {
     test(
-        lines(
-            "const other = {bar: 'some' };",
-            "let ns = {}",
-            "ns.foo = { ...other, prop : 0};",
-            "use(ns.foo.bar, ns.foo.prop);"),
-        lines(
-            "const other = {bar: 'some' };", //
-            "var ns$foo$prop = 0;",
-            "var ns$foo = { ...other};",
-            "use(ns$foo.bar, ns$foo$prop);"));
+        """
+        const other = {bar: 'some' };
+        let ns = {}
+        ns.foo = { ...other, prop : 0};
+        use(ns.foo.bar, ns.foo.prop);
+        """,
+        """
+        const other = {bar: 'some' };
+        var ns$foo$prop = 0;
+        var ns$foo = { ...other};
+        use(ns$foo.bar, ns$foo$prop);
+        """);
   }
 
   @Test
   public void testObjAssign_withNormalPropAfter() {
     test(
-        lines(
-            "const other = {bar: 'some' };",
-            "let ns = {}",
-            "ns.foo = Object.assign({}, other, {prop : 0});",
-            "use(ns.foo.bar, ns.foo.prop);"),
-        lines(
-            "const other = {bar: 'some' };", //
-            "var ns$foo = Object.assign({}, other, {prop:0});",
-            "use(ns$foo.bar, ns$foo.prop);")); // both properties not collapsed.
+        """
+        const other = {bar: 'some' };
+        let ns = {}
+        ns.foo = Object.assign({}, other, {prop : 0});
+        use(ns.foo.bar, ns.foo.prop);
+        """,
+        """
+        const other = {bar: 'some' };
+        var ns$foo = Object.assign({}, other, {prop:0});
+        use(ns$foo.bar, ns$foo.prop);
+        """); // both properties not collapsed.
   }
 
   @Test
   public void testObjLitSpread_chained() {
     test(
-        lines(
-            "const other = {bar: 'some' };",
-            "let ns = {...other}",
-            "let ns2 = { ...ns };",
-            "use(ns2.bar);"),
-        lines(
-            "const other = {bar: 'some' };",
-            "let ns = { ...other };",
-            "let ns2 = { ...ns };",
-            "use(ns2.bar);"));
+        """
+        const other = {bar: 'some' };
+        let ns = {...other}
+        let ns2 = { ...ns };
+        use(ns2.bar);
+        """,
+        """
+        const other = {bar: 'some' };
+        let ns = { ...other };
+        let ns2 = { ...ns };
+        use(ns2.bar);
+        """);
   }
 
   // same behavior with transpiled version of above test
   @Test
   public void testObjAssign_chained() {
     test(
-        lines(
-            "const other = {bar: 'some' };",
-            "let ns = Object.assign({}, other);",
-            "let ns2 = Object.assign({}, ns);",
-            "use(ns2.bar);"),
-        lines(
-            "const other = {bar: 'some' };",
-            "let ns = Object.assign({}, other);",
-            "let ns2 = Object.assign({}, ns);",
-            "use(ns2.bar);"));
+        """
+        const other = {bar: 'some' };
+        let ns = Object.assign({}, other);
+        let ns2 = Object.assign({}, ns);
+        use(ns2.bar);
+        """,
+        """
+        const other = {bar: 'some' };
+        let ns = Object.assign({}, other);
+        let ns2 = Object.assign({}, ns);
+        use(ns2.bar);
+        """);
   }
 
   @Test
   public void testObjLitSpread_chainedWithGetProp() {
     test(
-        lines(
-            "const other = {bar: 'some' };",
-            "let ns = {...other};",
-            "let ns2 = {};",
-            "ns2.foo = { ...ns };",
-            "use(ns2.foo.bar);"),
-        lines(
-            "const other = {bar: 'some' };",
-            "let ns = { ...other };",
-            "var ns2$foo = { ...ns };",
-            "use(ns2$foo.bar);"));
+        """
+        const other = {bar: 'some' };
+        let ns = {...other};
+        let ns2 = {};
+        ns2.foo = { ...ns };
+        use(ns2.foo.bar);
+        """,
+        """
+        const other = {bar: 'some' };
+        let ns = { ...other };
+        var ns2$foo = { ...ns };
+        use(ns2$foo.bar);
+        """);
   }
 
   // same behavior with transpiled version of above test
   @Test
   public void testObjAssign_chainedWithGetProp() {
     test(
-        lines(
-            "const other = {bar: 'some' };",
-            "let ns = Object.assign({}, other);",
-            "let ns2 = {};",
-            "ns2.foo = Object.assign({}, ns);",
-            "use(ns2.foo.bar);"),
-        lines(
-            "const other = {bar: 'some' };",
-            "let ns = Object.assign({}, other);",
-            "var ns2$foo = Object.assign({}, ns);",
-            "use(ns2$foo.bar);"));
+        """
+        const other = {bar: 'some' };
+        let ns = Object.assign({}, other);
+        let ns2 = {};
+        ns2.foo = Object.assign({}, ns);
+        use(ns2.foo.bar);
+        """,
+        """
+        const other = {bar: 'some' };
+        let ns = Object.assign({}, other);
+        var ns2$foo = Object.assign({}, ns);
+        use(ns2$foo.bar);
+        """);
   }
 
   @Test
   public void testGitHubIssue3733() {
     testSame(
         srcs(
-            lines(
-                "const X = {Y: 1};",
-                "",
-                "function fn(a) {",
-                "  if (a) {",
-                // Before issue #3733 was fixed GlobalNamespace failed to see this reference
-                // as creating an alias for X due to a switch statement that failed to check
-                // for the RETURN node type, so X.Y was incorrectly collapsed.
-                "    return a ? X : {};",
-                "  }",
-                "}",
-                "",
-                "console.log(fn(true).Y);")));
+            """
+            const X = {Y: 1};
+
+            function fn(a) {
+              if (a) {
+            // Before issue #3733 was fixed GlobalNamespace failed to see this reference
+            // as creating an alias for X due to a switch statement that failed to check
+            // for the RETURN node type, so X.Y was incorrectly collapsed.
+                return a ? X : {};
+              }
+            }
+
+            console.log(fn(true).Y);
+            """));
   }
 
   @Test
@@ -264,95 +460,223 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
   }
 
   @Test
+  public void testCollapseKeepsSourceInfoForAliases() {
+    test(
+        """
+        var a = {};
+        a.use = function(arg) {};
+        a.b = {};
+        var c = a.b;
+        a.use(c);
+        """,
+        """
+        var a$use = function (arg) { };
+        var a$b = {};
+        var c = null;
+        a$use(a$b);
+        """);
+
+    final Node scriptNode =
+        getLastCompiler()
+            .getRoot()
+            .getLastChild() // sources root
+            .getOnlyChild(); // only one source file
+    assertNode(scriptNode).isScript().hasXChildren(4);
+    final Node statement1 = scriptNode.getFirstChild();
+    final Node statement2 = statement1.getNext();
+    final Node statement3 = statement2.getNext();
+    final Node statement4 = statement3.getNext();
+    final String scriptName = scriptNode.getSourceFileName();
+
+    // Original line 2: `a.use = function(arg) {};`
+    // Compiled line 1: `var a$use = function(arg) {};`
+    assertNode(statement1)
+        .isVar()
+        .hasSourceFileName(scriptName)
+        .hasLineno(2)
+        .hasCharno(0)
+        .hasOneChildThat() // `a$use = function(arg) {};
+        .isName("a$use")
+        .hasSourceFileName(scriptName)
+        .hasLineno(2)
+        .hasCharno(0) // `a.use = ` was the beginning of the line
+        .hasOneChildThat() // `function(arg) {}`
+        .isFunction()
+        .hasSourceFileName(scriptName)
+        .hasLineno(2)
+        .hasCharno(8); // `a.use = ` 8 chars
+
+    // Original line 3: `a.b = {};`
+    // Compiled line 2: `var a$b = {};`
+    assertNode(statement2)
+        .isVar()
+        .hasSourceFileName(scriptName)
+        .hasLineno(3)
+        .hasCharno(0)
+        .hasOneChildThat() // a$b = {}
+        .isName("a$b")
+        .hasSourceFileName(scriptName)
+        .hasLineno(3)
+        .hasCharno(0)
+        .hasOneChildThat() // {}
+        .isObjectLit()
+        .hasSourceFileName(scriptName)
+        .hasLineno(3)
+        .hasCharno(6);
+
+    // Original line 4: `var c = a.b;`
+    // Compiled line 3: `var c = null;`
+    assertNode(statement3)
+        .isVar()
+        .hasSourceFileName(scriptName)
+        .hasLineno(4)
+        .hasCharno(0)
+        .hasOneChildThat() // c = a.b
+        .isName("c")
+        .hasSourceFileName(scriptName)
+        .hasLineno(4)
+        .hasCharno(4)
+        .hasOneChildThat() // null
+        .isNullNode()
+        .hasSourceFileName(scriptName)
+        .hasLineno(4)
+        .hasCharno(10);
+
+    // Original line 5: `a.use(c);`
+    // Compiled line 4: `a$use(a$b);`
+    final NodeSubject callNodeSubject =
+        assertNode(statement4)
+            .isExprResult()
+            .hasSourceFileName(scriptName)
+            .hasLineno(5)
+            .hasCharno(0)
+            .hasOneChildThat() // a.use(c)
+            .isCall()
+            .hasSourceFileName(scriptName)
+            .hasLineno(5)
+            .hasCharno(0);
+
+    // `a$use` from `a.use(c);`
+    callNodeSubject
+        .hasFirstChildThat()
+        .isName("a$use")
+        .hasSourceFileName(scriptName)
+        .hasLineno(5)
+        .hasCharno(2); // source info points to the `use` part of `a.use`
+
+    // Original line 5: `c` in `a.use(c)`
+    // Compiled line 4: `a$b` in `a$use(a$b)`
+    callNodeSubject
+        .hasSecondChildThat()
+        .isName("a$b")
+        .hasSourceFileName(scriptName)
+        .hasLineno(5)
+        .hasCharno(6); // `a.use(` is 6 chars
+  }
+
+  @Test
   public void testOptChainPreventsInlineAndCollapse() {
     testSame(
-        lines(
-            "var a = {};",
-            "a.b = {};",
-            // c is not really an alias due to optional chain,
-            // and optional chain prevents collapse of a.b.
-            "var c = a?.b;",
-            "use(c);"));
+        """
+        var a = {};
+        a.b = {};
+        // c is not really an alias due to optional chain,
+        // and optional chain prevents collapse of a.b.
+        var c = a?.b;
+        use(c);
+        """);
     test(
-        lines(
-            "var a = {};", //
-            "a.b = {};",
-            "var b = a.b;", // can be inlined and collapsed
-            "b.c = {};",
-            "var c = b?.c;", // opt chain prevents both
-            "use(c);"),
-        lines(
-            "var a$b = {};", //
-            "var b = null;",
-            "a$b.c = {};",
-            "var c = a$b?.c;",
-            "use(c);"));
+        """
+        var a = {};
+        a.b = {};
+        var b = a.b; // can be inlined and collapsed
+        b.c = {};
+        var c = b?.c; // opt chain prevents both
+        use(c);
+        """,
+        """
+        var a$b = {};
+        var b = null;
+        a$b.c = {};
+        var c = a$b?.c;
+        use(c);
+        """);
     test(
-        lines(
-            "const a = {};", //
-            "a.b = {};",
-            "a.b.c = {};",
-            "const {b} = a;", // can be inlined and collapsed
-            "const c = b?.c;", // opt chain prevents both
-            "use(c);"),
-        lines(
-            "var a$b = {};", //
-            "a$b.c = {};",
-            "const b = null;",
-            "const c = a$b?.c;",
-            "use(c);"));
+        """
+        const a = {};
+        a.b = {};
+        a.b.c = {};
+        const {b} = a; // can be inlined and collapsed
+        const c = b?.c; // opt chain prevents both
+        use(c);
+        """,
+        """
+        var a$b = {};
+        a$b.c = {};
+        const b = null;
+        const c = a$b?.c;
+        use(c);
+        """);
     test(
-        lines(
-            "const ns = {};", //
-            "ns.Y = {};",
-            "ns.Y.prop = 3;",
-            "const {Y} = ns;",
-            "use(Y);"),
-        lines(
-            "var ns$Y = {};", //
-            "ns$Y.prop = 3;",
-            "const Y = null;",
-            "use(ns$Y);"));
+        """
+        const ns = {};
+        ns.Y = {};
+        ns.Y.prop = 3;
+        const {Y} = ns;
+        use(Y);
+        """,
+        """
+        var ns$Y = {};
+        ns$Y.prop = 3;
+        const Y = null;
+        use(ns$Y);
+        """);
     test(
-        lines(
-            "var a = {};", //
-            "a.b = {};",
-            "a.b.c = {};",
-            "var c = a.b?.c;",
-            "use(c);"),
-        lines(
-            "var a$b = {};", //
-            "a$b.c = {};",
-            "var c = a$b?.c;",
-            "use(c);"));
+        """
+        var a = {};
+        a.b = {};
+        a.b.c = {};
+        var c = a.b?.c;
+        use(c);
+        """,
+        """
+        var a$b = {};
+        a$b.c = {};
+        var c = a$b?.c;
+        use(c);
+        """);
     test(
-        lines(
-            "const ns = {};", //
-            "/** @constructor */",
-            "ns.Y = function() {};",
-            "ns.Y.prop = 3;",
-            "const {Y} = ns;",
-            "use(Y);"),
-        lines(
-            "/** @constructor */", //
-            "var ns$Y = function() {};",
-            "var ns$Y$prop = 3;",
-            "const Y = null;",
-            "use(ns$Y);"));
+        """
+        const ns = {};
+        /** @constructor */
+        ns.Y = function() {};
+        ns.Y.prop = 3;
+        const {Y} = ns;
+        use(Y);
+        """,
+        """
+        /** @constructor */
+        var ns$Y = function() {};
+        var ns$Y$prop = 3;
+        const Y = null;
+        use(ns$Y);
+        """);
     test(
-        lines(
-            "const ns = {};", //
-            "/** @constructor */",
-            "ns.Y = function() {};",
-            "ns.Y.prop = 3;",
-            "const {Y} = ns;",
-            "use(Y?.prop);"),
-        lines(
-            "/** @constructor */", //
-            "var ns$Y = function() {};",
-            "var ns$Y$prop = 3;",
-            "const Y = null;",
-            "use(ns$Y?.prop);"));
+        """
+        const ns = {};
+        /** @constructor */
+        ns.Y = function() {};
+        ns.Y.prop = 3;
+        const {Y} = ns;
+        use(Y?.prop);
+        """,
+        """
+        /** @constructor */
+        var ns$Y = function() {};
+        var ns$Y$prop = 3;
+        const Y = null;
+        use(ns$Y?.prop);
+        """);
   }
 
   @Test
@@ -438,24 +762,28 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
         "var a$b$c$d = 1; var a$b$c$e = 2; var f = null; use(a$b$c$d);");
 
     test(
-        lines(
-            "var a = {}; a.b = {}; a.b.c = {d: 1, /** @nocollapse */ e: 2}; ", //
-            "var f = a.b.c.d; var g = a.b.c.e"),
+        """
+        var a = {}; a.b = {}; a.b.c = {d: 1, /** @nocollapse */ e: 2};
+        var f = a.b.c.d; var g = a.b.c.e
+        """,
         "var a$b$c$d = 1; var a$b$c = {/** @nocollapse */ e: 2}; var f = null; var g = null;");
 
     test(
-        lines(
-            "var a = {}; a.b = {}; a.b.c = {d: 1, /** @nocollapse */ e: 2}; ", //
-            "var f = a.b.c.d; var g = a.b.c.e; use(f, g);"),
-        lines(
-            "var a$b$c$d = 1; var a$b$c = { /** @nocollapse */ e: 2};", //
-            "var f = null; var g = null; use(a$b$c$d, a$b$c.e);"));
+        """
+        var a = {}; a.b = {}; a.b.c = {d: 1, /** @nocollapse */ e: 2};
+        var f = a.b.c.d; var g = a.b.c.e; use(f, g);
+        """,
+        """
+        var a$b$c$d = 1; var a$b$c = { /** @nocollapse */ e: 2};
+        var f = null; var g = null; use(a$b$c$d, a$b$c.e);
+        """);
 
     testSame(
-        lines(
-            "var a = {}; /** @nocollapse*/ a.b = {}; ", //
-            "a.b.c = {d: 1, e: 2}; ",
-            "var f = null; var g = null;"));
+        """
+        var a = {}; /** @nocollapse*/ a.b = {};
+        a.b.c = {d: 1, e: 2};
+        var f = null; var g = null;
+        """);
   }
 
   @Test
@@ -505,9 +833,10 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
   @Test
   public void testMisusedConstructorTag() {
     test(
-        lines(
-            "var a = {}; var d = a; a.b = function() {};", //
-            "/** @constructor */ a.b.c = 0; a.b.c;"),
+        """
+        var a = {}; var d = a; a.b = function() {};
+        /** @constructor */ a.b.c = 0; a.b.c;
+        """,
         "var d=null; var a$b=function(){}; /** @constructor */ var a$b$c=0; a$b$c;");
   }
 
@@ -520,36 +849,44 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
     // People don't typically iterate through static members of a class or
     // refer to them using an alias for the class name.
     test(
-        lines(
-            "/** @constructor */ var a = function(){}; a.b = 1; ", //
-            "var c = a; c.b = 2; a.b == c.b;"),
-        lines(
-            "/** @constructor */ var a = function(){}; var a$b = 1;", //
-            "var c = null; a$b = 2; a$b == a$b;"));
+        """
+        /** @constructor */ var a = function(){}; a.b = 1;
+        var c = a; c.b = 2; a.b == c.b;
+        """,
+        """
+        /** @constructor */ var a = function(){}; var a$b = 1;
+        var c = null; a$b = 2; a$b == a$b;
+        """);
     test(
-        lines(
-            "/** @constructor */ var a = function(){}; a.b = 1; ", //
-            "var c = a; c.b = 2; a?.b == c?.b;"),
-        lines(
-            "/** @constructor */ var a = function(){}; var a$b = 1;", //
-            "var c = null; a$b = 2; a?.b == a?.b;"));
+        """
+        /** @constructor */ var a = function(){}; a.b = 1;
+        var c = a; c.b = 2; a?.b == c?.b;
+        """,
+        """
+        /** @constructor */ var a = function(){}; var a$b = 1;
+        var c = null; a$b = 2; a?.b == a?.b;
+        """);
 
     // Sometimes we want to prevent static members of a constructor from
     // being collapsed.
     test(
-        lines(
-            "/** @constructor */ var a = function(){};", //
-            "/** @nocollapse */ a.b = 1; var c = a; c.b = 2; a.b == c.b;"),
-        lines(
-            "/** @constructor */ var a = function(){};", //
-            "/** @nocollapse */ a.b = 1; var c = null; a.b = 2; a.b == a.b;"));
+        """
+        /** @constructor */ var a = function(){};
+        /** @nocollapse */ a.b = 1; var c = a; c.b = 2; a.b == c.b;
+        """,
+        """
+        /** @constructor */ var a = function(){};
+        /** @nocollapse */ a.b = 1; var c = null; a.b = 2; a.b == a.b;
+        """);
     test(
-        lines(
-            "/** @constructor */ var a = function(){};", //
-            "/** @nocollapse */ a.b = 1; var c = a; c.b = 2; a?.b == c?.b;"),
-        lines(
-            "/** @constructor */ var a = function(){};", //
-            "/** @nocollapse */ a.b = 1; var c = null; a.b = 2; a?.b == a?.b;"));
+        """
+        /** @constructor */ var a = function(){};
+        /** @nocollapse */ a.b = 1; var c = a; c.b = 2; a?.b == c?.b;
+        """,
+        """
+        /** @constructor */ var a = function(){};
+        /** @nocollapse */ a.b = 1; var c = null; a.b = 2; a?.b == a?.b;
+        """);
   }
 
   @Test
@@ -560,108 +897,128 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
     testSame("var a = {}; a.b = function() {}; a.b.c = 1; var d = a?.b; a.b?.c != d?.c;");
 
     test(
-        lines(
-            "var a = {}; a.b = function() {}; /** @nocollapse */ a.b.c = 1;", //
-            "var d = a.b; a.b.c == d.c;"),
+        """
+        var a = {}; a.b = function() {}; /** @nocollapse */ a.b.c = 1;
+        var d = a.b; a.b.c == d.c;
+        """,
         "var a$b = function() {}; /** @nocollapse */ a$b.c = 1; var d = null; a$b.c == a$b.c;");
   }
 
   @Test
   public void testAliasCreatedForCtorDepth2() {
     test(
-        lines(
-            "var a = {}; /** @constructor */ a.b = function() {}; a.b.c = 1; var d = a.b;", //
-            "a.b.c == d.c;"),
-        lines(
-            "/** @constructor */ var a$b = function() {}; var a$b$c = 1; var d = null;", //
-            "a$b$c == a$b$c;"));
+        """
+        var a = {}; /** @constructor */ a.b = function() {}; a.b.c = 1; var d = a.b;
+        a.b.c == d.c;
+        """,
+        """
+        /** @constructor */ var a$b = function() {}; var a$b$c = 1; var d = null;
+        a$b$c == a$b$c;
+        """);
     testSame(
         srcs(
-            lines(
-                "var a = {}; /** @constructor */ a.b = function() {}; a.b.c = 1; var d = a?.b;", //
-                "a.b?.c == d?.c;")),
+            """
+            var a = {}; /** @constructor */ a.b = function() {}; a.b.c = 1; var d = a?.b;
+            a.b?.c == d?.c;
+            """),
         warning(PARTIAL_NAMESPACE_WARNING));
     test(
-        lines(
-            "var a = {}; /** @constructor */ a.b = function() {}; ", //
-            "/** @nocollapse */ a.b.c = 1; var d = a.b;",
-            "a.b.c == d.c;"),
-        lines(
-            "/** @constructor */ var a$b = function() {};",
-            "/** @nocollapse */ a$b.c = 1; var d = null;",
-            "a$b.c == a$b.c;"));
+        """
+        var a = {}; /** @constructor */ a.b = function() {};
+        /** @nocollapse */ a.b.c = 1; var d = a.b;
+        a.b.c == d.c;
+        """,
+        """
+        /** @constructor */ var a$b = function() {};
+        /** @nocollapse */ a$b.c = 1; var d = null;
+        a$b.c == a$b.c;
+        """);
   }
 
   @Test
   public void testAliasCreatedForClassDepth1_1() {
     test(
-        lines(
-            "var a = {}; /** @constructor */ a.b = function(){};", //
-            "var c = a; c.b = 0; a.b == c.b;"),
-        lines(
-            "/** @constructor */ var a$b = function(){};", //
-            "var c = null; a$b = 0; a$b == a$b;"));
+        """
+        var a = {}; /** @constructor */ a.b = function(){};
+        var c = a; c.b = 0; a.b == c.b;
+        """,
+        """
+        /** @constructor */ var a$b = function(){};
+        var c = null; a$b = 0; a$b == a$b;
+        """);
 
     test(
         srcs(
-            lines(
-                "var a = {}; /** @constructor */ a.b = function(){};", //
-                // `a?.b` and `c?.b` are aliasing gets
-                "var c = a; c.b = 0; a?.b == c?.b;")),
+            """
+            var a = {}; /** @constructor */ a.b = function(){};
+            // `a?.b` and `c?.b` are aliasing gets
+            var c = a; c.b = 0; a?.b == c?.b;
+            """),
         expected(
-            lines(
-                "var a = {}; /** @constructor */ a.b = function(){};", //
-                // `a?.b` and `c?.b` are aliasing gets
-                "var c = null; a.b = 0; a?.b == a?.b;")),
+            """
+            var a = {}; /** @constructor */ a.b = function(){};
+            // `a?.b` and `c?.b` are aliasing gets
+            var c = null; a.b = 0; a?.b == a?.b;
+            """),
         warning(PARTIAL_NAMESPACE_WARNING));
 
     testSame(
-        lines(
-            "var a = {}; /** @constructor @nocollapse */ a.b = function(){};", //
-            "var c = 1; c = a; c.b = 0; a.b == c.b;"),
+        """
+        var a = {}; /** @constructor @nocollapse */ a.b = function(){};
+        var c = 1; c = a; c.b = 0; a.b == c.b;
+        """,
         PARTIAL_NAMESPACE_WARNING);
 
     testSame(
-        lines(
-            "var a = {}; /** @constructor @nocollapse */ a.b = function(){};", //
-            "var c = 1; c = a; c.b = 0; a?.b == c?.b;"),
+        """
+        var a = {}; /** @constructor @nocollapse */ a.b = function(){};
+        var c = 1; c = a; c.b = 0; a?.b == c?.b;
+        """,
         PARTIAL_NAMESPACE_WARNING);
 
     test(
-        lines(
-            "var a = {}; /** @constructor @nocollapse */ a.b = function(){};", //
-            "var c = a; c.b = 0; a.b == c.b;"),
-        lines(
-            "var a = {}; /** @constructor @nocollapse */ a.b = function(){};", //
-            "var c = null; a.b = 0; a.b == a.b;"));
+        """
+        var a = {}; /** @constructor @nocollapse */ a.b = function(){};
+        var c = a; c.b = 0; a.b == c.b;
+        """,
+        """
+        var a = {}; /** @constructor @nocollapse */ a.b = function(){};
+        var c = null; a.b = 0; a.b == a.b;
+        """);
 
     test(
         srcs(
-            lines(
-                "var a = {}; /** @constructor @nocollapse */ a.b = function(){};", //
-                "var c = a; c.b = 0; a?.b == c?.b;")),
+            """
+            var a = {}; /** @constructor @nocollapse */ a.b = function(){};
+            var c = a; c.b = 0; a?.b == c?.b;
+            """),
         expected(
-            lines(
-                "var a = {}; /** @constructor @nocollapse */ a.b = function(){};", //
-                "var c = null; a.b = 0; a?.b == a?.b;")),
+            """
+            var a = {}; /** @constructor @nocollapse */ a.b = function(){};
+            var c = null; a.b = 0; a?.b == a?.b;
+            """),
         warning(PARTIAL_NAMESPACE_WARNING));
 
     test(
-        lines(
-            "var a = {}; /** @constructor @nocollapse */ a.b = function(){};", //
-            "var c = a; c.b = 0; a.b == c.b; use(c);"),
-        lines(
-            "var a = {}; /** @constructor @nocollapse */ a.b = function(){};", //
-            "var c = null; a.b = 0; a.b == a.b; use(a);"),
+        """
+        var a = {}; /** @constructor @nocollapse */ a.b = function(){};
+        var c = a; c.b = 0; a.b == c.b; use(c);
+        """,
+        """
+        var a = {}; /** @constructor @nocollapse */ a.b = function(){};
+        var c = null; a.b = 0; a.b == a.b; use(a);
+        """,
         warning(PARTIAL_NAMESPACE_WARNING));
 
     test(
-        lines(
-            "var a = {}; /** @constructor @nocollapse */ a.b = function(){};", //
-            "var c = a; c.b = 0; a?.b == c?.b; use(c);"),
-        lines(
-            "var a = {}; /** @constructor @nocollapse */ a.b = function(){};", //
-            "var c = null; a.b = 0; a?.b == a?.b; use(a);"),
+        """
+        var a = {}; /** @constructor @nocollapse */ a.b = function(){};
+        var c = a; c.b = 0; a?.b == c?.b; use(c);
+        """,
+        """
+        var a = {}; /** @constructor @nocollapse */ a.b = function(){};
+        var c = null; a.b = 0; a?.b == a?.b; use(a);
+        """,
         warning(PARTIAL_NAMESPACE_WARNING));
   }
 
@@ -692,45 +1049,53 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
   @Test
   public void testAddPropertyToUncollapsibleNamedCtorInLocalScopeDepth1() {
     test(
-        lines(
-            "/** @constructor */ function a() {} var a$b; var c = a; ", //
-            "(function() {a$b = 0;})(); a$b;"),
-        lines(
-            "/** @constructor */ function a() {} var a$b; var c = null; ", //
-            "(function() {a$b = 0;})(); a$b;"));
+        """
+        /** @constructor */ function a() {} var a$b; var c = a;
+        (function() {a$b = 0;})(); a$b;
+        """,
+        """
+        /** @constructor */ function a() {} var a$b; var c = null;
+        (function() {a$b = 0;})(); a$b;
+        """);
   }
 
   @Test
   public void testAddPropertyToUncollapsibleCtorInLocalScopeDepth1() {
     test(
-        lines(
-            "/** @constructor */ var a = function() {}; var c = a; ", //
-            "(function() {a.b = 0;})(); a.b;"),
-        lines(
-            "/** @constructor */ var a = function() {}; var a$b; ", //
-            "var c = null; (function() {a$b = 0;})(); a$b;"));
+        """
+        /** @constructor */ var a = function() {}; var c = a;
+        (function() {a.b = 0;})(); a.b;
+        """,
+        """
+        /** @constructor */ var a = function() {}; var a$b;
+        var c = null; (function() {a$b = 0;})(); a$b;
+        """);
   }
 
   @Test
   public void testAddPropertyToUncollapsibleObjectInLocalScopeDepth2() {
     test(
-        lines(
-            "var a = {}; a.b = {}; var d = a.b; use(d);", //
-            "(function() {a.b.c = 0;})(); a.b.c;"),
-        lines(
-            "var a$b = {}; var d = null; use(a$b);", //
-            "(function() {a$b.c = 0;})(); a$b.c;"));
+        """
+        var a = {}; a.b = {}; var d = a.b; use(d);
+        (function() {a.b.c = 0;})(); a.b.c;
+        """,
+        """
+        var a$b = {}; var d = null; use(a$b);
+        (function() {a$b.c = 0;})(); a$b.c;
+        """);
   }
 
   @Test
   public void testAddPropertyToUncollapsibleCtorInLocalScopeDepth2() {
     test(
-        lines(
-            "var a = {}; /** @constructor */ a.b = function (){}; var d = a.b;", //
-            "(function() {a.b.c = 0;})(); a.b.c;"),
-        lines(
-            "/** @constructor */ var a$b = function (){}; var a$b$c; var d = null;", //
-            "(function() {a$b$c = 0;})(); a$b$c;"));
+        """
+        var a = {}; /** @constructor */ a.b = function (){}; var d = a.b;
+        (function() {a.b.c = 0;})(); a.b.c;
+        """,
+        """
+        /** @constructor */ var a$b = function (){}; var a$b$c; var d = null;
+        (function() {a$b$c = 0;})(); a$b$c;
+        """);
   }
 
   @Test
@@ -751,65 +1116,73 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
         "var c=null; var a$b$c = function(){}; var a$b$c$x = 0; a$b$c$x");
 
     test(
-        "var a = {}; a.b = {}; var c = a.b; a.b.c = function (){}; a.b.c.x = 0; a.b.c.x;"
-            + " use(c);", //
+        """
+        var a = {}; a.b = {}; var c = a.b; a.b.c = function (){}; a.b.c.x = 0; a.b.c.x;
+         use(c);
+        """, //
         "var a$b = {}; var c=null; a$b.c = function(){}; a$b.c.x=0; a$b.c.x; use(a$b);");
   }
 
   @Test
   public void testAddPropertyToChildFuncOfUncollapsibleObjectInLocalScope() {
     test(
-        lines(
-            "var a = {}; a.b = function (){}; a.b.x = 0;", //
-            "var c = a; (function() {a.b.y = 1;})(); a.b.x; a.b.y;"),
-        lines(
-            "var a$b=function() {}; var a$b$y; var a$b$x = 0; var c=null;", //
-            "(function() { a$b$y=1; })(); a$b$x; a$b$y"));
+        """
+        var a = {}; a.b = function (){}; a.b.x = 0;
+        var c = a; (function() {a.b.y = 1;})(); a.b.x; a.b.y;
+        """,
+        """
+        var a$b=function() {}; var a$b$y; var a$b$x = 0; var c=null;
+        (function() { a$b$y=1; })(); a$b$x; a$b$y
+        """);
   }
 
   @Test
   public void testAddPropertyToChildTypeOfUncollapsibleObjectInLocalScope() {
     test(
-        lines(
-            "var a = {};", //
-            "/** @constructor */",
-            "a.b = function (){};",
-            "a.b.x = 0;",
-            "var c = a;",
-            "(function() {a.b.y = 1;})();",
-            "a.b.x;",
-            "a.b.y;"),
-        lines(
-            "/** @constructor */", //
-            "var a$b = function (){};",
-            "var a$b$y;",
-            "var a$b$x = 0;",
-            "var c = null;",
-            "(function() {a$b$y = 1;})();",
-            "a$b$x;",
-            "a$b$y;"));
+        """
+        var a = {};
+        /** @constructor */
+        a.b = function (){};
+        a.b.x = 0;
+        var c = a;
+        (function() {a.b.y = 1;})();
+        a.b.x;
+        a.b.y;
+        """,
+        """
+        /** @constructor */
+        var a$b = function (){};
+        var a$b$y;
+        var a$b$x = 0;
+        var c = null;
+        (function() {a$b$y = 1;})();
+        a$b$x;
+        a$b$y;
+        """);
 
     test(
-        lines(
-            "var a = {};", //
-            "/** @constructor */",
-            "a.b = function (){};",
-            "a.b.x = 0;",
-            "var c = a;",
-            "(function() {a.b.y = 1;})();",
-            "a.b.x;",
-            "a.b.y;",
-            "use(c);"),
-        lines(
-            "var a = {};", //
-            "/** @constructor */",
-            "a.b = function (){};",
-            "a.b.x = 0;",
-            "var c = null;",
-            "(function() {a.b.y = 1;})();",
-            "a.b.x;",
-            "a.b.y;",
-            "use(a);"),
+        """
+        var a = {};
+        /** @constructor */
+        a.b = function (){};
+        a.b.x = 0;
+        var c = a;
+        (function() {a.b.y = 1;})();
+        a.b.x;
+        a.b.y;
+        use(c);
+        """,
+        """
+        var a = {};
+        /** @constructor */
+        a.b = function (){};
+        a.b.x = 0;
+        var c = null;
+        (function() {a.b.y = 1;})();
+        a.b.x;
+        a.b.y;
+        use(a);
+        """,
         warning(PARTIAL_NAMESPACE_WARNING));
   }
 
@@ -823,119 +1196,131 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
   @Test
   public void testAddPropertyToChildOfUncollapsibleCtorInLocalScope() {
     test(
-        lines(
-            "/** @constructor */ var a = function() {}; a.b = {x: 0}; var c = a;", //
-            "(function() {a.b.y = 0;})(); a.b.y;"),
-        lines(
-            "/** @constructor */ var a = function() {}; var a$b$x = 0; var a$b$y; var c = null;", //
-            "(function() {a$b$y = 0;})(); a$b$y;"));
+        """
+        /** @constructor */ var a = function() {}; a.b = {x: 0}; var c = a;
+        (function() {a.b.y = 0;})(); a.b.y;
+        """,
+        """
+        /** @constructor */ var a = function() {}; var a$b$x = 0; var a$b$y; var c = null;
+        (function() {a$b$y = 0;})(); a$b$y;
+        """);
   }
 
   @Test
   public void testLocalAliasCreatedAfterVarDeclaration1() {
     test(
-        lines(
-            "var a = {b: 3};", //
-            "function f() {",
-            "  var tmp;",
-            "  tmp = a;",
-            "  use(tmp.b);",
-            "}"),
-        lines(
-            "var a$b = 3", //
-            "function f() {",
-            "  var tmp;",
-            "  tmp = null;",
-            "  use(a$b);",
-            "}"));
+        """
+        var a = {b: 3};
+        function f() {
+          var tmp;
+          tmp = a;
+          use(tmp.b);
+        }
+        """,
+        """
+        var a$b = 3
+        function f() {
+          var tmp;
+          tmp = null;
+          use(a$b);
+        }
+        """);
     test(
-        lines(
-            "var a = {b: 3};", //
-            "function f() {",
-            "  var tmp;",
-            "  tmp = a;",
-            "  use?.(tmp?.b);",
-            "}"),
-        lines(
-            "var a = {b: 3};", //
-            "function f() {",
-            "  var tmp;",
-            "  tmp = null;",
-            "  use?.(a?.b);",
-            "}"));
+        """
+        var a = {b: 3};
+        function f() {
+          var tmp;
+          tmp = a;
+          use?.(tmp?.b);
+        }
+        """,
+        """
+        var a = {b: 3};
+        function f() {
+          var tmp;
+          tmp = null;
+          use?.(a?.b);
+        }
+        """);
   }
 
   @Test
   public void testLocalAliasCreatedAfterVarDeclaration2() {
     test(
-        lines(
-            "var a = {b: 3}", //
-            "function f() {",
-            "  var tmp;",
-            "  if (true) {",
-            "    tmp = a;",
-            "    use(tmp.b);",
-            "  }",
-            "}"),
-        lines(
-            "var a$b = 3;", //
-            "function f() {",
-            "  var tmp;",
-            "  if (true) {",
-            "    tmp = null;",
-            "    use(a$b);",
-            "  }",
-            "}"));
+        """
+        var a = {b: 3}
+        function f() {
+          var tmp;
+          if (true) {
+            tmp = a;
+            use(tmp.b);
+          }
+        }
+        """,
+        """
+        var a$b = 3;
+        function f() {
+          var tmp;
+          if (true) {
+            tmp = null;
+            use(a$b);
+          }
+        }
+        """);
     test(
-        lines(
-            "var a = {b: 3}", //
-            "function f() {",
-            "  var tmp;",
-            "  if (true) {",
-            "    tmp = a;",
-            "    use?.(tmp?.b);",
-            "  }",
-            "}"),
-        lines(
-            "var a = {b: 3}", //
-            "function f() {",
-            "  var tmp;",
-            "  if (true) {",
-            "    tmp = null;",
-            "    use?.(a?.b);",
-            "  }",
-            "}"));
+        """
+        var a = {b: 3}
+        function f() {
+          var tmp;
+          if (true) {
+            tmp = a;
+            use?.(tmp?.b);
+          }
+        }
+        """,
+        """
+        var a = {b: 3}
+        function f() {
+          var tmp;
+          if (true) {
+            tmp = null;
+            use?.(a?.b);
+          }
+        }
+        """);
   }
 
   @Test
   public void testLocalAliasCreatedAfterVarDeclaration3() {
     testSame(
-        lines(
-            "var a = { b : 3 };", //
-            "function f() {",
-            "  var tmp;",
-            "  if (true) {",
-            "    tmp = a;",
-            "  }",
-            "  use(tmp);",
-            "}"));
+        """
+        var a = { b : 3 };
+        function f() {
+          var tmp;
+          if (true) {
+            tmp = a;
+          }
+          use(tmp);
+        }
+        """);
   }
 
   @Test
   public void testPartialLocalCtorAlias() {
     testWarning(
-        lines(
-            "/** @constructor */ var Main = function() {};", //
-            "Main.doSomething = function(i) {}",
-            "function f() {",
-            "  var tmp;",
-            "  if (g()) {",
-            "    use(tmp.doSomething);",
-            "    tmp = Main;",
-            "    tmp.doSomething(5);",
-            "  }",
-            "  use(tmp.doSomething);", // can't inline this use of tmp.
-            "}"),
+        """
+        /** @constructor */ var Main = function() {};
+        Main.doSomething = function(i) {}
+        function f() {
+          var tmp;
+          if (g()) {
+            use(tmp.doSomething);
+            tmp = Main;
+            tmp.doSomething(5);
+          }
+          use(tmp.doSomething); // can't inline this use of tmp.
+        }
+        """,
         InlineAndCollapseProperties.UNSAFE_CTOR_ALIASING);
   }
 
@@ -960,6 +1345,217 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
   }
 
   @Test
+  public void testLocalAliasInGetPropReceiver() {
+    // Regression test for b/476221453
+    test(
+        """
+        class Main {}
+        Main.prop = 1;
+        function f() {
+          let tmp;
+          return (tmp = Main).prop ?? (tmp.prop = {});
+        }
+        """,
+        """
+        class Main {}
+        var Main$prop = 1;
+        function f() {
+          let tmp;
+          return Main$prop ?? (Main$prop = {});
+        }
+        """);
+  }
+
+  @Test
+  public void testGlobalAliasInConditionalGetPropReceiver_knownBug() {
+    // Regression test for b/476221453
+    // TODO: b/476221453 - `(tmp = Main).prop` and `tmp.prop` should be collapsed to `Main$prop`.
+    test(
+        """
+        class Main {}
+        Main.prop = 1;
+        let tmp;
+        window.cond && ((tmp = Main).prop ?? (tmp.prop = {}));
+        """,
+        """
+        class Main {}
+        var Main$prop = 1;
+        let tmp;
+        window.cond && ((tmp = Main).prop ?? (tmp.prop = {}));
+        """);
+  }
+
+  @Test
+  public void testLocalEs6ClassAliasInLoopCondition() {
+    // Regression test for b/476221453
+    test(
+        """
+        class Main {}
+        Main.prop = 1;
+        function f() {
+          let tmp;
+          while ((tmp = Main).prop ?? (tmp.prop = {})) {
+            break;
+          }
+        }
+        """,
+        """
+        class Main {}
+        var Main$prop = 1;
+        function f() {
+          let tmp;
+          for (; Main$prop ?? (Main$prop = {});) {
+            break;
+          }
+        }
+        """);
+  }
+
+  @Test
+  public void testTopLevelBlockTwinAssignmentPreservesDeclarationOrder() {
+    // Regression test for b/476221453: when `(tmp = ns).sub = {x: 1}` is inlined to
+    // `ns.sub = {x: 1}`, `GlobalNamespace` must scan it before `tmp.sub = tmp.sub || {}` so that
+    // `var ns$sub = {x: 1}` is treated as the declaration of `ns$sub`.
+    test(
+        """
+        var ns = {};
+        {
+          let tmp;
+          (tmp = ns).sub = {x: 1};
+          tmp.sub = tmp.sub || {};
+        }
+        use(ns.sub.x);
+        """,
+        """
+        {
+          let tmp;
+          var ns$sub = {x: 1};
+          ns$sub = ns$sub || {};
+        }
+        use(ns$sub.x);
+        """);
+  }
+
+  @Test
+  public void testLocalEs6ClassAliasInForDoWhileAndForOfHeaders() {
+    // Regression test for b/476221453 across `for` condition+update, `do-while`, and `for-of`.
+    test(
+        """
+        class Main {}
+        Main.a = 1;
+        Main.b = 2;
+        Main.items = [];
+        function f() {
+          let t1;
+          let t2;
+          let t3;
+          let t4;
+          for (; (t1 = Main).a ?? (t1.a = 10); (t2 = Main).b || (t2.b = 20)) {
+            break;
+          }
+          do {
+            break;
+          } while ((t3 = Main).a && (t3.a = 30));
+          for (const x of ((t4 = Main).items ?? (t4.items = [1]))) {
+            use(x);
+          }
+        }
+        use(Main.a, Main.b, Main.items);
+        """,
+        """
+        class Main {}
+        var Main$a = 1;
+        var Main$b = 2;
+        var Main$items = [];
+        function f() {
+          let t1;
+          let t2;
+          let t3;
+          let t4;
+          for (; Main$a ?? (Main$a = 10); Main$b || (Main$b = 20)) {
+            break;
+          }
+          do {
+            break;
+          } while (Main$a && (Main$a = 30));
+          for (const x of (Main$items ?? (Main$items = [1]))) {
+            use(x);
+          }
+        }
+        use(Main$a, Main$b, Main$items);
+        """);
+  }
+
+  @Test
+  public void testConstNamespaceAliasInLoopConditionBacksOffCollapse() {
+    // Unlike constructors/classes, a `@const` namespace in a loop header is not inlined, so
+    // GlobalNamespace sees the aliasing get on `ns`, emits `PARTIAL_NAMESPACE_WARNING` when `ns`
+    // contains a declared type, and backs off collapsing `ns.prop` everywhere (avoiding
+    // split-brain).
+    test(
+        srcs(
+            """
+            /** @const */ var ns = {prop: 1};
+            ns.Sub = class {};
+            function f() {
+              let tmp;
+              while ((tmp = ns).prop ?? (tmp.prop = 2)) {
+                break;
+              }
+            }
+            use(ns.prop, new ns.Sub());
+            """),
+        expected(
+            """
+            /** @const */ var ns = {prop: 1};
+            ns.Sub = class {};
+            function f() {
+              let tmp;
+              for (; (tmp = ns).prop ?? (tmp.prop = 2); ) {
+                break;
+              }
+            }
+            use(ns.prop, new ns.Sub());
+            """),
+        warning(InlineAndCollapseProperties.PARTIAL_NAMESPACE_WARNING));
+  }
+
+  @Test
+  public void testStaticGetterSetterAndSideEffectingReceiverLogicalAssignment() {
+    // Static getters/setters on a class must not be collapsed into plain variables, and a
+    // non-qualified receiver `(tmp = getMain())` must keep its single-evaluation temporary `tmp`.
+    test(
+        """
+        class Main {
+          static get prop() { return 1; }
+          static set prop(v) {}
+        }
+        function f() {
+          let tmp;
+          return (tmp = Main).prop ?? (tmp.prop = 2);
+        }
+        """,
+        """
+        class Main {
+          static get prop() { return 1; }
+          static set prop(v) {}
+        }
+        function f() {
+          let tmp;
+          return Main.prop ?? (Main.prop = 2);
+        }
+        """);
+    testSame(
+        """
+        function getMain() { return {}; }
+        function f() {
+          let tmp;
+          return (tmp = getMain()).prop ?? (tmp.prop = 2);
+        }
+        """);
+  }
+
+  @Test
   public void testLocalAlias2() {
     test(
         "var a   = {b: 3,       c : 4}; function f() { var x =    a; f(x.b); f(x.c);}",
@@ -972,55 +1568,67 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
   @Test
   public void testLocalAlias3() {
     test(
-        lines(
-            "var a = {b: 3, c: {d: 5}}; ", //
-            "function f() { var x = a; f(x.b); f(x.c); f(x.c.d); }"),
-        lines(
-            "var a$b = 3; var a$c = {d: 5}; ", //
-            "function f() { var x = null; f(a$b); f(a$c); f(a$c.d);}"));
+        """
+        var a = {b: 3, c: {d: 5}};
+        function f() { var x = a; f(x.b); f(x.c); f(x.c.d); }
+        """,
+        """
+        var a$b = 3; var a$c = {d: 5};
+        function f() { var x = null; f(a$b); f(a$c); f(a$c.d);}
+        """);
     test(
-        lines(
-            "var a = {b: 3, c: {d: 5}};", //
-            "function f() { var x =    a; f?.(x?.b); f?.(x?.c); f?.(x.c?.d);}"),
-        lines(
-            "var a = {b: 3, c: {d:5}};", //
-            "function f() { var x = null; f?.(a?.b); f?.(a?.c); f?.(a.c?.d);}"));
+        """
+        var a = {b: 3, c: {d: 5}};
+        function f() { var x =    a; f?.(x?.b); f?.(x?.c); f?.(x.c?.d);}
+        """,
+        """
+        var a = {b: 3, c: {d:5}};
+        function f() { var x = null; f?.(a?.b); f?.(a?.c); f?.(a.c?.d);}
+        """);
   }
 
   @Test
   public void testLocalAlias4() {
     test(
-        lines(
-            "var a = {b: 3}; var c = {d: 5}; ", //
-            "function f() { var x = a; var y = c; f(x.b); f(y.d); }"),
-        lines(
-            "var a$b = 3; var c$d = 5; ", //
-            "function f() { var x = null; var y = null; f(a$b); f(c$d);}"));
+        """
+        var a = {b: 3}; var c = {d: 5};
+        function f() { var x = a; var y = c; f(x.b); f(y.d); }
+        """,
+        """
+        var a$b = 3; var c$d = 5;
+        function f() { var x = null; var y = null; f(a$b); f(c$d);}
+        """);
     test(
-        lines(
-            "var a = {b: 3}; var c = {d: 5};", //
-            "function f() { var x =    a; var y =    c; f?.(x?.b); f?.(y?.d); }"),
-        lines(
-            "var a = {b: 3}; var c = {d: 5};", //
-            "function f() { var x = null; var y = null; f?.(a?.b); f?.(c?.d); }"));
+        """
+        var a = {b: 3}; var c = {d: 5};
+        function f() { var x =    a; var y =    c; f?.(x?.b); f?.(y?.d); }
+        """,
+        """
+        var a = {b: 3}; var c = {d: 5};
+        function f() { var x = null; var y = null; f?.(a?.b); f?.(c?.d); }
+        """);
   }
 
   @Test
   public void testLocalAlias5() {
     test(
-        lines(
-            "var a = {b: {c: 5}}; ", //
-            "function f() { var x = a; var y = x.b; f(a.b.c); f(y.c); }"),
-        lines(
-            "var a$b$c = 5; ", //
-            "function f() { var x = null; var y = null; f(a$b$c); f(a$b$c);}"));
+        """
+        var a = {b: {c: 5}};
+        function f() { var x = a; var y = x.b; f(a.b.c); f(y.c); }
+        """,
+        """
+        var a$b$c = 5;
+        function f() { var x = null; var y = null; f(a$b$c); f(a$b$c);}
+        """);
     test(
-        lines(
-            "var a = {b: {c: 5}};", //
-            "function f() { var x =    a; var y = x?.b; f?.(a.b?.c); f?.(y?.c); }"),
-        lines(
-            "var a = {b: {c: 5}};", //
-            "function f() { var x = null; var y = a?.b; f?.(a.b?.c); f?.(y?.c); }"));
+        """
+        var a = {b: {c: 5}};
+        function f() { var x =    a; var y = x?.b; f?.(a.b?.c); f?.(y?.c); }
+        """,
+        """
+        var a = {b: {c: 5}};
+        function f() { var x = null; var y = a?.b; f?.(a.b?.c); f?.(y?.c); }
+        """);
   }
 
   @Test
@@ -1069,25 +1677,29 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
   @Test
   public void testLocalWriteToNonAncestor() {
     test(
-        lines(
-            "var a = {b: 3}; ", //
-            "function f() { a.b = 5; var x = a; f(a.b); }"),
+        """
+        var a = {b: 3};
+        function f() { a.b = 5; var x = a; f(a.b); }
+        """,
         "var a$b = 3; function f() { a$b = 5; var x = null; f(a$b); } ");
     test(
-        lines(
-            "var a = {b: 3}; ", //
-            "function f() { a.b = 5; var x =    a; f?.(a?.b); }"),
-        lines(
-            "var a = {b: 3}; ", //
-            "function f() { a.b = 5; var x = null; f?.(a?.b); }"));
+        """
+        var a = {b: 3};
+        function f() { a.b = 5; var x =    a; f?.(a?.b); }
+        """,
+        """
+        var a = {b: 3};
+        function f() { a.b = 5; var x = null; f?.(a?.b); }
+        """);
   }
 
   @Test
   public void testLocalAliasOfAncestor() {
     testSame(
-        lines(
-            "var a = {b: {c: 5}}; function g() { f(a); } ", //
-            "function f() { var x = a.b; f(x.c); }"));
+        """
+        var a = {b: {c: 5}}; function g() { f(a); }
+        function f() { var x = a.b; f(x.c); }
+        """);
   }
 
   @Test
@@ -1101,21 +1713,24 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
   @Test
   public void testLocalAliasOfOtherName() {
     testSame(
-        lines(
-            "var foo = function() { return {b: 3}; };", //
-            "var a = foo(); a.b = 5; ",
-            "function f() { var x = a.b; f(x); }"));
+        """
+        var foo = function() { return {b: 3}; };
+        var a = foo(); a.b = 5;
+        function f() { var x = a.b; f(x); }
+        """);
   }
 
   @Test
   public void testLocalAliasOfFunction() {
     test(
-        lines(
-            "var a = function() {}; a.b = 5; ", //
-            "function f() { var x = a.b; f(x); }"),
-        lines(
-            "var a = function() {}; var a$b = 5; ", //
-            "function f() { var x = null; f(a$b); }"));
+        """
+        var a = function() {}; a.b = 5;
+        function f() { var x = a.b; f(x); }
+        """,
+        """
+        var a = function() {}; var a$b = 5;
+        function f() { var x = null; f(a$b); }
+        """);
   }
 
   @Test
@@ -1135,118 +1750,133 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
         "var a$b; a$b=function() {}, a$b();");
 
     test(
-        lines(
-            "var ns = {};", //
-            "ns.Foo = {};",
-            "var Baz = {};",
-            "Baz.Foo = ns.Foo;",
-            "(Baz.Foo.bar = 10, 123);"),
-        lines(
-            "var Baz$Foo=null;", //
-            "var ns$Foo$bar;",
-            "(ns$Foo$bar = 10, 123);"));
+        """
+        var ns = {};
+        ns.Foo = {};
+        var Baz = {};
+        Baz.Foo = ns.Foo;
+        (Baz.Foo.bar = 10, 123);
+        """,
+        """
+        var Baz$Foo=null;
+        var ns$Foo$bar;
+        (ns$Foo$bar = 10, 123);
+        """);
 
     test(
-        lines(
-            "var ns = {};", //
-            "ns.Foo = {};",
-            "var Baz = {};",
-            "Baz.Foo = ns?.Foo;",
-            "(Baz.Foo.bar = 10, 123);"),
-        lines(
-            "var ns = {};", //
-            "ns.Foo = {};",
-            "var Baz$Foo = ns?.Foo;",
-            "(Baz$Foo.bar = 10, 123);"));
+        """
+        var ns = {};
+        ns.Foo = {};
+        var Baz = {};
+        Baz.Foo = ns?.Foo;
+        (Baz.Foo.bar = 10, 123);
+        """,
+        """
+        var ns = {};
+        ns.Foo = {};
+        var Baz$Foo = ns?.Foo;
+        (Baz$Foo.bar = 10, 123);
+        """);
 
     test(
-        lines(
-            "var ns = {};", //
-            "ns.Foo = {};",
-            "var Baz = {};",
-            "Baz.Foo = ns.Foo;",
-            "function f() { (Baz.Foo.bar = 10, 123); }"),
-        lines(
-            "var ns$Foo$bar;", //
-            "var Baz$Foo=null;",
-            "function f() { (ns$Foo$bar = 10, 123); }"));
+        """
+        var ns = {};
+        ns.Foo = {};
+        var Baz = {};
+        Baz.Foo = ns.Foo;
+        function f() { (Baz.Foo.bar = 10, 123); }
+        """,
+        """
+        var ns$Foo$bar;
+        var Baz$Foo=null;
+        function f() { (ns$Foo$bar = 10, 123); }
+        """);
     test(
-        lines(
-            "var ns = {};", //
-            "ns.Foo = {};",
-            "var Baz = {};",
-            "Baz.Foo = ns?.Foo;",
-            "function f() { (Baz.Foo.bar = 10, 123); }"),
-        lines(
-            "var ns = {};", //
-            "ns.Foo = {};",
-            "var Baz$Foo = ns?.Foo;",
-            "function f() { (Baz$Foo.bar = 10, 123); }"));
+        """
+        var ns = {};
+        ns.Foo = {};
+        var Baz = {};
+        Baz.Foo = ns?.Foo;
+        function f() { (Baz.Foo.bar = 10, 123); }
+        """,
+        """
+        var ns = {};
+        ns.Foo = {};
+        var Baz$Foo = ns?.Foo;
+        function f() { (Baz$Foo.bar = 10, 123); }
+        """);
   }
 
   @Test
   public void testTypeDefAlias1() {
     test(
-        lines(
-            "/** @constructor */ var D = function() {};", //
-            "/** @constructor */ D.L = function() {};",
-            "/** @type {D.L} */ D.L.A = new D.L();",
-            "",
-            "/** @const */ var M = {};",
-            "/** @typedef {D.L} */ M.L = D.L;",
-            "",
-            "use(M.L.A);"),
-        lines(
-            "/** @constructor */ var D = function() {};", //
-            "/** @constructor */ var D$L = function() {};",
-            "/** @type {D.L} */ var D$L$A = new D$L();",
-            "/** @typedef {D.L} */ var M$L = null",
-            "use(D$L$A);"));
+        """
+        /** @constructor */ var D = function() {};
+        /** @constructor */ D.L = function() {};
+        /** @type {D.L} */ D.L.A = new D.L();
+
+        /** @const */ var M = {};
+        /** @typedef {D.L} */ M.L = D.L;
+
+        use(M.L.A);
+        """,
+        """
+        /** @constructor */ var D = function() {};
+        /** @constructor */ var D$L = function() {};
+        /** @type {D.L} */ var D$L$A = new D$L();
+        /** @typedef {D.L} */ var M$L = null
+        use(D$L$A);
+        """);
     test(
-        lines(
-            "/** @constructor */ var D = function() {};", //
-            "/** @constructor */ D.L = function() {};",
-            "/** @type {D.L} */ D.L.A = new D.L();",
-            "",
-            "/** @const */ var M = {};",
-            "/** @typedef {D.L} */ M.L = D.L;",
-            "",
-            "use?.(M.L?.A);"),
-        lines(
-            "/** @constructor */ var D = function() {};", //
-            "/** @constructor */ var D$L = function() {};",
-            "/** @type {D.L} */ var D$L$A = new D$L();",
-            "/** @typedef {D.L} */ var M$L = null",
-            // TODO(b/148237949): collapse above breaks this reference
-            "use?.(D$L?.A);"));
+        """
+        /** @constructor */ var D = function() {};
+        /** @constructor */ D.L = function() {};
+        /** @type {D.L} */ D.L.A = new D.L();
+
+        /** @const */ var M = {};
+        /** @typedef {D.L} */ M.L = D.L;
+
+        use?.(M.L?.A);
+        """,
+        """
+        /** @constructor */ var D = function() {};
+        /** @constructor */ var D$L = function() {};
+        /** @type {D.L} */ var D$L$A = new D$L();
+        /** @typedef {D.L} */ var M$L = null
+        // TODO(b/148237949): collapse above breaks this reference
+        use?.(D$L?.A);
+        """);
   }
 
   @Test
   public void testGlobalAliasWithProperties1() {
     test(
-        lines(
-            "var ns = {}; ", //
-            "/** @constructor */ ns.Foo = function() {};",
-            "/** @enum {number} */ ns.Foo.EventType = {A:1, B:2};",
-            "/** @constructor */ ns.Bar = ns.Foo;",
-            "var x = function() {use(ns.Bar.EventType.A)};",
-            "use(x);"),
-        lines(
-            "/** @constructor */ var ns$Foo = function(){};", //
-            "var ns$Foo$EventType$A = 1;",
-            "var ns$Foo$EventType$B = 2;",
-            "/** @constructor */ var ns$Bar = null;",
-            "var x = function(){use(ns$Foo$EventType$A)};",
-            "use(x);"));
+        """
+        var ns = {};
+        /** @constructor */ ns.Foo = function() {};
+        /** @enum {number} */ ns.Foo.EventType = {A:1, B:2};
+        /** @constructor */ ns.Bar = ns.Foo;
+        var x = function() {use(ns.Bar.EventType.A)};
+        use(x);
+        """,
+        """
+        /** @constructor */ var ns$Foo = function(){};
+        var ns$Foo$EventType$A = 1;
+        var ns$Foo$EventType$B = 2;
+        /** @constructor */ var ns$Bar = null;
+        var x = function(){use(ns$Foo$EventType$A)};
+        use(x);
+        """);
     testSame(
         srcs(
-            lines(
-                "var ns = {}; ", //
-                "/** @constructor */ ns.Foo = function() {};",
-                "/** @enum {number} */ ns.Foo.EventType = {A:1, B:2};",
-                "/** @constructor */ ns.Bar = ns?.Foo;",
-                "var x = function() {use?.(ns.Bar.EventType?.A)};",
-                "use?.(x);")),
+            """
+            var ns = {};
+            /** @constructor */ ns.Foo = function() {};
+            /** @enum {number} */ ns.Foo.EventType = {A:1, B:2};
+            /** @constructor */ ns.Bar = ns?.Foo;
+            var x = function() {use?.(ns.Bar.EventType?.A)};
+            use?.(x);
+            """),
         warning(PARTIAL_NAMESPACE_WARNING));
   }
 
@@ -1257,76 +1887,82 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
     // code like this.  Now it causes a back-off of the collapsing because
     // the value is assigned more than once.
     test(
-        lines(
-            "var ns = {}; ", //
-            "/** @constructor */ ns.Foo = function() {};",
-            "/** @enum {number} */ ns.Foo.EventType = {A:1, B:2};",
-            "/** @constructor */ ns.Bar = ns.Foo;",
-            "/** @enum {number} */ ns.Bar.EventType = ns.Foo.EventType;",
-            "var x = function() {use(ns.Bar.EventType.A)};",
-            "use(x)"),
-        lines(
-            "/** @constructor */ var ns$Foo = function(){};", //
-            "/** @enum {number} */ var ns$Foo$EventType = {A:1, B:2};",
-            "/** @constructor */ var ns$Bar = null;",
-            "/** @enum {number} */ ns$Foo$EventType = ns$Foo$EventType;",
-            "var x = function(){use(ns$Foo$EventType.A)};",
-            "use(x);"));
+        """
+        var ns = {};
+        /** @constructor */ ns.Foo = function() {};
+        /** @enum {number} */ ns.Foo.EventType = {A:1, B:2};
+        /** @constructor */ ns.Bar = ns.Foo;
+        /** @enum {number} */ ns.Bar.EventType = ns.Foo.EventType;
+        var x = function() {use(ns.Bar.EventType.A)};
+        use(x)
+        """,
+        """
+        /** @constructor */ var ns$Foo = function(){};
+        /** @enum {number} */ var ns$Foo$EventType = {A:1, B:2};
+        /** @constructor */ var ns$Bar = null;
+        /** @enum {number} */ ns$Foo$EventType = ns$Foo$EventType;
+        var x = function(){use(ns$Foo$EventType.A)};
+        use(x);
+        """);
     testSame(
         srcs(
-            lines(
-                "var ns = {}; ", //
-                "/** @constructor */ ns.Foo = function() {};",
-                "/** @enum {number} */ ns.Foo.EventType = {A:1, B:2};",
-                "/** @constructor */ ns.Bar = ns?.Foo;",
-                "/** @enum {number} */ ns.Bar.EventType = ns.Foo?.EventType;",
-                "var x = function() {use?.(ns.Bar.EventType?.A)};",
-                "use?.(x)")),
+            """
+            var ns = {};
+            /** @constructor */ ns.Foo = function() {};
+            /** @enum {number} */ ns.Foo.EventType = {A:1, B:2};
+            /** @constructor */ ns.Bar = ns?.Foo;
+            /** @enum {number} */ ns.Bar.EventType = ns.Foo?.EventType;
+            var x = function() {use?.(ns.Bar.EventType?.A)};
+            use?.(x)
+            """),
         warning(PARTIAL_NAMESPACE_WARNING));
   }
 
   @Test
   public void testGlobalAliasWithProperties3() {
     test(
-        lines(
-            "var ns = {}; ", //
-            "/** @constructor */ ns.Foo = function() {};",
-            "/** @enum {number} */ ns.Foo.EventType = {A:1, B:2};",
-            "/** @constructor */ ns.Bar = ns.Foo;",
-            "/** @enum {number} */ ns.Bar.Other = {X:1, Y:2};",
-            "var x = function() {use(ns.Bar.Other.X)};",
-            "use(x)"),
-        lines(
-            "/** @constructor */ var ns$Foo=function(){};", //
-            "var ns$Foo$EventType$A=1;",
-            "var ns$Foo$EventType$B=2;",
-            "/** @constructor */ var ns$Bar=null;",
-            "var ns$Foo$Other$X=1;",
-            "var ns$Foo$Other$Y=2;",
-            "var x=function(){use(ns$Foo$Other$X)};",
-            "use(x)\n"));
+        """
+        var ns = {};
+        /** @constructor */ ns.Foo = function() {};
+        /** @enum {number} */ ns.Foo.EventType = {A:1, B:2};
+        /** @constructor */ ns.Bar = ns.Foo;
+        /** @enum {number} */ ns.Bar.Other = {X:1, Y:2};
+        var x = function() {use(ns.Bar.Other.X)};
+        use(x)
+        """,
+        """
+        /** @constructor */ var ns$Foo=function(){};
+        var ns$Foo$EventType$A=1;
+        var ns$Foo$EventType$B=2;
+        /** @constructor */ var ns$Bar=null;
+        var ns$Foo$Other$X=1;
+        var ns$Foo$Other$Y=2;
+        var x=function(){use(ns$Foo$Other$X)};
+        use(x)
+        """);
     testSame(
         srcs(
-            lines(
-                "var ns = {}; ", //
-                "/** @constructor */ ns.Foo = function() {};",
-                "/** @enum {number} */ ns.Foo.EventType = {A:1, B:2};",
-                "/** @constructor */ ns.Bar = ns?.Foo;",
-                "/** @enum {number} */ ns.Bar.Other = {X:1, Y:2};",
-                "var x = function() {use?.(ns.Bar.Other?.X)};",
-                "use?.(x)")),
+            """
+            var ns = {};
+            /** @constructor */ ns.Foo = function() {};
+            /** @enum {number} */ ns.Foo.EventType = {A:1, B:2};
+            /** @constructor */ ns.Bar = ns?.Foo;
+            /** @enum {number} */ ns.Bar.Other = {X:1, Y:2};
+            var x = function() {use?.(ns.Bar.Other?.X)};
+            use?.(x)
+            """),
         warning(PARTIAL_NAMESPACE_WARNING));
   }
 
   @Test
   public void testGlobalAliasWithProperties4() {
     testSame(
-        lines(
-            "", //
-            "var nullFunction = function(){};",
-            "var blob = {};",
-            "blob.init = nullFunction;",
-            "use(blob)"));
+        """
+        var nullFunction = function(){};
+        var blob = {};
+        blob.init = nullFunction;
+        use(blob)
+        """);
   }
 
   @Test
@@ -1334,171 +1970,180 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
     testSame(
         externs("/** @constructor */ var blob = function() {}"),
         srcs(
-            lines(
-                "var nullFunction = function(){};", //
-                "blob.init = nullFunction;",
-                "use(blob.init)")));
+            """
+            var nullFunction = function(){};
+            blob.init = nullFunction;
+            use(blob.init)
+            """));
   }
 
   @Test
   public void testLocalAliasOfEnumWithInstanceofCheck() {
     test(
-        lines(
-            "/** @constructor */", //
-            "var Enums = function() {",
-            "};",
-            "",
-            "/** @enum {number} */",
-            "Enums.Fruit = {",
-            " APPLE: 1,",
-            " BANANA: 2,",
-            "};",
-            "",
-            "function foo(f) {",
-            " if (f instanceof Enums) { alert('what?'); return; }",
-            "",
-            " var Fruit = Enums.Fruit;",
-            " if (f == Fruit.APPLE) alert('apple');",
-            " if (f == Fruit.BANANA) alert('banana');",
-            "}"),
-        lines(
-            "/** @constructor */", //
-            "var Enums = function() {};",
-            "var Enums$Fruit$APPLE = 1;",
-            "var Enums$Fruit$BANANA = 2;",
-            "function foo(f) {",
-            " if (f instanceof Enums) { alert('what?'); return; }",
-            " var Fruit = null;",
-            " if (f == Enums$Fruit$APPLE) alert('apple');",
-            " if (f == Enums$Fruit$BANANA) alert('banana');",
-            "}"));
+        """
+        /** @constructor */
+        var Enums = function() {
+        };
+
+        /** @enum {number} */
+        Enums.Fruit = {
+         APPLE: 1,
+         BANANA: 2,
+        };
+
+        function foo(f) {
+         if (f instanceof Enums) { alert('what?'); return; }
+
+         var Fruit = Enums.Fruit;
+         if (f == Fruit.APPLE) alert('apple');
+         if (f == Fruit.BANANA) alert('banana');
+        }
+        """,
+        """
+        /** @constructor */
+        var Enums = function() {};
+        var Enums$Fruit$APPLE = 1;
+        var Enums$Fruit$BANANA = 2;
+        function foo(f) {
+         if (f instanceof Enums) { alert('what?'); return; }
+         var Fruit = null;
+         if (f == Enums$Fruit$APPLE) alert('apple');
+         if (f == Enums$Fruit$BANANA) alert('banana');
+        }
+        """);
   }
 
   @Test
   public void testCollapsePropertiesOfClass1() {
     test(
-        lines(
-            "/** @constructor */", //
-            "var namespace = function() {};",
-            "goog.inherits(namespace, Object);",
-            "",
-            "namespace.includeExtraParam = true;",
-            "",
-            "/** @enum {number} */",
-            "namespace.Param = {",
-            "  param1: 1,",
-            "  param2: 2",
-            "};",
-            "",
-            "if (namespace.includeExtraParam) {",
-            "  namespace.Param.optParam = 3;",
-            "}",
-            "",
-            "function f() {",
-            "  var Param = namespace.Param;",
-            "  log(namespace.Param.optParam);",
-            "  log(Param.optParam);",
-            "}"),
-        lines(
-            "/** @constructor */", //
-            "var namespace = function() {};",
-            "goog.inherits(namespace, Object);",
-            "var namespace$includeExtraParam = true;",
-            "var namespace$Param$param1 = 1;",
-            "var namespace$Param$param2 = 2;",
-            "if (namespace$includeExtraParam) {",
-            "  var namespace$Param$optParam = 3;",
-            "}",
-            "function f() {",
-            "  var Param = null;",
-            "  log(namespace$Param$optParam);",
-            "  log(namespace$Param$optParam);",
-            "}"));
+        """
+        /** @constructor */
+        var namespace = function() {};
+        goog.inherits(namespace, Object);
+
+        namespace.includeExtraParam = true;
+
+        /** @enum {number} */
+        namespace.Param = {
+          param1: 1,
+          param2: 2
+        };
+
+        if (namespace.includeExtraParam) {
+          namespace.Param.optParam = 3;
+        }
+
+        function f() {
+          var Param = namespace.Param;
+          log(namespace.Param.optParam);
+          log(Param.optParam);
+        }
+        """,
+        """
+        /** @constructor */
+        var namespace = function() {};
+        goog.inherits(namespace, Object);
+        var namespace$includeExtraParam = true;
+        var namespace$Param$param1 = 1;
+        var namespace$Param$param2 = 2;
+        if (namespace$includeExtraParam) {
+          var namespace$Param$optParam = 3;
+        }
+        function f() {
+          var Param = null;
+          log(namespace$Param$optParam);
+          log(namespace$Param$optParam);
+        }
+        """);
     // TODO(b/148237949): CollapseProperties breaks several optional chain references here
     test(
-        lines(
-            "/** @constructor */", //
-            "var namespace = function() {};",
-            "goog.inherits(namespace, Object);",
-            "",
-            "namespace.includeExtraParam = true;",
-            "",
-            "/** @enum {number} */",
-            "namespace.Param = {",
-            "  param1: 1,",
-            "  param2: 2",
-            "};",
-            "",
-            "if (namespace?.includeExtraParam) {",
-            "  namespace.Param.optParam = 3;",
-            "}",
-            "",
-            "function f() {",
-            "  var Param = namespace?.Param;",
-            "  log(namespace.Param?.optParam);",
-            "  log(Param?.optParam);",
-            "}"),
-        lines(
-            "/** @constructor */", //
-            "var namespace = function() {};",
-            "goog.inherits(namespace, Object);",
-            "var namespace$includeExtraParam = true;",
-            "var namespace$Param$param1 = 1;",
-            "var namespace$Param$param2 = 2;",
-            "/** @enum {number} */",
-            "var namespace$Param = {",
-            "  param1: namespace$Param$param1,",
-            "  param2: namespace$Param$param2",
-            "};",
-            "if (namespace?.includeExtraParam) {", // broken
-            "  var namespace$Param$optParam = 3;",
-            "}",
-            "function f() {",
-            "  var Param = namespace?.Param;", // broken
-            "  log(namespace$Param?.optParam);", // broken
-            "  log(Param?.optParam);", // broken
-            "}"));
+        """
+        /** @constructor */
+        var namespace = function() {};
+        goog.inherits(namespace, Object);
+
+        namespace.includeExtraParam = true;
+
+        /** @enum {number} */
+        namespace.Param = {
+          param1: 1,
+          param2: 2
+        };
+
+        if (namespace?.includeExtraParam) {
+          namespace.Param.optParam = 3;
+        }
+
+        function f() {
+          var Param = namespace?.Param;
+          log(namespace.Param?.optParam);
+          log(Param?.optParam);
+        }
+        """,
+        """
+        /** @constructor */
+        var namespace = function() {};
+        goog.inherits(namespace, Object);
+        var namespace$includeExtraParam = true;
+        var namespace$Param$param1 = 1;
+        var namespace$Param$param2 = 2;
+        /** @enum {number} */
+        var namespace$Param = {
+          param1: namespace$Param$param1,
+          param2: namespace$Param$param2
+        };
+        if (namespace?.includeExtraParam) { // broken
+          var namespace$Param$optParam = 3;
+        }
+        function f() {
+          var Param = namespace?.Param; // broken
+          log(namespace$Param?.optParam); // broken
+          log(Param?.optParam); // broken
+        }
+        """);
   }
 
   @Test
   public void testCollapsePropertiesOfClass2() {
     test(
-        lines(
-            "var goog = goog || {};", //
-            "goog.addSingletonGetter = function(cls) {};",
-            "",
-            "var a = {};",
-            "",
-            "/** @constructor */",
-            "a.b = function() {};",
-            "goog.addSingletonGetter(a.b);",
-            "a.b.prototype.get = function(key) {};",
-            "",
-            "/** @constructor */",
-            "a.b.c = function() {};",
-            "a.b.c.XXX = new a.b.c();",
-            "",
-            "function f() {",
-            "  var x = a.b.getInstance();",
-            "  var Key = a.b.c;",
-            "  x.get(Key.XXX);",
-            "}"),
-        lines(
-            "var goog = goog || {};", //
-            "var goog$addSingletonGetter = function(cls) {};",
-            "/** @constructor */",
-            "var a$b = function() {};",
-            "goog$addSingletonGetter(a$b);",
-            "a$b.prototype.get = function(key) {};",
-            "/** @constructor */",
-            "var a$b$c = function() {};",
-            "var a$b$c$XXX = new a$b$c();",
-            "",
-            "function f() {",
-            "  var x = a$b.getInstance();",
-            "  var Key = null;",
-            "  x.get(a$b$c$XXX);",
-            "}"));
+        """
+        var goog = goog || {};
+        goog.addSingletonGetter = function(cls) {};
+
+        var a = {};
+
+        /** @constructor */
+        a.b = function() {};
+        goog.addSingletonGetter(a.b);
+        a.b.prototype.get = function(key) {};
+
+        /** @constructor */
+        a.b.c = function() {};
+        a.b.c.XXX = new a.b.c();
+
+        function f() {
+          var x = a.b.getInstance();
+          var Key = a.b.c;
+          x.get(Key.XXX);
+        }
+        """,
+        """
+        var goog = goog || {};
+        var goog$addSingletonGetter = function(cls) {};
+        /** @constructor */
+        var a$b = function() {};
+        goog$addSingletonGetter(a$b);
+        a$b.prototype.get = function(key) {};
+        /** @constructor */
+        var a$b$c = function() {};
+        var a$b$c$XXX = new a$b$c();
+
+        function f() {
+          var x = a$b.getInstance();
+          var Key = null;
+          x.get(a$b$c$XXX);
+        }
+        """);
   }
 
   @Test
@@ -1506,184 +2151,489 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
     // Note that this only collapses a.b.staticProp because a.b is a constructor.
     // Normally AggressiveInlineAliases would not inline "b" inside the loop.
     test(
-        lines(
-            "var a = {};", //
-            "/** @constructor */ a.b = function() {};",
-            "a.b.staticProp = 5;",
-            "function f() {",
-            "  while (true) {",
-            // b is declared inside a loop, so it is reassigned multiple times
-            "    var b = a.b;",
-            "    alert(b.staticProp);",
-            "  }",
-            "}"),
-        lines(
-            "/** @constructor */ var a$b = function() {};", //
-            "var a$b$staticProp = 5;",
-            "function f() {",
-            "  while (true) {",
-            "    var b = null;",
-            "    alert(a$b$staticProp);",
-            "  }",
-            "}"));
+        """
+        var a = {};
+        /** @constructor */ a.b = function() {};
+        a.b.staticProp = 5;
+        function f() {
+          while (true) {
+        // b is declared inside a loop, so it is reassigned multiple times
+            var b = a.b;
+            alert(b.staticProp);
+          }
+        }
+        """,
+        """
+        /** @constructor */ var a$b = function() {};
+        var a$b$staticProp = 5;
+        function f() {
+          while (true) {
+            var b = null;
+            alert(a$b$staticProp);
+          }
+        }
+        """);
     test(
-        lines(
-            "var a = {};", //
-            "/** @constructor */ a.b = function() {};",
-            "a.b.staticProp = 5;",
-            "function f() {",
-            "  while (true) {",
-            // b is declared inside a loop, so it is reassigned multiple times
-            "    var b = a.b;",
-            "    alert(b?.staticProp);",
-            "  }",
-            "}"),
-        lines(
-            "/** @constructor */ var a$b = function() {};", //
-            "var a$b$staticProp = 5;",
-            "function f() {",
-            "  while (true) {",
-            "    var b = null;",
-            // TODO(bradfordcsmith): This reference is broken by collapsing above.
-            "    alert(a$b?.staticProp);",
-            "  }",
-            "}"));
+        """
+        var a = {};
+        /** @constructor */ a.b = function() {};
+        a.b.staticProp = 5;
+        function f() {
+          while (true) {
+        // b is declared inside a loop, so it is reassigned multiple times
+            var b = a.b;
+            alert(b?.staticProp);
+          }
+        }
+        """,
+        """
+        /** @constructor */ var a$b = function() {};
+        var a$b$staticProp = 5;
+        function f() {
+          while (true) {
+            var b = null;
+        // TODO(bradfordcsmith): This reference is broken by collapsing above.
+            alert(a$b?.staticProp);
+          }
+        }
+        """);
   }
 
   @Test
   public void test_b19179602_declareOutsideLoop() {
     test(
-        lines(
-            "var a = {};", //
-            "/** @constructor */ a.b = function() {};",
-            "a.b.staticProp = 5;",
-            "function f() {",
-            // b is declared outside the loop
-            "  var b = a.b;",
-            "  while (true) {",
-            "    alert(b.staticProp);",
-            "  }",
-            "}"),
-        lines(
-            "/** @constructor */", //
-            "var a$b = function() {};",
-            "var a$b$staticProp = 5;",
-            "",
-            "function f() {",
-            "  var b = null;",
-            "  while (true) {",
-            "    alert(a$b$staticProp);",
-            "  }",
-            "}"));
+        """
+        var a = {};
+        /** @constructor */ a.b = function() {};
+        a.b.staticProp = 5;
+        function f() {
+        // b is declared outside the loop
+          var b = a.b;
+          while (true) {
+            alert(b.staticProp);
+          }
+        }
+        """,
+        """
+        /** @constructor */
+        var a$b = function() {};
+        var a$b$staticProp = 5;
+
+        function f() {
+          var b = null;
+          while (true) {
+            alert(a$b$staticProp);
+          }
+        }
+        """);
     test(
-        lines(
-            "var a = {};", //
-            "/** @constructor */ a.b = function() {};",
-            "a.b.staticProp = 5;",
-            "function f() {",
-            // b is declared outside the loop
-            "  var b = a.b;",
-            "  while (true) {",
-            "    alert(b?.staticProp);",
-            "  }",
-            "}"),
-        lines(
-            "/** @constructor */", //
-            "var a$b = function() {};",
-            // TODO(b/148237949): Collapsing this breaks the optional chain reference below.
-            "var a$b$staticProp = 5;",
-            "",
-            "function f() {",
-            "  var b = null;",
-            "  while (true) {",
-            "    alert(a$b?.staticProp);",
-            "  }",
-            "}"));
+        """
+        var a = {};
+        /** @constructor */ a.b = function() {};
+        a.b.staticProp = 5;
+        function f() {
+        // b is declared outside the loop
+          var b = a.b;
+          while (true) {
+            alert(b?.staticProp);
+          }
+        }
+        """,
+        """
+        /** @constructor */
+        var a$b = function() {};
+        // TODO(b/148237949): Collapsing this breaks the optional chain reference below.
+        var a$b$staticProp = 5;
+
+        function f() {
+          var b = null;
+          while (true) {
+            alert(a$b?.staticProp);
+          }
+        }
+        """);
   }
 
   @Test
   public void testCtorManyAssignmentsDontInlineWarn() {
     test(
-        lines(
-            "var a = {};", //
-            "/** @constructor */ a.b = function() {};",
-            "a.b.staticProp = 5;",
-            "function f(y, z) {",
-            "  var x = a.b;",
-            "  if (y) {",
-            "    x = z;",
-            "  }",
-            "  return x.staticProp;",
-            "}"),
-        lines(
-            "/** @constructor */ var a$b = function() {};", //
-            "var a$b$staticProp = 5;",
-            "function f(y, z) {",
-            "  var x = a$b;",
-            "  if (y) {",
-            "    x = z;",
-            "  }",
-            "  return x.staticProp;",
-            "}"),
+        """
+        var a = {};
+        /** @constructor */ a.b = function() {};
+        a.b.staticProp = 5;
+        function f(y, z) {
+          var x = a.b;
+          if (y) {
+            x = z;
+          }
+          return x.staticProp;
+        }
+        """,
+        """
+        /** @constructor */ var a$b = function() {};
+        var a$b$staticProp = 5;
+        function f(y, z) {
+          var x = a$b;
+          if (y) {
+            x = z;
+          }
+          return x.staticProp;
+        }
+        """,
         warning(InlineAndCollapseProperties.UNSAFE_CTOR_ALIASING));
+  }
+
+  @Test
+  public void testCollapseOfGoogModule() {
+    test(
+        """
+        var goog = goog || {};
+        /** @constructor */
+        goog.module = function(id) {};
+        goog.module.get = function(id) {};
+        goog.module.getInternal_ = function(id) {};
+        goog.module = goog.module || {};
+        """,
+        """
+        var goog = goog || {};
+        var goog$module = function(id) {};
+        // TODO(b/389129315): This should be goog$module$get.
+        goog$module.get = function(id) {};
+        goog$module.getInternal_ = function(id) {};
+        goog$module = goog$module || {};
+        """);
   }
 
   @Test
   public void testCodeGeneratedByGoogModule() {
     // The static property is added to the exports object
     test(
-        lines(
-            "var $jscomp = {};", //
-            "$jscomp.scope = {};",
-            "/** @constructor */",
-            "$jscomp.scope.Foo = function() {};",
-            "var exports = $jscomp.scope.Foo;",
-            "exports.staticprop = {A:1};",
-            "var y = exports.staticprop.A;"),
-        lines(
-            "/** @constructor */", //
-            "var $jscomp$scope$Foo = function() {}",
-            "var exports = null;",
-            "var $jscomp$scope$Foo$staticprop$A = 1;",
-            "var y = null;"));
+        """
+        var $jscomp = {};
+        $jscomp.scope = {};
+        /** @constructor */
+        $jscomp.scope.Foo = function() {};
+        var exports = $jscomp.scope.Foo;
+        exports.staticprop = {A:1};
+        var y = exports.staticprop.A;
+        """,
+        """
+        /** @constructor */
+        var $jscomp$scope$Foo = function() {}
+        var exports = null;
+        var $jscomp$scope$Foo$staticprop$A = 1;
+        var y = null;
+        """);
 
     // The static property is added to the constructor
     test(
-        lines(
-            "var $jscomp = {};", //
-            "$jscomp.scope = {};",
-            "/** @constructor */",
-            "$jscomp.scope.Foo = function() {};",
-            "$jscomp.scope.Foo.staticprop = {A:1};",
-            "var exports = $jscomp.scope.Foo;",
-            "var y = exports.staticprop.A;"),
-        lines(
-            "/** @constructor */", //
-            "var $jscomp$scope$Foo = function() {}",
-            "var $jscomp$scope$Foo$staticprop$A = 1;",
-            "var exports = null;",
-            "var y = null;"));
+        """
+        var $jscomp = {};
+        $jscomp.scope = {};
+        /** @constructor */
+        $jscomp.scope.Foo = function() {};
+        $jscomp.scope.Foo.staticprop = {A:1};
+        var exports = $jscomp.scope.Foo;
+        var y = exports.staticprop.A;
+        """,
+        """
+        /** @constructor */
+        var $jscomp$scope$Foo = function() {}
+        var $jscomp$scope$Foo$staticprop$A = 1;
+        var exports = null;
+        var y = null;
+        """);
+  }
+
+  @Test
+  public void test_b269515361_codeGeneratedByGoogRequireDynamicForEs5() {
+    // Case 1
+    // The original code of this test case is:
+    // ```
+    // const {LateLoadTs} = await goog.requireDynamic('a.b.c');
+    // new LateLoadTs().render();
+    // ```
+    // This can be reproduced by actual compilation to es5.
+    //
+    // This case is for testing the following line, in which the alias is used in dot get property.
+    // LateLoadTs$jscomp$1 = $jscomp$destructuring$var22.LateLoadTs
+    test(
+        """
+        var module$exports$path$lateload_ts =
+          {
+            LateLoadTs:class LateLoadTs {
+              render() {}
+          }
+        };
+
+        var func = function() {
+          var $jscomp$destructuring$var22;
+          var LateLoadTs$jscomp$1;
+          return $jscomp$asyncExecutePromiseGeneratorProgram(
+            function($jscomp$generator$context){
+              if ($jscomp$generator$context.nextAddress == 1) {
+                return $jscomp$generator$context.yield(goog.importHandler_('WS8L6d'), 2);
+              }
+              $jscomp$destructuring$var22 = module$exports$path$lateload_ts;
+              LateLoadTs$jscomp$1 = $jscomp$destructuring$var22.LateLoadTs;
+              (new LateLoadTs$jscomp$1()).render();
+              $jscomp$generator$context.jumpToEnd();
+            }
+          );
+        };
+        """,
+        """
+        const CLASS_DECL$0 = class {
+          render() {
+          }
+        };
+        var module$exports$path$lateload_ts$LateLoadTs = CLASS_DECL$0;
+        var func = function() {
+          var $jscomp$destructuring$var22;
+          var LateLoadTs$jscomp$1;
+          return $jscomp$asyncExecutePromiseGeneratorProgram(function($jscomp$generator$context) {
+            if ($jscomp$generator$context.nextAddress == 1) {
+              return $jscomp$generator$context.yield(goog.importHandler_("WS8L6d"), 2);
+            }
+            $jscomp$destructuring$var22 = null;
+            LateLoadTs$jscomp$1 = module$exports$path$lateload_ts$LateLoadTs;
+            (new LateLoadTs$jscomp$1()).render();
+            $jscomp$generator$context.jumpToEnd();
+          });
+        };
+        """);
+
+    // Case 2
+    // This case is for testing assigning value to the exported object.
+    //
+    // The original code of this test case is:
+    // ```
+    // const x = await goog.requireDynamic('a.b.c');
+    // x.LateLoadTs.num = 0;
+    // console.log(x.LateLoadTs);
+    // ```
+    // This can be reproduced by actual compilation to es5.
+    test(
+        """
+        var module$exports$path$lateload_ts =
+          {
+            LateLoadTs:class LateLoadTs { }
+        };
+
+        var func = function() {
+          var x;
+          return $jscomp$asyncExecutePromiseGeneratorProgram(
+            function($jscomp$generator$context){
+              if ($jscomp$generator$context.nextAddress == 1) {
+                return $jscomp$generator$context.yield(goog.importHandler_('WS8L6d'), 2);
+              }
+              x = module$exports$path$lateload_ts;
+              x.LateLoadTs.num = 0;
+              console.log(x.LateLoadTs);
+              $jscomp$generator$context.jumpToEnd();
+            }
+          );
+        };
+        """,
+        """
+        const CLASS_DECL$0 = class {
+        };
+        var module$exports$path$lateload_ts$LateLoadTs = CLASS_DECL$0;
+        var func = function() {
+          var x;
+          return $jscomp$asyncExecutePromiseGeneratorProgram(function($jscomp$generator$context) {
+            if ($jscomp$generator$context.nextAddress == 1) {
+              return $jscomp$generator$context.yield(goog.importHandler_("WS8L6d"), 2);
+            }
+            x = null;
+            module$exports$path$lateload_ts$LateLoadTs.num = 0;
+            console.log(module$exports$path$lateload_ts$LateLoadTs);
+            $jscomp$generator$context.jumpToEnd();
+          });
+        };
+        """);
+    // Case 3
+    // The original code of this test case is:
+    // ```
+    // const {LateLoadTs} = await goog.requireDynamic('a.b.c');
+    // new LateLoadTs().render();
+    // ```
+    // This can be reproduced by actual compilation to es5.
+    //
+    // This case is for testing non-exported module, i.e., the global name is not prefixed with
+    // 'module$exports$'. Test should fail.
+    test(
+        """
+        var not_module$exports$path$lateload_ts =
+          {
+            LateLoadTs:class LateLoadTs {
+              render() {}
+          }
+        };
+
+        var func = function() {
+          var $jscomp$destructuring$var22;
+          var LateLoadTs$jscomp$1;
+          return $jscomp$asyncExecutePromiseGeneratorProgram(
+            function($jscomp$generator$context){
+              if ($jscomp$generator$context.nextAddress == 1) {
+                return $jscomp$generator$context.yield(goog.importHandler_('WS8L6d'), 2);
+              }
+              $jscomp$destructuring$var22 = not_module$exports$path$lateload_ts;
+              LateLoadTs$jscomp$1 = $jscomp$destructuring$var22.LateLoadTs;
+              (new LateLoadTs$jscomp$1()).render();
+              $jscomp$generator$context.jumpToEnd();
+            }
+          );
+        };
+        """,
+        """
+        const CLASS_DECL$0 = class {
+          render() {
+          }
+        };
+        var not_module$exports$path$lateload_ts = {LateLoadTs:CLASS_DECL$0};
+        var func = function() {
+          var $jscomp$destructuring$var22;
+          var LateLoadTs$jscomp$1;
+          return $jscomp$asyncExecutePromiseGeneratorProgram(function($jscomp$generator$context) {
+            if ($jscomp$generator$context.nextAddress == 1) {
+              return $jscomp$generator$context.yield(goog.importHandler_("WS8L6d"), 2);
+            }
+            $jscomp$destructuring$var22 = not_module$exports$path$lateload_ts;
+            LateLoadTs$jscomp$1 = $jscomp$destructuring$var22.LateLoadTs;
+            (new LateLoadTs$jscomp$1()).render();
+            $jscomp$generator$context.jumpToEnd();
+          });
+        };
+        """);
+
+    // Case 4
+    // This is a manually configured example for this test.
+    //
+    // This case is for testing the case where the alias is not only used in property access/
+    // destructuring.
+    test(
+        """
+        var _module$exports$path$lateload_ts =
+          {
+            LateLoadTs:class LateLoadTs {
+              render() {}
+          }
+        };
+
+        var func = function() {
+          var $jscomp$destructuring$var22;
+          var LateLoadTs$jscomp$1;
+          return $jscomp$asyncExecutePromiseGeneratorProgram(
+            function($jscomp$generator$context){
+              if ($jscomp$generator$context.nextAddress == 1) {
+                return $jscomp$generator$context.yield(goog.importHandler_('WS8L6d'), 2);
+              }
+              $jscomp$destructuring$var22 = _module$exports$path$lateload_ts;
+              $jscomp$destructuring$var22 = 'foo';
+              LateLoadTs$jscomp$1 = $jscomp$destructuring$var22.LateLoadTs;
+              (new LateLoadTs$jscomp$1()).render();
+              $jscomp$generator$context.jumpToEnd();
+            }
+          );
+        };
+        """,
+        """
+        const CLASS_DECL$0 = class {
+          render() {
+          }
+        };
+        var _module$exports$path$lateload_ts = {LateLoadTs:CLASS_DECL$0};
+        var func = function() {
+          var $jscomp$destructuring$var22;
+          var LateLoadTs$jscomp$1;
+          return $jscomp$asyncExecutePromiseGeneratorProgram(function($jscomp$generator$context) {
+            if ($jscomp$generator$context.nextAddress == 1) {
+              return $jscomp$generator$context.yield(goog.importHandler_("WS8L6d"), 2);
+            }
+            $jscomp$destructuring$var22 = _module$exports$path$lateload_ts;
+            $jscomp$destructuring$var22 = "foo";
+            LateLoadTs$jscomp$1 = $jscomp$destructuring$var22.LateLoadTs;
+            (new LateLoadTs$jscomp$1()).render();
+            $jscomp$generator$context.jumpToEnd();
+          });
+        };
+        """);
+
+    // Case 5
+    // This is a manually configured example for this test.
+    //
+    // This case is for testing the case where the alias is initialized in declaration and then
+    // reassigned a value.
+    test(
+        """
+        var module$exports$path$lateload_ts =
+          {
+            LateLoadTs:class LateLoadTs {
+              render() {}
+          }
+        };
+
+        var func = function() {
+          var $jscomp$destructuring$var22 = 'foo';
+          var LateLoadTs$jscomp$1;
+          return $jscomp$asyncExecutePromiseGeneratorProgram(
+            function($jscomp$generator$context){
+              if ($jscomp$generator$context.nextAddress == 1) {
+                return $jscomp$generator$context.yield(goog.importHandler_('WS8L6d'), 2);
+              }
+              $jscomp$destructuring$var22 = module$exports$path$lateload_ts;
+              LateLoadTs$jscomp$1 = $jscomp$destructuring$var22.LateLoadTs;
+              (new LateLoadTs$jscomp$1()).render();
+              $jscomp$generator$context.jumpToEnd();
+            }
+          );
+        };
+        """,
+        """
+        const CLASS_DECL$0 = class {
+          render() {
+          }
+        };
+        var module$exports$path$lateload_ts = {LateLoadTs:CLASS_DECL$0};
+        var func = function() {
+          var $jscomp$destructuring$var22 = "foo";
+          var LateLoadTs$jscomp$1;
+          return $jscomp$asyncExecutePromiseGeneratorProgram(function($jscomp$generator$context) {
+            if ($jscomp$generator$context.nextAddress == 1) {
+              return $jscomp$generator$context.yield(goog.importHandler_("WS8L6d"), 2);
+            }
+            $jscomp$destructuring$var22 = module$exports$path$lateload_ts;
+            LateLoadTs$jscomp$1 = $jscomp$destructuring$var22.LateLoadTs;
+            (new LateLoadTs$jscomp$1()).render();
+            $jscomp$generator$context.jumpToEnd();
+          });
+        };
+        """);
   }
 
   @Test
   public void testInlineCtorInObjLit() {
     test(
-        lines(
-            "/** @constructor */", //
-            "function Foo() {}",
-            "",
-            "/** @constructor */",
-            "var Bar = Foo;",
-            "",
-            "var objlit = {",
-            "  'prop' : Bar",
-            "};"),
-        lines(
-            "/** @constructor */", //
-            "function Foo() {}",
-            "/** @constructor */",
-            "var Bar = null;",
-            "var objlit$prop = Foo;"));
+        """
+        /** @constructor */
+        function Foo() {}
+
+        /** @constructor */
+        var Bar = Foo;
+
+        var objlit = {
+          'prop' : Bar
+        };
+        """,
+        """
+        /** @constructor */
+        function Foo() {}
+        /** @constructor */
+        var Bar = null;
+        var objlit$prop = Foo;
+        """);
   }
 
   @Test
@@ -1700,32 +2650,35 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
   @Test
   public void testDontCrashCtorAliasWithEnum() {
     test(
-        lines(
-            "var ns = {};", //
-            "/** @constructor */",
-            "ns.Foo = function () {};",
-            "var Bar = ns.Foo;",
-            "/** @const @enum */",
-            "Bar.prop = { A: 1 };"),
-        lines(
-            "/** @constructor */", //
-            "var ns$Foo = function(){};",
-            "var Bar = null;",
-            "var ns$Foo$prop$A = 1"));
+        """
+        var ns = {};
+        /** @constructor */
+        ns.Foo = function () {};
+        var Bar = ns.Foo;
+        /** @const @enum */
+        Bar.prop = { A: 1 };
+        """,
+        """
+        /** @constructor */
+        var ns$Foo = function(){};
+        var Bar = null;
+        var ns$Foo$prop$A = 1
+        """);
   }
 
   @Test
   public void testDontCrashNamespaceAliasAcrossScopes() {
     test(
-        lines(
-            "var ns = {};", //
-            "ns.VALUE = 0.01;",
-            "function f() {",
-            "    var constants = ns;",
-            "    (function() {",
-            "       var x = constants.VALUE;",
-            "    })();",
-            "}"),
+        """
+        var ns = {};
+        ns.VALUE = 0.01;
+        function f() {
+            var constants = ns;
+            (function() {
+               var x = constants.VALUE;
+            })();
+        }
+        """,
         null);
   }
 
@@ -1743,28 +2696,30 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
   public void testGlobalAliasForLet2() {
     // We don't do any sort of branch prediction, so can't collapse here.
     testSame(
-        lines(
-            "let ns = {};", //
-            "ns.foo = 'bar';",
-            "let ns2;",
-            "if (true) {",
-            "  ns2 = ns;",
-            "}",
-            "use(ns2.foo);"));
+        """
+        let ns = {};
+        ns.foo = 'bar';
+        let ns2;
+        if (true) {
+          ns2 = ns;
+        }
+        use(ns2.foo);
+        """);
   }
 
   @Test
   public void testGlobalAliasWithLet3() {
-    // Back off since in general we don't check that ns2 is only ever accessed within the if block.
+    // We don't do any sort of branch prediction, so can't collapse here.
     testSame(
-        lines(
-            "let ns = {};", //
-            "ns.foo = 'bar';",
-            "let ns2;",
-            "if (true) {",
-            "  ns2 = ns;",
-            "  use(ns2.foo);",
-            "}"));
+        """
+        let ns = {};
+        ns.foo = 'bar';
+        let ns2;
+        if (true) {
+          ns2 = ns;
+          use(ns2.foo);
+        }
+        """);
   }
 
   @Test
@@ -1780,93 +2735,103 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
   @Test
   public void testLocalAliasWithLet2() {
     test(
-        lines(
-            "let ns = {};", //
-            "ns.foo = 'bar';",
-            "function f() {",
-            "  if (true) {",
-            "    let ns2 = ns;",
-            "    use(ns2.foo);",
-            "  }",
-            "}"),
-        lines(
-            "var ns$foo = 'bar';", //
-            "function f() {",
-            "  if (true) {",
-            "    let ns2 = null;",
-            "    use(ns$foo);",
-            "  }",
-            "}"));
+        """
+        let ns = {};
+        ns.foo = 'bar';
+        function f() {
+          if (true) {
+            let ns2 = ns;
+            use(ns2.foo);
+          }
+        }
+        """,
+        """
+        var ns$foo = 'bar';
+        function f() {
+          if (true) {
+            let ns2 = null;
+            use(ns$foo);
+          }
+        }
+        """);
     test(
-        lines(
-            "let ns = {};", //
-            "ns.foo = 'bar';",
-            "function f() {",
-            "  if (true) {",
-            "    let ns2 = ns;",
-            "    use?.(ns2?.foo);",
-            "  }",
-            "}"),
-        lines(
-            "let ns = {};", //
-            "ns.foo = 'bar';",
-            "function f() {",
-            "  if (true) {",
-            "    let ns2 = null;",
-            "    use?.(ns?.foo);",
-            "  }",
-            "}"));
+        """
+        let ns = {};
+        ns.foo = 'bar';
+        function f() {
+          if (true) {
+            let ns2 = ns;
+            use?.(ns2?.foo);
+          }
+        }
+        """,
+        """
+        let ns = {};
+        ns.foo = 'bar';
+        function f() {
+          if (true) {
+            let ns2 = null;
+            use?.(ns?.foo);
+          }
+        }
+        """);
   }
 
   @Test
   public void testLocalAliasWithLet3() {
     test(
-        lines(
-            "let ns = {};", //
-            "ns.foo = 'bar';",
-            "if (true) {",
-            "  let ns2 = ns;",
-            "  use(ns2.foo);",
-            "}"),
-        lines(
-            "var ns$foo = 'bar';", //
-            "if (true) {",
-            "  let ns2 = null;",
-            "  use(ns$foo);",
-            "}"));
+        """
+        let ns = {};
+        ns.foo = 'bar';
+        if (true) {
+          let ns2 = ns;
+          use(ns2.foo);
+        }
+        """,
+        """
+        var ns$foo = 'bar';
+        if (true) {
+          let ns2 = null;
+          use(ns$foo);
+        }
+        """);
     test(
-        lines(
-            "let ns = {};", //
-            "ns.foo = 'bar';",
-            "if (true) {",
-            "  let ns2 = ns;",
-            "  use?.(ns2?.foo);",
-            "}"),
-        lines(
-            "let ns = {};", //
-            "ns.foo = 'bar';",
-            "if (true) {",
-            "  let ns2 = null;",
-            "  use?.(ns?.foo);",
-            "}"));
+        """
+        let ns = {};
+        ns.foo = 'bar';
+        if (true) {
+          let ns2 = ns;
+          use?.(ns2?.foo);
+        }
+        """,
+        """
+        let ns = {};
+        ns.foo = 'bar';
+        if (true) {
+          let ns2 = null;
+          use?.(ns?.foo);
+        }
+        """);
   }
 
   @Test
   public void testLocalAliasWithLet4() {
     test(
-        lines(
-            "let ns = {};", //
-            "ns.foo = 'bar';",
-            "if (true) {",
-            "  let baz = ns.foo;",
-            "  use(baz);",
-            "}"),
-        lines(
-            "var ns$foo = 'bar';", //
-            "if (true) {",
-            "  let baz = null;",
-            "  use(ns$foo);",
-            "}"));
+        """
+        let ns = {};
+        ns.foo = 'bar';
+        if (true) {
+          let baz = ns.foo;
+          use(baz);
+        }
+        """,
+        """
+        var ns$foo = 'bar';
+        if (true) {
+          let baz = null;
+          use(ns$foo);
+        }
+        """);
   }
 
   @Test
@@ -1874,14 +2839,15 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
     // For local variables (VAR, CONST, or LET) we only handle cases where the alias is a variable,
     // not a property.
     testSame(
-        lines(
-            "let ns = {};", //
-            "ns.foo = 'bar';",
-            "if (true) {",
-            "  let ns2 = {};",
-            "  ns2.baz = ns;",
-            "  use(ns2.baz.foo);",
-            "}"));
+        """
+        let ns = {};
+        ns.foo = 'bar';
+        if (true) {
+          let ns2 = {};
+          ns2.baz = ns;
+          use(ns2.baz.foo);
+        }
+        """);
   }
 
   @Test
@@ -1897,126 +2863,140 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
   @Test
   public void testLocalAliasWithConst1() {
     test(
-        lines(
-            "const ns = {};", //
-            "ns.foo = 'bar';",
-            "function f() {",
-            "  const ns2 = ns;",
-            "  use(ns2.foo);",
-            "}"),
-        lines(
-            "var ns$foo = 'bar';", //
-            "function f() {",
-            "  const ns2 = null;",
-            "  use(ns$foo);",
-            "}"));
+        """
+        const ns = {};
+        ns.foo = 'bar';
+        function f() {
+          const ns2 = ns;
+          use(ns2.foo);
+        }
+        """,
+        """
+        var ns$foo = 'bar';
+        function f() {
+          const ns2 = null;
+          use(ns$foo);
+        }
+        """);
     test(
-        lines(
-            "const ns = {};", //
-            "ns.foo = 'bar';",
-            "function f() {",
-            "  const ns2 = ns;",
-            "  use?.(ns2?.foo);",
-            "}"),
-        lines(
-            "const ns = {};", //
-            "ns.foo = 'bar';",
-            "function f() {",
-            "  const ns2 = null;",
-            "  use?.(ns?.foo);",
-            "}"));
+        """
+        const ns = {};
+        ns.foo = 'bar';
+        function f() {
+          const ns2 = ns;
+          use?.(ns2?.foo);
+        }
+        """,
+        """
+        const ns = {};
+        ns.foo = 'bar';
+        function f() {
+          const ns2 = null;
+          use?.(ns?.foo);
+        }
+        """);
   }
 
   @Test
   public void testLocalAliasWithConst2() {
     test(
-        lines(
-            "const ns = {};", //
-            "ns.foo = 'bar';",
-            "function f() {",
-            "  if (true) {",
-            "    const ns2 = ns;",
-            "    use(ns2.foo);",
-            "  }",
-            "}"),
-        lines(
-            "var ns$foo = 'bar';", //
-            "function f() {",
-            "  if (true) {",
-            "    const ns2 = null;",
-            "    use(ns$foo);",
-            "  }",
-            "}"));
+        """
+        const ns = {};
+        ns.foo = 'bar';
+        function f() {
+          if (true) {
+            const ns2 = ns;
+            use(ns2.foo);
+          }
+        }
+        """,
+        """
+        var ns$foo = 'bar';
+        function f() {
+          if (true) {
+            const ns2 = null;
+            use(ns$foo);
+          }
+        }
+        """);
     test(
-        lines(
-            "const ns = {};", //
-            "ns.foo = 'bar';",
-            "function f() {",
-            "  if (true) {",
-            "    const ns2 = ns;",
-            "    use?.(ns2?.foo);",
-            "  }",
-            "}"),
-        lines(
-            "const ns = {};", //
-            "ns.foo = 'bar';",
-            "function f() {",
-            "  if (true) {",
-            "    const ns2 = null;",
-            "    use?.(ns?.foo);",
-            "  }",
-            "}"));
+        """
+        const ns = {};
+        ns.foo = 'bar';
+        function f() {
+          if (true) {
+            const ns2 = ns;
+            use?.(ns2?.foo);
+          }
+        }
+        """,
+        """
+        const ns = {};
+        ns.foo = 'bar';
+        function f() {
+          if (true) {
+            const ns2 = null;
+            use?.(ns?.foo);
+          }
+        }
+        """);
   }
 
   @Test
   public void testLocalAliasWithConst3() {
     test(
-        lines(
-            "const ns = {};", //
-            "ns.foo = 'bar';",
-            "if (true) {",
-            "  const ns2 = ns;",
-            "  use(ns2.foo);",
-            "}"),
-        lines(
-            "var ns$foo = 'bar';", //
-            "if (true) {",
-            "  const ns2 = null;",
-            "  use(ns$foo);",
-            "}"));
+        """
+        const ns = {};
+        ns.foo = 'bar';
+        if (true) {
+          const ns2 = ns;
+          use(ns2.foo);
+        }
+        """,
+        """
+        var ns$foo = 'bar';
+        if (true) {
+          const ns2 = null;
+          use(ns$foo);
+        }
+        """);
     test(
-        lines(
-            "const ns = {};", //
-            "ns.foo = 'bar';",
-            "if (true) {",
-            "  const ns2 = ns;",
-            "  use?.(ns2?.foo);",
-            "}"),
-        lines(
-            "const ns = {};", //
-            "ns.foo = 'bar';",
-            "if (true) {",
-            "  const ns2 = null;",
-            "  use?.(ns?.foo);",
-            "}"));
+        """
+        const ns = {};
+        ns.foo = 'bar';
+        if (true) {
+          const ns2 = ns;
+          use?.(ns2?.foo);
+        }
+        """,
+        """
+        const ns = {};
+        ns.foo = 'bar';
+        if (true) {
+          const ns2 = null;
+          use?.(ns?.foo);
+        }
+        """);
   }
 
   @Test
   public void testLocalAliasWithConst4() {
     test(
-        lines(
-            "const ns = {};", //
-            "ns.foo = 'bar';",
-            "if (true) {",
-            "  const baz = ns.foo;",
-            "  use(baz);",
-            "}"),
-        lines(
-            "var ns$foo = 'bar';", //
-            "if (true) {",
-            "  const baz = null;",
-            "  use(ns$foo);",
-            "}"));
+        """
+        const ns = {};
+        ns.foo = 'bar';
+        if (true) {
+          const baz = ns.foo;
+          use(baz);
+        }
+        """,
+        """
+        var ns$foo = 'bar';
+        if (true) {
+          const baz = null;
+          use(ns$foo);
+        }
+        """);
   }
 
   @Test
@@ -2024,14 +3004,15 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
     // For local variables (VAR, CONST, or LET) we only handle cases where the alias is a variable,
     // not a property.
     testSame(
-        lines(
-            "const ns = {};", //
-            "ns.foo = 'bar';",
-            "if (true) {",
-            "  const ns2 = {};",
-            "  ns2.baz = ns;",
-            "  use(ns2.baz.foo);",
-            "}"));
+        """
+        const ns = {};
+        ns.foo = 'bar';
+        if (true) {
+          const ns2 = {};
+          ns2.baz = ns;
+          use(ns2.baz.foo);
+        }
+        """);
   }
 
   @Test
@@ -2049,52 +3030,117 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
     // Collapsing static properties (A.foo and A.useFoo in this case) is known to be unsafe.
     test(
         srcs(
-            lines(
-                "class A {", //
-                "  static useFoo() {",
-                "    alert(this.foo);",
-                "  }",
-                "}",
-                "A.foo = 'bar';",
-                "const B = A;",
-                "B.foo = 'baz';",
-                "B.useFoo();")),
+            """
+            class A {
+              static useFoo() {
+                alert(this.foo);
+              }
+            }
+            A.foo = 'bar';
+            const B = A;
+            B.foo = 'baz';
+            B.useFoo();
+            """),
         expected(
-            lines(
-                "var A$useFoo = function() { alert(this.foo); };", //
-                "class A {}",
-                "var A$foo = 'bar';",
-                "const B = null;",
-                "A$foo = 'baz';",
-                "A$useFoo();")),
+            """
+            var A$useFoo = function() { alert(this.foo); };
+            class A {}
+            var A$foo = 'bar';
+            const B = null;
+            A$foo = 'baz';
+            A$useFoo();
+            """),
         warning(RECEIVER_AFFECTED_BY_COLLAPSE));
 
     // Adding @nocollapse makes this safe.
     test(
-        lines(
-            "class A {", //
-            "  /** @nocollapse */",
-            "  static useFoo() {",
-            "    alert(this.foo);",
-            "  }",
-            "}",
-            "/** @nocollapse */",
-            "A.foo = 'bar';",
-            "const B = A;",
-            "B.foo = 'baz';",
-            "B.useFoo();"),
-        lines(
-            "class A {", //
-            "  /** @nocollapse */",
-            "  static useFoo() {",
-            "    alert(this.foo);",
-            "  }",
-            "}",
-            "/** @nocollapse */",
-            "A.foo = 'bar';",
-            "const B = null;",
-            "A.foo = 'baz';",
-            "A.useFoo();"));
+        """
+        class A {
+          /** @nocollapse */
+          static useFoo() {
+            alert(this.foo);
+          }
+        }
+        /** @nocollapse */
+        A.foo = 'bar';
+        const B = A;
+        B.foo = 'baz';
+        B.useFoo();
+        """,
+        """
+        class A {
+          /** @nocollapse */
+          static useFoo() {
+            alert(this.foo);
+          }
+        }
+        /** @nocollapse */
+        A.foo = 'bar';
+        const B = null;
+        A.foo = 'baz';
+        A.useFoo();
+        """);
+  }
+
+  @Test
+  public void testEs6ClassStaticProperties_asStaticField() {
+    // Collapsing static properties (A.foo and A.useFoo in this case) is known to be unsafe.
+    test(
+        srcs(
+            """
+            class A {
+              static useFoo() {
+                alert(this.foo);
+              }
+              static foo = 'bar';
+            }
+            const B = A;
+            B.foo = 'baz';
+            B.useFoo();
+            """),
+        expected(
+            """
+            var A$useFoo = function() {
+              alert(this.foo);
+            };
+            var A$foo;
+            class A {}
+            A$foo = "bar";
+            const B = null;
+            A$foo = "baz";
+            A$useFoo();
+            """),
+        warning(RECEIVER_AFFECTED_BY_COLLAPSE));
+
+    // Adding @nocollapse makes this safe.
+    test(
+        """
+        class A {
+          /** @nocollapse */
+          static useFoo() {
+            alert(this.foo);
+          }
+          /** @nocollapse */
+          static foo = 'bar';
+        }
+        const B = A;
+        B.foo = 'baz';
+        B.useFoo();
+        """,
+        """
+        class A {
+          /** @nocollapse */
+          static useFoo() {
+            alert(this.foo);
+          }
+          /** @nocollapse */
+          static foo;
+        }
+        A.foo = "bar";
+        const B = null;
+        A.foo = "baz";
+        A.useFoo();
+        """);
   }
 
   @Test
@@ -2163,90 +3209,165 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
   }
 
   @Test
+  public void testClassStaticInheritance_propertyWithSuperNocollapseSubclassCollapse() {
+    test(
+        srcs(
+            """
+            class A {}
+            /** @nocollapse */
+            A.foo = 5;
+            class B extends A {}
+            B.foo = 6;
+            use(B.foo);
+            """),
+        expected(
+            """
+            class A {}
+            /** @nocollapse */
+            A.foo = 5;
+            class B extends A {}
+            var B$foo = 6;
+            use(B$foo);
+            """));
+  }
+
+  @Test
   public void testClassStaticInheritance_cantDetermineSuperclass() {
     // Here A.foo and B.foo are unsafely collapsed because getSuperclass() creates an alias for them
     test(
-        lines(
-            "class A {}", //
-            "A.foo = 5;",
-            "class B {}",
-            "B.foo = 6;",
-            "function getSuperclass() { return 1 < 2 ? A : B; }",
-            "class C extends getSuperclass() {}",
-            "use(C.foo);"),
-        lines(
-            "class A {}", //
-            "var A$foo = 5;",
-            "class B {}",
-            "var B$foo = 6;",
-            "function getSuperclass() { return 1 < 2 ? A : B; }",
-            "class C extends getSuperclass() {}",
-            "use(C.foo);"));
+        """
+        class A {}
+        A.foo = 5;
+        class B {}
+        B.foo = 6;
+        function getSuperclass() { return 1 < 2 ? A : B; }
+        class C extends getSuperclass() {}
+        use(C.foo);
+        """,
+        """
+        class A {
+        }
+        var A$foo = 5;
+        class B {
+        }
+        var B$foo = 6;
+        function getSuperclass() {
+          return 1 < 2 ? A : B;
+        }
+        const CLASS_EXTENDS$0 = getSuperclass();
+        class C extends CLASS_EXTENDS$0 {
+        }
+        use(C.foo);
+        """);
+  }
+
+  @Test
+  public void testTypeScriptDecoratedClass() {
+    // TypeScript 5.8 emits this for decorated classes.
+    test(
+        """
+        class A {
+          static getId() {
+            return A.ID;
+          }
+        }
+        A.ID = 'a';
+        tslib.__decorate([], A);
+        if (false) {
+          /** @const {string} */ A.ID;
+        }
+        console.log(A.getId());
+        """,
+        """
+        var A$getId = function() {
+          return A$ID;
+        };
+        class A {
+        }
+        var A$ID = "a";
+        tslib.__decorate([], A);
+        if (false) {
+          A$ID;
+        }
+        console.log(A$getId());
+        """);
   }
 
   @Test
   public void testAliasForSuperclassNamespace() {
     test(
-        lines(
-            "var ns = {};", //
-            "class Foo {}",
-            "ns.clazz = Foo;",
-            "var Bar = class extends ns.clazz.Baz {}"),
-        lines(
-            "class Foo {}", //
-            "var ns$clazz = null;",
-            "var Bar = class extends Foo.Baz {}"));
+        """
+        var ns = {};
+        class Foo {}
+        ns.clazz = Foo;
+        var Bar = class extends ns.clazz.Baz {}
+        """,
+        """
+        class Foo {}
+        var ns$clazz = null;
+        var Bar = class extends Foo.Baz {}
+        """);
 
     test(
-        lines(
-            "var ns = {};", //
-            "class Foo {}",
-            "Foo.Builder = class {}",
-            "ns.clazz = Foo;",
-            "var Bar = class extends ns.clazz.Builder {}"),
-        lines(
-            "class Foo {}", //
-            "var Foo$Builder = class {}",
-            "var ns$clazz = null;",
-            "var Bar = class extends Foo$Builder {}"));
+        """
+        var ns = {};
+        class Foo {}
+        Foo.Builder = class {}
+        ns.clazz = Foo;
+        var Bar = class extends ns.clazz.Builder {}
+        """,
+        """
+        class Foo {}
+        var Foo$Builder = class {}
+        var ns$clazz = null;
+        var Bar = class extends Foo$Builder {}
+        """);
   }
 
   @Test
   public void testAliasForSuperclassNamespace_withStaticInheritance() {
     test(
-        lines(
-            "var ns = {};", //
-            "class Foo {}",
-            "Foo.Builder = class {}",
-            "Foo.Builder.baz = 3;",
-            "ns.clazz = Foo;",
-            "var Bar = class extends ns.clazz.Builder {}",
-            "use(Bar.baz);"),
-        lines(
-            "class Foo {}", //
-            "var Foo$Builder = class {}",
-            "var Foo$Builder$baz = 3;",
-            "var ns$clazz = null;",
-            "var Bar = class extends Foo$Builder {}",
-            "use(Foo$Builder$baz);"));
+        """
+        var ns = {};
+        class Foo {}
+        Foo.Builder = class {}
+        Foo.Builder.baz = 3;
+        ns.clazz = Foo;
+        var Bar = class extends ns.clazz.Builder {}
+        use(Bar.baz);
+        """,
+        """
+        class Foo {}
+        var Foo$Builder = class {}
+        var Foo$Builder$baz = 3;
+        var ns$clazz = null;
+        var Bar = class extends Foo$Builder {}
+        use(Foo$Builder$baz);
+        """);
     test(
-        lines(
-            "var ns = {};", //
-            "class Foo {}",
-            "Foo.Builder = class {}",
-            "Foo.Builder.baz = 3;",
-            "ns.clazz = Foo;",
-            "var Bar = class extends ns.clazz?.Builder {}",
-            "use(Bar?.baz);"),
-        lines(
-            "class Foo {}", //
-            "var Foo$Builder = class {}",
-            "var Foo$Builder$baz = 3;",
-            "var ns$clazz = null;",
-            // TODO(b/148237979): Collapse above breaks this reference.
-            "var Bar = class extends Foo?.Builder {}",
-            // TODO(b/148237979): Collapse above breaks this reference.
-            "use(Bar?.baz);"));
+        """
+        var ns = {};
+        class Foo {}
+        Foo.Builder = class {}
+        Foo.Builder.baz = 3;
+        ns.clazz = Foo;
+        var Bar = class extends ns.clazz?.Builder {}
+        use(Bar?.baz);
+        """,
+        """
+        class Foo {
+        }
+        var Foo$Builder = class {
+        };
+        var Foo$Builder$baz = 3;
+        var ns$clazz = null;
+        // TODO(b/148237979): Collapse above breaks this reference.
+        const CLASS_EXTENDS$0 = Foo?.Builder;
+        var Bar = class extends CLASS_EXTENDS$0 {
+        };
+        // TODO(b/148237979): Collapse above breaks this reference.
+        use(Bar?.baz);
+        """);
   }
 
   @Test
@@ -2262,75 +3383,169 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
   @Test
   public void testDestructingAliasWithConstructor() {
     test(
-        lines(
-            "var ns = {};", //
-            "/** @constructor */",
-            "ns.ctor = function() {}",
-            "const {ctor} = ns;",
-            "let c = new ctor;"),
-        lines(
-            "/** @constructor */", //
-            "var ns$ctor = function() {}",
-            "const ctor = null;",
-            "let c = new ns$ctor;"));
+        """
+        var ns = {};
+        /** @constructor */
+        ns.ctor = function() {}
+        const {ctor} = ns;
+        let c = new ctor;
+        """,
+        """
+        /** @constructor */
+        var ns$ctor = function() {}
+        const ctor = null;
+        let c = new ns$ctor;
+        """);
+  }
+
+  @Test
+  public void testDestructuringThatUsedToCrash() {
+    test(
+        """
+        var CakeFlavors = {
+          CARROT: 1,
+          TIRAMISU: 2,
+        };
+        class UglyCake {}
+        const Cake = UglyCake;
+        /** @const */
+        UglyCake.Flavors = CakeFlavors;
+        const {Flavors: {CARROT, TIRAMISU}} = Cake;
+        alert(CARROT, TIRAMISU);
+        """,
+        """
+        var CakeFlavors$CARROT = 1;
+        var CakeFlavors$TIRAMISU = 2;
+        class UglyCake {}
+        const Cake = null;
+        /** @const */
+        var UglyCake$Flavors = null;
+        const destructuring$m1146332801$0 = null;
+        const CARROT = null;
+        const TIRAMISU = null;
+        alert(CakeFlavors$CARROT, CakeFlavors$TIRAMISU);
+        """);
   }
 
   @Test
   public void namespaceInDestructuringPattern() {
     testSame(
-        lines(
-            "const ns = {};", //
-            "ns.x = 1;",
-            "ns.y = 2;",
-            "let {x, y} = ns;",
-            "x = 4;", // enforce that we can't inline x -> ns.x because it's set multiple times
-            "use(x + y);"));
+        """
+        const ns = {};
+        ns.x = 1;
+        ns.y = 2;
+        let {x, y} = ns;
+        x = 4; // enforce that we can't inline x -> ns.x because it's set multiple times
+        use(x + y);
+        """);
   }
 
   @Test
   public void inlineDestructuringPatternConstructorWithProperty() {
     test(
-        lines(
-            "const ns = {};", //
-            "/** @constructor */",
-            "ns.Y = function() {};",
-            "ns.Y.prop = 3;",
-            "const {Y} = ns;",
-            "use(Y.prop);"),
-        lines(
-            "/** @constructor */", //
-            "var ns$Y = function() {};",
-            "var ns$Y$prop = 3;",
-            "const Y = null;",
-            "use(ns$Y$prop);"));
+        """
+        const ns = {};
+        /** @constructor */
+        ns.Y = function() {};
+        ns.Y.prop = 3;
+        const {Y} = ns;
+        use(Y.prop);
+        """,
+        """
+        /** @constructor */
+        var ns$Y = function() {};
+        var ns$Y$prop = 3;
+        const Y = null;
+        use(ns$Y$prop);
+        """);
 
     test(
-        lines(
-            "const ns = {};", //
-            "/** @constructor */",
-            "ns.Y = function() {};",
-            "ns.Y.prop = 3;",
-            "const {Y} = ns;",
-            "use(Y?.prop);"),
-        lines(
-            "/** @constructor */", //
-            "var ns$Y = function() {};",
-            // TODO(bradfordcsmith): This collapse breaks the optional chain
-            //     reference below.
-            "var ns$Y$prop = 3;",
-            "const Y = null;",
-            "use(ns$Y?.prop);"));
+        """
+        const ns = {};
+        /** @constructor */
+        ns.Y = function() {};
+        ns.Y.prop = 3;
+        const {Y} = ns;
+        use(Y?.prop);
+        """,
+        """
+        /** @constructor */
+        var ns$Y = function() {};
+        // TODO(bradfordcsmith): This collapse breaks the optional chain
+        //     reference below.
+        var ns$Y$prop = 3;
+        const Y = null;
+        use(ns$Y?.prop);
+        """);
 
     // Only `const` destructuring aliases have special handling by AggressiveInlineAliases
     testSame(
-        lines(
-            "const ns = {};", //
-            "/** @constructor */",
-            "ns.Y = function() {};",
-            "ns.Y.prop = 3;",
-            "let {Y} = ns;",
-            "use(Y.prop);"),
+        """
+        const ns = {};
+        /** @constructor */
+        ns.Y = function() {};
+        ns.Y.prop = 3;
+        let {Y} = ns;
+        use(Y.prop);
+        """,
         PARTIAL_NAMESPACE_WARNING);
+  }
+
+  @Test
+  public void testDestructuringQualifiedNameMultipleKeysEvaluatesOnce() {
+    test(
+        """
+        const {a, b} = this.validated;
+        use(a, b);
+        """,
+        """
+        const destructuring$m1146332801$0 = this.validated;
+        const a = destructuring$m1146332801$0.a;
+        const b = destructuring$m1146332801$0.b;
+        use(a, b);
+        """);
+  }
+
+  @Test
+  public void testDestructuringQualifiedNameSingleKeyEvaluatesDirectly() {
+    test(
+        """
+        const {a} = this.validated;
+        use(a);
+        """,
+        """
+        const a = this.validated.a;
+        use(a);
+        """);
+  }
+
+  @Test
+  public void testEmptyDestructuringPatternNotStripped() {
+    test("const {} = this.validated;", "");
+    test("const {} = obj;", "");
+  }
+
+  @Test
+  public void testDestructuringQualifiedNameWithCollapsibleNamespace() {
+    test(
+        """
+        const ns = {
+          sub: {
+            a: 1,
+            b: 2,
+          },
+        };
+        const {a, b} = ns.sub;
+        use(a, b);
+        """,
+        """
+        var ns$sub$a = 1;
+        var ns$sub$b = 2;
+        const destructuring$m1146332801$0 = null;
+        const a = null;
+        const b = null;
+        use(ns$sub$a, ns$sub$b);
+        """);
   }
 
   @Test
@@ -2364,50 +3579,75 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
 
     // constructor property does get collapsed
     test(
-        lines(
-            "var ns = {};", //
-            "/** @constructor */ ns.ctor = function() {};",
-            "ns.ctor.foo = 3;",
-            "var foo = ns.ctor.foo;",
-            "ns = ns || {};",
-            "alert(foo);"),
-        lines(
-            "var ns = {};", //
-            "/** @constructor */ var ns$ctor = function() {};",
-            "var ns$ctor$foo = 3;",
-            "var foo = null;",
-            "ns = ns || {};",
-            "alert(ns$ctor$foo);"));
+        """
+        var ns = {};
+        /** @constructor */ ns.ctor = function() {};
+        ns.ctor.foo = 3;
+        var foo = ns.ctor.foo;
+        ns = ns || {};
+        alert(foo);
+        """,
+        """
+        var ns = {};
+        /** @constructor */ var ns$ctor = function() {};
+        var ns$ctor$foo = 3;
+        var foo = null;
+        ns = ns || {};
+        alert(ns$ctor$foo);
+        """);
 
     // NOTE(lharker): this mirrors current code in Closure library
     test(
-        lines(
-            "var goog = {};", //
-            "goog.module = function() {};",
-            "/** @constructor */ goog.module.ModuleManager = function() {};",
-            "goog.module.ModuleManager.getInstance = function() {};",
-            "goog.module = goog.module || {};",
-            "var ModuleManager = goog.module.ModuleManager;",
-            "alert(ModuleManager.getInstance());"),
-        lines(
-            "var goog$module = function() {};", //
-            "/** @constructor */ var goog$module$ModuleManager = function() {};",
-            "var goog$module$ModuleManager$getInstance = function() {};",
-            "goog$module = goog$module || {};",
-            "var ModuleManager = null;",
-            "alert(goog$module$ModuleManager$getInstance());"));
+        """
+        var goog = {};
+        goog.module = function() {};
+        /** @constructor */ goog.module.ModuleManager = function() {};
+        goog.module.ModuleManager.getInstance = function() {};
+        goog.module = goog.module || {};
+        var ModuleManager = goog.module.ModuleManager;
+        alert(ModuleManager.getInstance());
+        """,
+        """
+        var goog$module = function() {};
+        /** @constructor */ var goog$module$ModuleManager = function() {};
+        var goog$module$ModuleManager$getInstance = function() {};
+        goog$module = goog$module || {};
+        var ModuleManager = null;
+        alert(goog$module$ModuleManager$getInstance());
+        """);
   }
 
   @Test
   public void testClassInObjectLiteral() {
     test(
-        "var obj = {foo: class {}};", //
-        "var obj$foo = class {};");
+        """
+        var obj = {
+          foo: class {}
+        };
+        """,
+        """
+        const CLASS_DECL$0 = class {
+        };
+        var obj$foo = CLASS_DECL$0;
+        """);
 
     // TODO(lharker): this is unsafe, obj$foo.foo is undefined now that A$foo is collapsed
     test(
-        "class A {}     A.foo = 3; var obj = {foo: class extends A {}}; use(obj.foo.foo);", //
-        "class A {} var A$foo = 3; var obj$foo =   class extends A{};   use(obj$foo.foo)");
+        """
+        class A {}
+        A.foo = 3;
+        var obj = {foo: class extends A {}};
+        use(obj.foo.foo);
+        """,
+        """
+        class A {
+        }
+        var A$foo = 3;
+        const CLASS_DECL$0 = class extends A {
+        };
+        var obj$foo = CLASS_DECL$0;
+        use(obj$foo.foo);
+        """);
   }
 
   @Test
@@ -2415,61 +3655,69 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
     // toString/valueOf are not collapsed because they are properties implicitly used as part of the
     // JS language
     testSame(
-        lines(
-            "let z = {",
-            "  toString() { return 'toString'; },",
-            "  valueOf() { return 'valueOf'; }",
-            "};",
-            "var zAsString = z + \"\";"));
+        """
+        let z = {
+          toString() { return 'toString'; },
+          valueOf() { return 'valueOf'; }
+        };
+        var zAsString = z + "";
+        """);
   }
 
   @Test
   public void testToStringValueOfNonMethodPropertiesInObjectLiteral() {
     testSame(
-        lines(
-            "let z = {",
-            "  toString: function() { return 'a'; },",
-            "  valueOf: function() { return 3; },",
-            "};"));
+        """
+        let z = {
+          toString: function() { return 'a'; },
+          valueOf: function() { return 3; },
+        };
+        """);
   }
 
   @Test
   public void testToStringValueOfPropertiesInObjectLiteralAssignmentDepth() {
     test(
-        lines(
-            "var a = {}; a.b = {}; a.b.c = {};",
-            "a.b.c.d = {",
-            "  toString() { return 'a'; },",
-            "  valueOf: function() { return 3; },",
-            "};"),
-        lines(
-            "var a$b$c$d = {",
-            "  toString() { return 'a'; },",
-            "  valueOf: function() { return 3; },",
-            "};"));
+        """
+        var a = {}; a.b = {}; a.b.c = {};
+        a.b.c.d = {
+          toString() { return 'a'; },
+          valueOf: function() { return 3; },
+        };
+        """,
+        """
+        var a$b$c$d = {
+          toString() { return 'a'; },
+          valueOf: function() { return 3; },
+        };
+        """);
   }
 
   @Test
   public void testLoopInAliasChainOfTypedefConstructorProperty() {
     test(
-        lines(
-            "/** @constructor */ var Item = function() {};", //
-            "/** @typedef {number} */ Item.Models;",
-            "Item.Models = Item.Models;"),
-        lines(
-            "/** @constructor */ var Item = function() {};", //
-            "Item$Models;",
-            "var Item$Models = Item$Models;"));
+        """
+        /** @constructor */ var Item = function() {};
+        /** @typedef {number} */ Item.Models;
+        Item.Models = Item.Models;
+        """,
+        """
+        /** @constructor */ var Item = function() {};
+        Item$Models;
+        var Item$Models = Item$Models;
+        """);
     test(
-        lines(
-            "/** @constructor */ var Item = function() {};", //
-            "/** @typedef {number} */ Item.Models;",
-            "Item.Models = Item?.Models;"),
-        lines(
-            "/** @constructor */ var Item = function() {};", //
-            "Item$Models;",
-            // TODO(b/148237949): Collapsing breaks this reference.
-            "var Item$Models = Item?.Models;"));
+        """
+        /** @constructor */ var Item = function() {};
+        /** @typedef {number} */ Item.Models;
+        Item.Models = Item?.Models;
+        """,
+        """
+        /** @constructor */ var Item = function() {};
+        Item$Models;
+        // TODO(b/148237949): Collapsing breaks this reference.
+        var Item$Models = Item?.Models;
+        """);
   }
 
   @Test
@@ -2477,17 +3725,18 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
     testSame(
         externs("function use(obj) {}"),
         srcs(
-            lines(
-                "function Foo() {}", //
-                "Foo.Bar = {};",
-                "Foo.Bar.baz = {A: 1, B: 2};",
-                "",
-                "var $jscomp$destructuring$var1 = Foo.Bar;",
-                // This call could potentially have changed the value of Foo.Bar, so don't
-                // collapse Foo.Bar.baz.A/Foo.Bar.baz.B
-                "use(Foo);",
-                "var baz = $jscomp$destructuring$var1.baz;",
-                "use(baz.A);")));
+            """
+            function Foo() {}
+            Foo.Bar = {};
+            Foo.Bar.baz = {A: 1, B: 2};
+
+            var $jscomp$destructuring$var1 = Foo.Bar;
+            // This call could potentially have changed the value of Foo.Bar, so don't
+            // collapse Foo.Bar.baz.A/Foo.Bar.baz.B
+            use(Foo);
+            var baz = $jscomp$destructuring$var1.baz;
+            use(baz.A);
+            """));
   }
 
   @Test
@@ -2495,36 +3744,38 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
     test(
         externs("function use(obj) {}"),
         srcs(
-            lines(
-                "/** @constructor */", //
-                "function Foo() {}",
-                "/** @constructor */",
-                "Foo.Bar = function() {};",
-                "/** @enum {number} */",
-                "Foo.Bar.baz = {A: 1, B: 2};",
-                "",
-                "var $jscomp$destructuring$var1 = Foo.Bar;",
-                "use(Foo);",
-                "var baz = $jscomp$destructuring$var1.baz;",
-                "use(baz.A);")),
+            """
+            /** @constructor */
+            function Foo() {}
+            /** @constructor */
+            Foo.Bar = function() {};
+            /** @enum {number} */
+            Foo.Bar.baz = {A: 1, B: 2};
+
+            var $jscomp$destructuring$var1 = Foo.Bar;
+            use(Foo);
+            var baz = $jscomp$destructuring$var1.baz;
+            use(baz.A);
+            """),
         expected(
-            lines(
-                "/** @constructor */", //
-                "function Foo() {}",
-                "/** @constructor */",
-                "var Foo$Bar = function() {};",
-                "var Foo$Bar$baz$A = 1;",
-                "var Foo$Bar$baz$B = 2;",
-                "",
-                "var $jscomp$destructuring$var1 = null;",
-                // This call could potentially read Foo.Bar, which will now be broken.
-                // AggressiveInlineAliases/CollapseProperties intentionally generate unsafe code
-                // in this case. The main motivation is to collapse long namespaces generated by
-                // goog.provide or goog.module.declareLegacyNamespace()
-                // https://developers.google.com/closure/compiler/docs/limitations#implications-of-object-property-flattening
-                "use(Foo);",
-                "var baz = null;",
-                "use(Foo$Bar$baz$A);")));
+"""
+/** @constructor */
+function Foo() {}
+/** @constructor */
+var Foo$Bar = function() {};
+var Foo$Bar$baz$A = 1;
+var Foo$Bar$baz$B = 2;
+
+var $jscomp$destructuring$var1 = null;
+// This call could potentially read Foo.Bar, which will now be broken.
+// AggressiveInlineAliases/CollapseProperties intentionally generate unsafe code
+// in this case. The main motivation is to collapse long namespaces generated by
+// goog.provide or goog.module.declareLegacyNamespace()
+// https://developers.google.com/closure/compiler/docs/limitations#implications-of-object-property-flattening
+use(Foo);
+var baz = null;
+use(Foo$Bar$baz$A);
+"""));
   }
 
   @Test
@@ -2532,20 +3783,21 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
     testSame(
         externs("function use(obj) {}"),
         srcs(
-            lines(
-                "/** @constructor */", //
-                "function Foo() {}",
-                "/** @constructor @nocollapse */",
-                "Foo.Bar = function() {};",
-                "/** @enum {number} @nocollapse */",
-                "Foo.Bar.baz = {A: 1, B: 2};",
-                "",
-                "var $jscomp$destructuring$var1 = Foo.Bar;",
-                // This call could potentially have changed the value of Foo.Bar, and without
-                // @nocollapse on Foo.Bar and Foo.Bar.baz the compiler would generate unsafe code.
-                "use(Foo);",
-                "var baz = $jscomp$destructuring$var1.baz;",
-                "use(baz.A);")));
+            """
+            /** @constructor */
+            function Foo() {}
+            /** @constructor @nocollapse */
+            Foo.Bar = function() {};
+            /** @enum {number} @nocollapse */
+            Foo.Bar.baz = {A: 1, B: 2};
+
+            var $jscomp$destructuring$var1 = Foo.Bar;
+            // This call could potentially have changed the value of Foo.Bar, and without
+            // @nocollapse on Foo.Bar and Foo.Bar.baz the compiler would generate unsafe code.
+            use(Foo);
+            var baz = $jscomp$destructuring$var1.baz;
+            use(baz.A);
+            """));
   }
 
   @Test
@@ -2565,119 +3817,701 @@ public final class InlineAndCollapsePropertiesTest extends CompilerTestCase {
     test(
         externs("function use(ctor) {}"),
         srcs(
-            lines(
-                "/** @constructor */", //
-                "function Foo() {}",
-                "Foo.prop = 2;",
-                "var ns = {};",
-                "ns.alias = Foo;",
-                "use(ns);",
-                "use(ns.alias.prop);")),
+            """
+            /** @constructor */
+            function Foo() {}
+            Foo.prop = 2;
+            var ns = {};
+            ns.alias = Foo;
+            use(ns);
+            use(ns.alias.prop);
+            """),
         expected(
-            lines(
-                "/** @constructor */", //
-                "function Foo() {}",
-                "var Foo$prop = 2;",
-                "var ns = {};",
-                "ns.alias = Foo;",
-                "use(ns);",
-                "use(ns.alias.prop);")));
+            """
+            /** @constructor */
+            function Foo() {}
+            var Foo$prop = 2;
+            var ns = {};
+            ns.alias = Foo;
+            use(ns);
+            use(ns.alias.prop);
+            """));
   }
 
   @Test
   public void testClassStaticMemberAccessedWithSuper() {
     test(
-        lines(
-            "class Bar {", //
-            "  static double(n) {",
-            "    return n*2",
-            "  }",
-            "}",
-            "class Baz extends Bar {",
-            "  static quadruple(n) {",
-            "    return 2 * super.double(n);",
-            " }",
-            "}"),
-        lines(
-            "var Bar$double = function(n) { return n * 2; }", //
-            "class Bar {}",
-            "var Baz$quadruple = function(n) { return 2 * Bar$double(n); }",
-            "class Baz extends Bar {}"));
+        """
+        class Bar {
+          static double(n) {
+            return n*2
+          }
+        }
+        class Baz extends Bar {
+          static quadruple(n) {
+            return 2 * super.double(n);
+          }
+
+          static val1;
+          static {
+            Baz.val1 = super.double(5);
+          }
+
+          static val2 = super.double(6);
+        }
+        """,
+        """
+        var Bar$double = function(n) {
+          return n * 2;
+        };
+        class Bar {}
+        var Baz$quadruple = function(n$jscomp$1) {
+          return 2 * Bar$double(n$jscomp$1);
+        };
+        var Baz$val1;
+        var Baz$val2;
+        class Baz extends Bar {}
+        {
+          Baz$val1 = Bar$double(5);
+        }
+        Baz$val2 = Bar$double(6);
+        """);
+  }
+
+  @Test
+  public void testClassStaticMemberAccessedWithSuperAndThis() {
+    var src =
+        """
+        class Bar {
+          static get name() {
+            return 'Bar';
+          }
+          /** @nocollapse */
+          static getClassname() {
+            return `${this.name} class`;
+          }
+        }
+        class Baz extends Bar {
+          static get name() {
+            return 'Baz';
+          }
+          static get classname() {
+            return `${super.getClassname()} - is a subclass`;
+          }
+        }
+        """;
+
+    setAssumeStaticInheritanceIsNotUsed(false);
+    testSame(src);
+
+    setAssumeStaticInheritanceIsNotUsed(true);
+    test(
+        src,
+        """
+        class Bar {
+          static get name() {
+            return "Bar";
+          }
+          /** @nocollapse */
+          static getClassname() {
+            return `${this.name} class`;
+          }
+        }
+        class Baz extends Bar {
+          static get name() {
+            return "Baz";
+          }
+          static get classname() {
+            return `${Bar.getClassname()} - is a subclass`;
+          }
+        }
+        """);
+  }
+
+  @Test
+  public void testClassStaticMemberAccessedWithThis() {
+    test(
+        """
+        class Baz extends Bar {
+          static double(n) {
+            return 2 * n;
+          }
+
+          static val1;
+          static {
+            this.val1 = this.double(1);
+          }
+
+          static val2;
+          static {
+            Baz.val2 = Baz.double(2);
+          }
+
+          static val3 = this.double(3);
+
+          static val4 = Baz.double(4);
+        }
+        """,
+        """
+        var Baz$double = function(n) {
+          return 2 * n;
+        };
+        var Baz$val1;
+        var Baz$val2;
+        var Baz$val3;
+        var Baz$val4;
+        class Baz extends Bar {}
+        {
+          Baz$val1 = Baz$double(1);
+        }
+        {
+          Baz$val2 = Baz$double(2);
+        }
+        Baz$val3 = Baz$double(3);
+        Baz$val4 = Baz$double(4);
+        """);
+  }
+
+  @Test
+  public void testClassStaticGetterAccessedWithSuper() {
+    var src =
+        """
+        function JSCompiler_renameProperty(str, strContainerType) {
+          return a;
+        }
+
+        class Parent {
+          static getName() {
+            return 'Parent';
+          }
+          static get greeting() {
+            return 'Hello ' + this.getName();
+          }
+        }
+        class Child extends Parent {
+          static getName() {
+            return 'Child';
+          }
+          static msg = super.greeting;  // 'Hello Child'
+        }
+        """;
+
+    // non-strict
+    test(
+        src,
+        """
+        function JSCompiler_renameProperty(str, strContainerType) {
+          return a;
+        }
+        var Parent$getName = function() {
+          return "Parent";
+        };
+        class Parent {
+          static get greeting() {
+            return "Hello " + this.getName();
+          }
+        }
+        var Child$getName = function() {
+          return "Child";
+        };
+        var Child$msg;
+        class Child extends Parent {}
+        Child$msg = Parent.greeting;
+        """);
+
+    // strict
+    setAssumeStaticInheritanceIsNotUsed(false);
+    test(
+        src,
+        """
+        function JSCompiler_renameProperty(str, strContainerType) {
+          return a;
+        }
+        class Parent {
+          static getName() {
+            return "Parent";
+          }
+          static get greeting() {
+            return "Hello " + this.getName();
+          }
+        }
+        class Child extends Parent {
+          static getName() {
+            return "Child";
+          }
+          static msg;
+          static STATIC_INIT$0() {
+            Child.msg = super.greeting;
+          }
+        }
+        Child.STATIC_INIT$0();
+        """);
+  }
+
+  @Test
+  public void testClassExpressionWithInnerClassName() {
+    test(
+        """
+        const OuterName = class InnerName {
+          static sf1 = 1;
+          static sf2 = InnerName.sf1;
+          static sf3 = this.sf2;
+
+          static {
+            Object.defineProperties(InnerName.prototype, {bar: {value: 1}});
+            InnerName.sf2++;
+            this.sf3++;
+          }
+        };
+        alert(OuterName.sf3);
+        """,
+        """
+        var OuterName$sf1;
+        var OuterName$sf2;
+        var OuterName$sf3;
+        const OuterName = class {};
+        OuterName$sf1 = 1;
+        OuterName$sf2 = OuterName$sf1;
+        OuterName$sf3 = OuterName$sf2;
+        {
+          Object.defineProperties(OuterName.prototype, {bar:{value:1}});
+          OuterName$sf2++;
+          OuterName$sf3++;
+        }
+        alert(OuterName$sf3);
+        """);
   }
 
   @Test
   public void testCommaCallAliasing1() {
     test(
-        lines(
-            "var xid = function(a) {};", //
-            "xid.internal_ = function() {};",
-            "(0,xid)('abc');"),
-        lines(
-            "var xid = function(a) {};", //
-            // The indirect call below does not prevent this property collapse
-            "var xid$internal_ = function() {};",
-            "(0,xid)('abc');"));
+        """
+        var xid = function(a) {};
+        xid.internal_ = function() {};
+        (0,xid)('abc');
+        """,
+        """
+        var xid = function(a) {};
+        // The indirect call below does not prevent this property collapse
+        var xid$internal_ = function() {};
+        (0,xid)('abc');
+        """);
   }
 
   @Test
   public void testCommaCallAliasing2() {
     test(
-        lines(
-            "var xid = function(a) {};", //
-            "xid.internal_ = function() {};",
-            "fn((0,xid)('abc'));"),
-        lines(
-            "var xid = function(a) {};", //
-            // The indirect call below does not prevent this property collapse
-            "var xid$internal_ = function() {};",
-            "fn((0,xid)('abc'));"));
+        """
+        var xid = function(a) {};
+        xid.internal_ = function() {};
+        fn((0,xid)('abc'));
+        """,
+        """
+        var xid = function(a) {};
+        // The indirect call below does not prevent this property collapse
+        var xid$internal_ = function() {};
+        fn((0,xid)('abc'));
+        """);
   }
 
   @Test
   public void testCommaCallAliasing3() {
     test(
-        lines(
-            "var xid = function(a) {};", //
-            "xid.internal_ = function() {};",
-            "throw ((0, xid), 0);"),
-        lines(
-            "var xid = function(a) {};", //
-            // The indirect call below does not prevent this property collapse
-            "var xid$internal_ = function() {};",
-            "throw ((0, xid), 0);"));
+        """
+        var xid = function(a) {};
+        xid.internal_ = function() {};
+        throw ((0, xid), 0);
+        """,
+        """
+        var xid = function(a) {};
+        // The indirect call below does not prevent this property collapse
+        var xid$internal_ = function() {};
+        throw ((0, xid), 0);
+        """);
   }
 
   @Test
   public void testHookNewAliasing1() {
     testSame(
-        lines(
-            "var xid = function(a) {};", //
-            "xid.internal_ = function() {};",
-            // The indirect call prevents this property collapse
-            "var xx = new Thing(x ? xid : abc).method();"));
+        """
+        var xid = function(a) {};
+        xid.internal_ = function() {};
+        // The indirect call prevents this property collapse
+        var xx = new Thing(x ? xid : abc).method();
+        """);
   }
 
   @Test
   public void testHookGetProp1() {
     testSame(
-        lines(
-            "var xid = function(a) {};", //
-            "xid.internal_ = function() {};",
-            // The indirect call prevents this property collapse
-            "var xx = (x ? xid : abc).method();"));
+        """
+        var xid = function(a) {};
+        xid.internal_ = function() {};
+        // The indirect call prevents this property collapse
+        var xx = (x ? xid : abc).method();
+        """);
   }
 
   @Test
   public void testHookGetProp2() {
     test(
-        lines(
-            "var xid = function(a) {};", //
-            "xid.internal_ = function() {};",
-            "var xx = ((x ? xid : abc) - def).toExponential(5);"),
-        lines(
-            "var xid = function(a) {};", //
-            // The indirect call below does not prevent this property collapse
-            "var xid$internal_ = function() {};",
-            "var xx = ((x ? xid : abc) - def).toExponential(5);"));
+        """
+        var xid = function(a) {};
+        xid.internal_ = function() {};
+        var xx = ((x ? xid : abc) - def).toExponential(5);
+        """,
+        """
+        var xid = function(a) {};
+        // The indirect call below does not prevent this property collapse
+        var xid$internal_ = function() {};
+        var xx = ((x ? xid : abc) - def).toExponential(5);
+        """);
+  }
+
+  @Test
+  public void conditionallyLoadedChunk_withExistenceCheckInEarlierChunk() {
+    // Regression test for b/461276859.
+    JSChunk[] chunks =
+        JSChunkGraphBuilder.forChain()
+            // m1, always loaded
+            .addChunk(
+                """
+                const mods = {};
+
+                function f() {
+                  if (mods.fn) {
+                    mods.fn();
+                  }
+                }
+                """)
+            // m2, conditionally loaded after m1
+            .addChunk("mods.fn = () => {};")
+            .build();
+
+    test(
+        srcs(chunks[0], chunks[1]),
+        expected(
+            """
+            var mods$fn;
+            function f() {
+              if (mods$fn) {
+                mods$fn();
+              }
+            }
+            """,
+            "mods$fn = () => {};"));
+  }
+
+  @Test
+  public void conditionallyLoadedChunk_withExistenceCheckInEarlierChunk_constDecl() {
+    // Regression test for b/461276859.
+    JSChunk[] chunks =
+        JSChunkGraphBuilder.forChain()
+            // m1, always loaded
+            .addChunk(
+                """
+                function f() {
+                  if (typeof mods !== 'undefined') {
+                    mods.fn();
+                  }
+                }
+                """)
+            // m2, conditionally loaded after m1
+            .addChunk("const mods = {}; mods.fn = () => {};")
+            .build();
+
+    test(
+        srcs(chunks[0], chunks[1]),
+        expected(
+            // We don't need to add a stub declaration of 'mods' as this pass isn't collapsing it.
+            // The input code is responsible for avoiding unsafe 'mods' cross-chunk accesses.
+            """
+            var mods$fn;
+            function f() {
+              if (typeof mods !== 'undefined') {
+                mods$fn();
+              }
+            }
+            """,
+            """
+            const mods = {};
+            mods$fn = () => {};
+            """));
+  }
+
+  @Test
+  public void conditionallyLoadedChunk_withExistenceCheckInEarlierChunk_usesLeastCommonAncestor() {
+    // Regression test for b/461276859.
+    JSChunk[] chunks =
+        JSChunkGraphBuilder.forTree()
+            // base chunk, always loaded
+            .addChunk(
+                """
+                const mods = {};
+                """)
+            // c1, conditionally loaded. does not depend on c2.
+            .addChunk(
+                """
+                function f() {
+                  if (mods.fn) {
+                    mods.fn();
+                  }
+                }
+                """)
+            // c2, conditionally loaded. depends on c1.
+            .addChunk("mods.fn = () => {};")
+            .build();
+
+    test(
+        srcs(chunks[0], chunks[1], chunks[2]),
+        expected(
+            "var mods$fn;",
+            """
+            function f() {
+              if (mods$fn) {
+                mods$fn();
+              }
+            }
+            """,
+            "mods$fn = () => {};"));
+  }
+
+  @Test
+  public void conditionallyLoadedChunk_withExistenceCheckInEarlierChunk_andChildName() {
+    // Regression test for b/461276859.
+    JSChunk[] chunks =
+        JSChunkGraphBuilder.forChain()
+            // m1, always loaded
+            .addChunk(
+                """
+                const mods = {};
+                function f() {
+                  if (mods.a && mods.a.crossChunk) {
+                    mods.a.crossChunk();
+                  }
+                }
+                """)
+            // m2, conditionally loaded after m1
+            .addChunk(
+                """
+                mods.a = {};
+                mods.a.crossChunk = () => {};
+                mods.a.local = () => {};
+                """)
+            .build();
+
+    test(
+        srcs(chunks[0], chunks[1]),
+        expected(
+            """
+            var mods$a$crossChunk;
+            var mods$a;
+            function f() {
+              if (mods$a && mods$a$crossChunk) {
+                mods$a$crossChunk();
+              }
+            }
+            """,
+            """
+            mods$a = {};
+            mods$a$crossChunk = () => {};
+            // Verify that we wait to declare mods$a$local until this chunk, as it's not referenced
+            // elsewhere.
+            var mods$a$local = () => {};
+            """));
+  }
+
+  @Test
+  public void conditionallyLoadedChunk_unsafeToInlineVar() {
+    JSChunk[] chunks =
+        JSChunkGraphBuilder.forChain()
+            // m1, always loaded
+            .addChunk(
+                """
+                var modFactory;
+                const registry = {};
+                const factories = {};
+                factories.one = function() {};
+
+                function build() {
+                  const mod = modFactory;
+                  if (mod) mod();
+                }
+                """)
+            // m2, conditionally loaded after m1
+            .addChunk("modFactory = factories.one; modFactory();")
+            .build();
+
+    test(
+        srcs(chunks[0], chunks[1]),
+        expected(
+            """
+            var modFactory;
+            var factories$one = function() {};
+
+            function build() {
+              const mod = modFactory;
+              if (mod) mod();
+            }
+            """,
+            "modFactory = factories$one; factories$one();"));
+  }
+
+  @Test
+  public void conditionallyLoadedChunk_unsafeToInlineQname() {
+    JSChunk[] chunks =
+        JSChunkGraphBuilder.forChain()
+            // m1, always loaded
+            .addChunk(
+                """
+                const registry = {};
+                const factories = {};
+                factories.one = function() {};
+
+                function build() {
+                  const mod = registry.mod;
+                  if (mod) mod();
+                }
+                """)
+            // m2, conditionally loaded after m1
+            .addChunk("registry.mod = factories.one; registry.mod();")
+            .build();
+
+    test(
+        srcs(chunks[0], chunks[1]),
+        expected(
+            """
+            var registry$mod;
+            var factories$one = function() {};
+
+            function build() {
+              const mod = null;
+              if (registry$mod) registry$mod();
+            }
+            """,
+            "registry$mod = factories$one; factories$one();"));
+  }
+
+  @Test
+  public void conditionallyLoadedChunk_safeToInline() {
+    JSChunk[] chunks =
+        JSChunkGraphBuilder.forChain()
+            // m1, always loaded
+            .addChunk(
+                """
+                const registry = {};
+                const factories = {};
+                factories.one = function() {};
+                registry.mod = factories.one;
+                """)
+            // m2, conditionally loaded after m1
+            // Even though this chunk is conditionally loaded, it depends on m1, so it's safe to
+            // inline the value of registry.mod because if this chunk executes, m1 must have
+            // executed first.
+            .addChunk(
+                """
+                function build() {
+                  const mod = registry.mod;
+                  if (mod) mod();
+                }
+                """)
+            .build();
+
+    test(
+        srcs(chunks[0], chunks[1]),
+        expected(
+            // m1
+            """
+            var factories$one = function() {};
+            var registry$mod = null;
+            """,
+            // m2
+            """
+            function build() {
+              const mod = null;
+              if (factories$one) factories$one();
+            }
+            """));
+  }
+
+  @Test
+  public void testDestructuringGlobalNameExtractor() {
+    test("var ns = {}; ns.foo = 1; const {foo} = ns;", "var ns$foo = 1; const foo = null;");
+  }
+
+  @Test
+  public void testConcretizeStaticInheritanceForInlining() {
+    test(
+        "class A {} class B extends A {} B.foo = 1;",
+        "class A {} class B extends A {} var B$foo = 1;");
+  }
+
+  @Test
+  public void testStaticFieldOnClassInAliasedNamespace() {
+    // TODO(b/571958823): Inlining alias crashes on static MEMBER_FIELD_DEF.
+    setLanguageOut(LanguageMode.ECMASCRIPT_2022);
+    RuntimeException e =
+        assertThrows(
+            RuntimeException.class,
+            () ->
+                testSame(
+                    """
+                    const b = {};
+                    const a = b;
+                    a.Foo = class {
+                      static bar = 1;
+                    };
+                    alert(b.Foo.bar);
+                    """));
+    Throwable root = Throwables.getRootCause(e);
+    assertThat(root).isInstanceOf(IllegalStateException.class);
+    assertThat(root).hasMessageThat().contains("unexpected node: MEMBER_FIELD_DEF");
+  }
+
+  @Test
+  public void testClassStaticPrivateField_knownBug() {
+    // Expected behavior: `InlineAndCollapseProperties` leaves this code unchanged. `#s` is valid
+    // only inside the body of `C`, so it can't be moved out of `C` into a global variable.
+    String js =
+        """
+        class C {
+          static #s = 1;
+        }
+        """;
+    // TODO(b/236744850): `CollapseProperties` crashes on a static private field.
+    // Current behavior: `CollapseProperties` tries to move `static #s = 1` out of `C` into a
+    //   global variable, and fails a `checkState` because `1` is not a function. `testSame(js)`
+    //   throws the `IllegalStateException`.
+    // Why it's a bug: the compiler crashes on valid code.
+    var ex = assertThrows(IllegalStateException.class, () -> testSame(js));
+    // The failed `checkState` has no message, so check that it is the one in
+    // `checkForReceiverAffectedByCollapse`.
+    assertThat(ex.getStackTrace()[1].getMethodName())
+        .isEqualTo("checkForReceiverAffectedByCollapse");
+  }
+
+  @Test
+  public void testClassStaticPrivateMethod_knownBug() {
+    // Expected behavior: `InlineAndCollapseProperties` leaves this code unchanged. `#m` is valid
+    // only inside the body of `C`, so neither `#m` nor `getM`, which calls `C.#m()`, can be moved
+    // out of `C` into a global variable.
+    String js =
+        """
+        class C {
+          static #m() { return 1; }
+          static getM() { return C.#m(); }
+        }
+        """;
+    // TODO(b/236744850): A static private method, and a static method that calls it, are moved
+    // out of their class.
+    // Current behavior: `CollapseProperties` moves `#m` and `getM` out of `C`, to
+    //   `var C$#m = function() { return 1; };` and `var C$getM = function() { return C$#m(); };`
+    //   before an empty `class C {}`. So `testSame(js)` fails.
+    // Why it's a bug: `C$#m` is not a valid name, so the output is a SyntaxError, and the whole
+    //   script fails to load.
+    var ex = assertThrows(AssertionError.class, () -> testSame(js));
+    assertThat(ex).hasMessageThat().contains("+var C$#m = function() {");
+    assertThat(ex).hasMessageThat().contains("+var C$getM = function() {");
   }
 }
+

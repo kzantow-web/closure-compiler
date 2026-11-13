@@ -16,7 +16,6 @@
 
 package com.google.javascript.jscomp.integration;
 
-import static com.google.javascript.jscomp.base.JSCompStrings.lines;
 
 import com.google.common.collect.ImmutableList;
 import com.google.javascript.jscomp.CompilationLevel;
@@ -35,7 +34,7 @@ import org.junit.runners.JUnit4;
 public final class ES2021IntegrationTest extends IntegrationTestCase {
 
   /** Creates a CompilerOptions object with google coding conventions. */
-  protected CompilerOptions createCompilerOptions() {
+  CompilerOptions createCompilerOptions() {
     CompilerOptions options = new CompilerOptions();
     options.setLanguageIn(LanguageMode.ECMASCRIPT_NEXT);
     options.setDevMode(DevMode.EVERY_PASS);
@@ -72,15 +71,16 @@ public final class ES2021IntegrationTest extends IntegrationTestCase {
 
     testNoWarnings(
         options,
-        lines(
-            "function f() {", //
-            "  let x = '';",
-            "  x ||= '1';",
-            "  x &&= '2';",
-            "  x ??= '3'",
-            "  return x;",
-            "}",
-            "window.f = f;"));
+        """
+        function f() {
+          let x = '';
+          x ||= '1';
+          x &&= '2';
+          x ??= '3'
+          return x;
+        }
+        window.f = f;
+        """);
   }
 
   @Test
@@ -96,19 +96,21 @@ public final class ES2021IntegrationTest extends IntegrationTestCase {
 
     test(
         options,
-        lines(
-            "function f() {", //
-            "  let x = '';",
-            "  x ||= '1';",
-            "  x &&= '2';",
-            "  x ??= '3'",
-            "  return x;",
-            "}",
-            "window.f = f;"),
-        lines(
-            "window.a = function() {", //
-            "  return '2';",
-            "};"));
+        """
+        function f() {
+          let x = '';
+          x ||= '1';
+          x &&= '2';
+          x ??= '3'
+          return x;
+        }
+        window.f = f;
+        """,
+        """
+        window.a = function() {
+          return '2';
+        };
+        """);
   }
 
   @Test
@@ -117,12 +119,14 @@ public final class ES2021IntegrationTest extends IntegrationTestCase {
 
     test(
         options,
-        lines(
-            "let x = 0, y = {}", //
-            "alert(x ??= y)"),
-        lines(
-            "let a = 0, b = {}", //
-            "alert(a ??= b)"));
+        """
+        let x = 0, y = {}
+        alert(x ??= y)
+        """,
+        """
+        let a = 0, b = {}
+        alert(a ??= b)
+        """);
   }
 
   @Test
@@ -131,10 +135,16 @@ public final class ES2021IntegrationTest extends IntegrationTestCase {
 
     test(
         options,
-        lines(
-            "const foo = {}", //
-            "foo.x &&= 'something';"),
-        lines("let a; (a = {}).a && (a.a = 'something')"));
+        """
+        const foo = {}
+        foo.x &&= 'something';
+        alert(foo.x);
+        """,
+        """
+        var a;
+        a &&= 'something';
+        alert(a);
+        """);
   }
 
   @Test
@@ -143,12 +153,14 @@ public final class ES2021IntegrationTest extends IntegrationTestCase {
 
     test(
         options,
-        lines(
-            "const foo = {}, bar = {};", //
-            "alert(foo.x ||= (foo.y &&= (bar.z ??= 'something')));"),
-        lines(
-            "const a = {}, b = {};", //
-            "alert(a.a || (a.a = a.b && (a.b = b.c ?? (b.c = 'something'))))"));
+        """
+        const foo = {}, bar = {};
+        alert(foo.x ||= (foo.y &&= (bar.z ??= 'something')));
+        """,
+        """
+        const a = {}, b = {};
+        alert(a.a || (a.a = a.b && (a.b = b.c ?? (b.c = 'something'))));
+        """);
   }
 
   @Test
@@ -157,12 +169,14 @@ public final class ES2021IntegrationTest extends IntegrationTestCase {
 
     test(
         options,
-        lines(
-            "let x = 0, y = {}", //
-            "alert(x ??= y)"),
-        lines(
-            "let a = 0, b = {}", //
-            "alert(a ?? (a = b));"));
+        """
+        let x = 0, y = {}
+        alert(x ??= y)
+        """,
+        """
+        let a = 0, b = {}
+        alert(a ?? (a = b));
+        """);
   }
 
   @Test
@@ -171,12 +185,14 @@ public final class ES2021IntegrationTest extends IntegrationTestCase {
 
     test(
         options,
-        lines(
-            "let w, x, y, z;", //
-            "alert(w ||= (x &&= (y ??= z)))"),
-        lines(
-            "let a, b, c;", //
-            "alert(a || (a = b && (b = c ?? (c = void 0))));"));
+        """
+        let w, x, y, z;
+        alert(w ||= (x &&= (y ??= z)))
+        """,
+        """
+        let a, b, c;
+        alert(a || (a = b && (b = c ?? (c = void 0))));
+        """);
   }
 
   @Test
@@ -199,12 +215,13 @@ public final class ES2021IntegrationTest extends IntegrationTestCase {
 
     test(
         options,
-        lines(
-            "let n = null;", //
-            "n &&= foo();",
-            "function foo() {",
-            " console.log('should not be executed');",
-            "}"),
+        """
+        let n = null;
+        n &&= foo();
+        function foo() {
+         console.log('should not be executed');
+        }
+        """,
         "");
   }
 
@@ -214,12 +231,14 @@ public final class ES2021IntegrationTest extends IntegrationTestCase {
 
     test(
         options,
-        lines(
-            "const foo = {}, bar = {};", //
-            "alert(foo.x ||= (foo.y &&= (bar.z ??= 'something')));"),
-        lines(
-            "const a = {}, b = {};", //
-            "alert(a.a || (a.a = a.b && (a.b = b.c ?? (b.c = 'something'))))"));
+        """
+        const foo = {}, bar = {};
+        alert(foo.x ||= (foo.y &&= (bar.z ??= 'something')));
+        """,
+        """
+        const a = {}, b = {};
+        alert(a.a || (a.a = a.b && (a.b = b.c ?? (b.c = 'something'))));
+        """);
   }
 
   @Test
@@ -228,21 +247,23 @@ public final class ES2021IntegrationTest extends IntegrationTestCase {
 
     test(
         options,
-        lines(
-            "function assignBaa({ obj }) {", //
-            " obj.baa ||= 'something';",
-            "}",
-            "",
-            "const obj = {};",
-            "assignBaa({ obj });",
-            "alert(obj.baa);"),
-        lines(
-            "const a = {};", //
-            "(function({b}) {",
-            " b.a || (b.a = 'something')",
-            "})",
-            "({b:a});",
-            "alert(a.a)"));
+        """
+        function assignBaa({ obj }) {
+         obj.baa ||= 'something';
+        }
+
+        const obj = {};
+        assignBaa({ obj });
+        alert(obj.baa);
+        """,
+        """
+        const a = {};
+        (function({b}) {
+         b.a || (b.a = 'something')
+        })
+        ({b:a});
+        alert(a.a)
+        """);
   }
 
   @Test
@@ -251,15 +272,17 @@ public final class ES2021IntegrationTest extends IntegrationTestCase {
 
     test(
         options,
-        lines(
-            "const foo = {}, bar = {};", //
-            "let x;",
-            "let y = 1",
-            "let z = 'z';",
-            "alert(foo[x] ||= (foo[y] &&= (bar[z] ??= 'something')));"),
-        lines(
-            "const a = {}, b = {};", //
-            "alert(a[void 0] || (a[void 0] = a[1] && (a[1] = b.z ?? (b.z = 'something'))))"));
+        """
+        const foo = {}, bar = {};
+        let x;
+        let y = 1
+        let z = 'z';
+        alert(foo[x] ||= (foo[y] &&= (bar[z] ??= 'something')));
+        """,
+        """
+        const a = {}, b = {};
+        alert(a[void 0] || (a[void 0] = a[1] && (a[1] = b.z ?? (b.z = 'something'))))
+        """);
   }
 
   @Test
@@ -278,13 +301,17 @@ public final class ES2021IntegrationTest extends IntegrationTestCase {
 
     test(
         options,
-        lines(
-            "const obj = {};", //
-            "obj.baa = true;",
-            "/** @type {?} */ (obj.baa) &&= 5"),
-        lines(
-            "const a = {a:!0}", //
-            "a.a && (a.a = 5)"));
+        """
+        const obj = {};
+        obj.baa = true;
+        /** @type {?} */ (obj.baa) &&= 5;
+        alert(obj.baa);
+        """,
+        """
+        var a = !0;
+        a = 5;
+        alert(a);
+        """);
   }
 
   @Test
@@ -298,9 +325,10 @@ public final class ES2021IntegrationTest extends IntegrationTestCase {
     test(
         options,
         "/** @type {number} */ (foo[x]) ??= 5",
-        lines(
-            "let a, b;", //
-            "(a = foo)[b = x] ?? (a[b] = 5)"));
+        """
+        let a, b;
+        (a = foo)[b = x] ?? (a[b] = 5)
+        """);
   }
 
   @Test
@@ -319,13 +347,17 @@ public final class ES2021IntegrationTest extends IntegrationTestCase {
 
     test(
         options,
-        lines(
-            "const obj = {};", //
-            "obj.baa = true;",
-            "/** @type {?} */ (obj.baa) &&= 5"),
-        lines(
-            "const a = {a:!0}", //
-            "a.a && (a.a = 5)"));
+        """
+        const obj = {};
+        obj.baa = true;
+        /** @type {?} */ (obj.baa) &&= 5
+        alert(obj.baa);
+        """,
+        """
+        var a = !0;
+        a = 5;
+        alert(a);
+        """);
   }
 
   @Test
@@ -339,8 +371,163 @@ public final class ES2021IntegrationTest extends IntegrationTestCase {
     test(
         options,
         "/** @type {number} */ (foo[x]) ??= 5",
-        lines(
-            "let a, b;", //
-            "(a = foo)[b = x] ?? (a[b] = 5)"));
+        """
+        let a, b;
+        (a = foo)[b = x] ?? (a[b] = 5)
+        """);
+  }
+
+  @Test
+  public void logicalAssignmentStaticClassPropertyNotTranspiledOutput() {
+    CompilerOptions options = optimizedWithoutTranspilationCompilerOptions();
+
+    test(
+        options,
+        """
+        class MyClass {}
+        MyClass.myField = 1;
+        alert(() => {
+          return (MyClass.myField ??= {});
+        });
+        alert(MyClass.myField);
+        """,
+        """
+        var a = 1;
+        alert(() => a ??= {});
+        alert(a);
+        """);
+  }
+
+  @Test
+  public void logicalAssignmentStaticClassPropertyTranspiledOutput() {
+    CompilerOptions options = fullyOptimizedCompilerOptions();
+
+    test(
+        options,
+        """
+        class MyClass {}
+        MyClass.myField = 1;
+        alert(() => {
+          return (MyClass.myField ??= {});
+        });
+        alert(MyClass.myField);
+        """,
+        """
+        var a = 1;
+        alert(() => a ?? (a = {}));
+        alert(a);
+        """);
+  }
+
+  @Test
+  public void logicalAssignmentNamespacedStaticClassPropertyTranspiledOutput() {
+    CompilerOptions options = fullyOptimizedCompilerOptions();
+
+    test(
+        options,
+        """
+        const MyNs = {};
+        MyNs.MyClass = class {};
+        MyNs.MyClass.myField = 1;
+        alert(() => {
+          return (MyNs.MyClass.myField ??= {});
+        });
+        alert(MyNs.MyClass.myField);
+        """,
+        """
+        var a = 1;
+        alert(() => a ?? (a = {}));
+        alert(a);
+        """);
+  }
+
+  @Test
+  public void logicalAssignmentStaticClassPropertyGlobalConditionalOutput_knownBug() {
+    CompilerOptions options = fullyOptimizedCompilerOptions();
+
+    // TODO: b/476221453 - `(c = a).a ?? (c.a = 3)` should be collapsed, preventing `MyClass.b`
+    // from being constant-inlined as `2` in `alert(2)`.
+    test(
+        options,
+        """
+        class MyClass {}
+        MyClass.a = 1;
+        MyClass.b = 2;
+        alert(MyClass.a ||= (MyClass.b ??= 3));
+        alert(MyClass.b);
+        """,
+        """
+        class a {}
+        var b = 1;
+        let c;
+        alert(b || (b = (c = a).a ?? (c.a = 3)));
+        alert(2);
+        """);
+  }
+
+  @Test
+  public void logicalAssignmentStaticClassPropertyInLoopNotTranspiledOutput() {
+    CompilerOptions options = optimizedWithoutTranspilationCompilerOptions();
+
+    test(
+        options,
+        """
+        class MyClass {}
+        MyClass.myField = 1;
+        alert(() => {
+          while (MyClass.myField ??= {}) {
+            break;
+          }
+        });
+        alert(MyClass.myField);
+        """,
+        """
+        var a = 1;
+        alert(() => {
+          for (; a ??= {};) {
+            break;
+          }
+        });
+        alert(a);
+        """);
+  }
+
+  @Test
+  public void logicalAssignmentStaticClassPropertyInForDoWhileForOfTranspiledOutput() {
+    CompilerOptions options = fullyOptimizedCompilerOptions();
+
+    test(
+        options,
+        """
+        class MyClass {}
+        MyClass.a = 1;
+        MyClass.b = 2;
+        MyClass.items = [1];
+        alert(() => {
+          for (; MyClass.a ??= 10; MyClass.b ||= 20) {
+            if (window.stop) break;
+          }
+          do {
+            if (window.stop) break;
+          } while (MyClass.a &&= 30);
+          for (const x of (MyClass.items ??= [])) {
+            alert(x);
+          }
+        });
+        alert([MyClass.a, MyClass.b, MyClass.items]);
+        """,
+        """
+        var b = 1, c = 2, d = [1];
+        alert(() => {
+          for (; (b ?? (b = 10)) && !window.a; c || (c = 20)) {}
+          do {
+            if (window.a) break;
+          } while (b && (b = 30));
+          for (let e of d ?? (d = [])) {
+            alert(e);
+          }
+        });
+        alert([b, c, d]);
+        """);
   }
 }

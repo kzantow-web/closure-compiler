@@ -23,7 +23,7 @@ import com.google.javascript.jscomp.ErrorHandler;
 import com.google.javascript.jscomp.JSError;
 import com.google.javascript.jscomp.deps.ModuleLoader.ModuleResolverFactory;
 import com.google.javascript.jscomp.deps.ModuleLoader.PathEscaper;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Resolution algorithm for Browsers.
@@ -43,8 +43,7 @@ public class BrowserModuleResolver extends ModuleResolver {
   }
 
   @Override
-  @Nullable
-  public String resolveJsModule(
+  public @Nullable String resolveJsModule(
       String scriptAddress, String moduleAddress, String sourcename, int lineno, int colno) {
 
     if (ModuleLoader.isAmbiguousIdentifier(moduleAddress)) {
@@ -67,5 +66,12 @@ public class BrowserModuleResolver extends ModuleResolver {
           JSError.make(sourcename, lineno, colno, ModuleLoader.LOAD_WARNING, moduleAddress));
     }
     return loadAddress;
+  }
+
+  @Override
+  public @Nullable String resolveJsModuleSilently(String scriptAddress, String moduleAddress) {
+    return ModuleLoader.isAmbiguousIdentifier(moduleAddress)
+        ? null
+        : locate(scriptAddress, moduleAddress);
   }
 }

@@ -27,6 +27,9 @@
  * @externs
  */
 
+/** @typedef {number} */
+var DOMHighResTimeStamp;
+
 /** @constructor */
 function PerformanceTiming() {}
 /** @type {number} */ PerformanceTiming.prototype.navigationStart;
@@ -73,6 +76,7 @@ function PerformanceResourceTiming() {}
 /** @type {number} */ PerformanceResourceTiming.prototype.connectEnd;
 /** @type {number} */
 PerformanceResourceTiming.prototype.secureConnectionStart;
+/** @type {number} */ PerformanceResourceTiming.prototype.responseStatus;
 /** @type {number} */ PerformanceResourceTiming.prototype.requestStart;
 /** @type {number} */ PerformanceResourceTiming.prototype.responseStart;
 /** @type {number} */ PerformanceResourceTiming.prototype.responseEnd;
@@ -87,6 +91,7 @@ PerformanceResourceTiming.prototype.decodedBodySize;
 PerformanceResourceTiming.prototype.workerStart;
 /** @type {string} */ PerformanceResourceTiming.prototype.nextHopProtocol;
 /** @type {!Array<!PerformanceServerTiming>} */ PerformanceResourceTiming.prototype.serverTiming;
+/** @type {string} */ PerformanceResourceTiming.prototype.deliveryType;
 
 /**
  * https://w3c.github.io/server-timing/#dom-performanceservertiming
@@ -102,7 +107,7 @@ function PerformanceServerTiming() {}
  * See https://w3c.github.io/navigation-timing/#sec-performance-navigation-types
  * @typedef {string}
  */
-var NavigationType;
+var NavigationTimingType;
 
 /**
  * https://w3c.github.io/navigation-timing/#sec-PerformanceNavigationTiming
@@ -120,8 +125,10 @@ function PerformanceNavigationTiming() {}
 /** @type {number} */ PerformanceNavigationTiming.prototype.domComplete;
 /** @type {number} */ PerformanceNavigationTiming.prototype.loadEventStart;
 /** @type {number} */ PerformanceNavigationTiming.prototype.loadEventEnd;
-/** @type {NavigationType} */ PerformanceNavigationTiming.prototype.type;
+/** @type {NavigationTimingType} */ PerformanceNavigationTiming.prototype.type;
 /** @type {number} */ PerformanceNavigationTiming.prototype.redirectCount;
+// https://wicg.github.io/nav-speculation/prerendering.html#performance-navigation-timing-extension
+/** @type {number} */ PerformanceNavigationTiming.prototype.activationStart;
 
 /**
  * https://w3c.github.io/paint-timing/#sec-PerformancePaintTiming
@@ -129,6 +136,19 @@ function PerformanceNavigationTiming() {}
  * @extends {PerformanceEntry}
  */
 function PerformancePaintTiming() {}
+// from PaintTimingMixin
+/** @type {!DOMHighResTimeStamp} */ PerformancePaintTiming.prototype.paintTime;
+/** @type {!DOMHighResTimeStamp|null} */ PerformancePaintTiming.prototype
+    .presentationTime;
+
+/**
+ * Differing from TS .d.ts definition (which has 0 parameters) to match
+ * Object.prototype.toJSON(opt_key) in es5.js.
+ * @override
+ * @param {*=} opt_key
+ * @return {*}
+ */
+PerformancePaintTiming.prototype.toJSON = function(opt_key) {};
 
 /** @constructor */
 function PerformanceNavigation() {}
@@ -195,6 +215,10 @@ function LargestContentfulPaint() {}
 /** @type {string} */ LargestContentfulPaint.prototype.id;
 /** @type {string} */ LargestContentfulPaint.prototype.url;
 /** @type {?Element} */ LargestContentfulPaint.prototype.element;
+// from PaintTimingMixin
+/** @type {!DOMHighResTimeStamp} */ LargestContentfulPaint.prototype.paintTime;
+/** @type {!DOMHighResTimeStamp|null} */ LargestContentfulPaint.prototype
+    .presentationTime;
 
 /**
  * https://wicg.github.io/event-timing/#sec-performance-event-timing
@@ -206,6 +230,17 @@ function PerformanceEventTiming() {}
 /** @type {number} */ PerformanceEventTiming.prototype.processingEnd;
 /** @type {boolean} */ PerformanceEventTiming.prototype.cancelable;
 /** @type {?Node} */ PerformanceEventTiming.prototype.target;
+/** @type {number} */ PerformanceEventTiming.prototype.interactionId;
+
+/**
+ * Differing from TS .d.ts definition (which has 0 parameters) to match
+ * Object.prototype.toJSON(opt_key) in es5.js.
+ * @override
+ * @param {*=} opt_key
+ * @return {*}
+ */
+PerformanceEventTiming.prototype.toJSON = function(opt_key) {};
+
 
 /**
  * @record
@@ -226,8 +261,18 @@ function PerformanceMeasureOptions() {}
 /** @type {number|undefined} */ PerformanceMeasureOptions.prototype.duration;
 /** @type {string|number|undefined} */ PerformanceMeasureOptions.prototype.end;
 
+/**
+ * @see https://developer.mozilla.org/docs/Web/API/EventCounts
+ * @interface
+ * @extends {ReadonlyMap<string, number>}
+ */
+function EventCounts() {}
+
 /** @constructor */
 function Performance() {}
+
+/** @const {!EventCounts} */
+Performance.prototype.eventCounts;
 
 /** @type {PerformanceTiming} */
 Performance.prototype.timing;
@@ -238,6 +283,8 @@ Performance.prototype.navigation;
 /** @type {number} */
 Performance.prototype.timeOrigin;
 
+/** @type {number} */
+Performance.prototype.interactionCount;
 
 /**
  * Clears the buffer used to store the current list of

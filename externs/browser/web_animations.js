@@ -32,9 +32,11 @@
 Element.prototype.animate = function(frames, options) {};
 
 /**
+ * @param {GetAnimationsOptions=} options
  * @return {!Array<!Animation>}
+ * @see https://www.w3.org/TR/web-animations/#dom-animatable-getanimations
  */
-Element.prototype.getAnimations = function() {};
+Element.prototype.getAnimations = function(options) {};
 
 /**
  * @return {!Array<!Animation>}
@@ -47,6 +49,32 @@ Document.prototype.getAnimations = function() {};
  * @see https://www.w3.org/TR/web-animations/#dom-documentorshadowroot-getanimations
  */
 ShadowRoot.prototype.getAnimations = function() {};
+
+/**
+ * @record
+ * @extends {EventInit}
+ */
+function AnimationPlaybackEventInit() {};
+
+/** @type {?(CSSNumericValue|number)} */
+AnimationPlaybackEventInit.prototype.currentTime;
+
+/** @type {?CSSNumericValue|number} */
+AnimationPlaybackEventInit.prototype.timelineTime;
+
+/**
+ * @constructor
+ * @param {string} type
+ * @param {!AnimationPlaybackEventInit=} eventInitDict
+ * @extends {Event}
+ */
+function AnimationPlaybackEvent(type, eventInitDict) {};
+
+/** @type {?CSSNumericValue|number} */
+AnimationPlaybackEvent.prototype.currentTime;
+
+/** @type {?CSSNumericValue|number} */
+AnimationPlaybackEvent.prototype.timelineTime;
 
 /**
  * @constructor
@@ -73,6 +101,11 @@ Animation.prototype.cancel = function() {};
 /**
  * @return {undefined}
  */
+Animation.prototype.commitStyles = function() {};
+
+/**
+ * @return {undefined}
+ */
 Animation.prototype.finish = function() {};
 
 /**
@@ -88,7 +121,18 @@ Animation.prototype.play = function() {};
 /**
  * @return {undefined}
  */
+Animation.prototype.persist = function() {};
+
+/**
+ * @return {undefined}
+ */
 Animation.prototype.reverse = function() {};
+
+/**
+ * @param {number} playbackRate
+ * @return {undefined}
+ */
+Animation.prototype.updatePlaybackRate = function(playbackRate) {};
 
 /** @type {number} */
 Animation.prototype.currentTime;
@@ -108,6 +152,15 @@ Animation.prototype.oncancel;
 /** @type {?function(!Event)} */
 Animation.prototype.onfinish;
 
+/** @type {?function(!Event)} */
+Animation.prototype.onremove;
+
+/** @type {number|null} */
+Animation.prototype.overallProgress;
+
+/** @type {boolean} */
+Animation.prototype.pending;
+
 /** @type {number} */
 Animation.prototype.playbackRate;
 
@@ -116,6 +169,9 @@ Animation.prototype.playState;
 
 /** @type {!Promise<void>} */
 Animation.prototype.ready;
+
+/** @type {string} */
+Animation.prototype.replaceState;
 
 /** @type {number} */
 Animation.prototype.startTime;
@@ -130,11 +186,21 @@ Animation.prototype.timeline;
 var AnimationEffect = function() {};
 
 /**
+ * [MDN Reference](https://developer.mozilla.org/en-US/docs/Web/API/AnimationEffect/getTiming)
+ * @return {!AnimationEffectTimingProperties}
+ */
+AnimationEffect.prototype.getTiming = function() {};
+
+/**
+ * [MDN Reference](https://developer.mozilla.org/en-US/docs/Web/API/AnimationEffect/getComputedTiming)
  * @return {!ComputedTimingProperties}
  */
 AnimationEffect.prototype.getComputedTiming = function() {};
 
-/** @param {AnimationEffectTimingProperties=} timing */
+/**
+ * [MDN Reference](https://developer.mozilla.org/en-US/docs/Web/API/AnimationEffect/updateTiming)
+ * @param {AnimationEffectTimingProperties=} timing
+ */
 AnimationEffect.prototype.updateTiming = function(timing) {};
 
 /** @type {!AnimationEffectTiming} */
@@ -150,7 +216,13 @@ AnimationEffect.prototype.timing;
 var KeyframeEffectReadOnly = function(target, frames, options) {};
 
 /** @override */
+KeyframeEffectReadOnly.prototype.getTiming = function() {};
+
+/** @override */
 KeyframeEffectReadOnly.prototype.getComputedTiming = function() {};
+
+/** @override */
+KeyframeEffectReadOnly.prototype.updateTiming = function(timing) {};
 
 /** @override */
 KeyframeEffectReadOnly.prototype.timing;
@@ -165,6 +237,58 @@ KeyframeEffectReadOnly.prototype.timing;
  */
 var KeyframeEffect = function(target, frames, options) {};
 
+/**
+ * [MDN Reference](https://developer.mozilla.org/docs/Web/API/KeyframeEffect/getKeyframes)
+ * @public
+ * @return {!Array<!ComputedKeyframe>}
+ */
+KeyframeEffect.prototype.getKeyframes = function() {};
+
+/**
+ * [MDN Reference](https://developer.mozilla.org/docs/Web/API/KeyframeEffect/setKeyframes)
+ * @public
+ * @param {(null|!PropertyIndexedKeyframes|!Array<!Keyframe>)} keyframes
+ * @return {void}
+ */
+KeyframeEffect.prototype.setKeyframes = function(keyframes) {};
+
+/**
+ * @record
+ */
+var ComputedKeyframe = function() {};
+
+/** @type {string} */
+ComputedKeyframe.prototype.composite;
+/** @type {number} */
+ComputedKeyframe.prototype.computedOffset;
+/** @type {string} */
+ComputedKeyframe.prototype.easing;
+/** @type {(null|number)} */
+ComputedKeyframe.prototype.offset;
+
+/**
+ * @record
+ */
+var PropertyIndexedKeyframes = function() {};
+
+/** @type {(undefined|string|!Array<string>)} */
+PropertyIndexedKeyframes.prototype.composite;
+/** @type {(undefined|string|!Array<string>)} */
+PropertyIndexedKeyframes.prototype.easing;
+/** @type {(undefined|number|!Array<(null|number)>)} */
+PropertyIndexedKeyframes.prototype.offset;
+
+/**
+ * @record
+ */
+var Keyframe = function() {};
+
+/** @type {(undefined|string)} */
+Keyframe.prototype.composite;
+/** @type {(undefined|string)} */
+Keyframe.prototype.easing;
+/** @type {(undefined|null|number)} */
+Keyframe.prototype.offset;
 
 /**
  * @record
@@ -221,6 +345,19 @@ var KeyframeAnimationOptions = function() {};
 
 /** @type {string|undefined} */
 KeyframeAnimationOptions.prototype.id;
+
+/**
+ * @type {!TimelineRangeOffset|!CSSNumericValue|!CSSKeywordValue|string|undefined}
+ */
+KeyframeAnimationOptions.prototype.rangeEnd;
+
+/**
+ * @type {!TimelineRangeOffset|!CSSNumericValue|!CSSKeywordValue|string|undefined}
+ */
+KeyframeAnimationOptions.prototype.rangeStart;
+
+/** @type {!AnimationTimeline|null|undefined} */
+KeyframeAnimationOptions.prototype.timeline;
 
 
 /**
@@ -290,15 +427,121 @@ var AnimationTimeline = function() {};
 /** @type {?number} */
 AnimationTimeline.prototype.currentTime;
 
+/** @type {?number} */
+AnimationTimeline.prototype.duration;
+
+/**
+ * @record
+ * @see https://drafts.csswg.org/scroll-animations-1/#dictdef-scrolltimelineoptions
+ */
+function ScrollTimelineOptions() {}
+/** @type {!ScrollAxis|undefined} */
+ScrollTimelineOptions.prototype.axis;
+/** @type {!Element|null|undefined} */
+ScrollTimelineOptions.prototype.source;
 
 /**
  * @constructor
  * @implements {AnimationTimeline}
+ * @param {!ScrollTimelineOptions=} opt_options
+ * @see https://developer.mozilla.org/en-US/docs/Web/API/ScrollTimeline
  */
-var DocumentTimeline = function() {};
+function ScrollTimeline(opt_options) {}
+
+/** @type {!ScrollAxis} */
+ScrollTimeline.prototype.axis;
+
+/** @type {!Element|null} */
+ScrollTimeline.prototype.source;
+
+// from AnimationTimeline
+
+/** @override */
+ScrollTimeline.prototype.currentTime;
+
+/** @override */
+ScrollTimeline.prototype.duration;
+
+/**
+ * @record
+ * @see https://drafts.csswg.org/web-animations-2/#dictdef-timelinerangeoffset
+ */
+function TimelineRangeOffset() {}
+
+/** @type {!CSSNumericValue|undefined} */
+TimelineRangeOffset.prototype.offset;
+
+/** @type {string|null|undefined} */
+TimelineRangeOffset.prototype.rangeName;
+
+/**
+ * @record
+ * @see https://drafts.csswg.org/scroll-animations-1/#dictdef-viewtimelineoptions
+ */
+function ViewTimelineOptions() {}
+
+/** @type {!ScrollAxis|undefined} */
+ViewTimelineOptions.prototype.axis;
+
+/** @type {(string|!Array<(!CSSNumericValue|!CSSKeywordValue)>)|undefined} */
+ViewTimelineOptions.prototype.inset;
+
+/** @type {!Element|undefined} */
+ViewTimelineOptions.prototype.subject;
+
+/**
+ * @constructor
+ * @extends {ScrollTimeline}
+ * @param {!ViewTimelineOptions=} opt_options
+ * @see https://developer.mozilla.org/en-US/docs/Web/API/ViewTimeline
+ */
+function ViewTimeline(opt_options) {}
+
+/** @type {!CSSNumericValue} */
+ViewTimeline.prototype.endOffset;
+
+/** @type {!CSSNumericValue} */
+ViewTimeline.prototype.startOffset;
+
+/** @type {!Element} */
+ViewTimeline.prototype.subject;
+
+// from AnimationTimeline
+
+/** @override */
+ViewTimeline.prototype.currentTime;
+
+/** @override */
+ViewTimeline.prototype.duration;
+
+/**
+ * @typedef {string}
+ * Valid values: 'block', 'inline', 'x', 'y'.
+ * @see https://drafts.csswg.org/scroll-animations-1/#enumdef-scrollaxis
+ */
+var ScrollAxis;
+
+/**
+ * @typedef {{
+ *   originTime: (number|undefined)
+ * }}
+ */
+var DocumentTimelineOptions;
+
+/**
+ * @constructor
+ * @param {!DocumentTimelineOptions=} options
+ * @implements {AnimationTimeline}
+ */
+var DocumentTimeline = function(options) {};
+
+// from AnimationTimeline
 
 /** @override */
 DocumentTimeline.prototype.currentTime;
+
+/** @override */
+DocumentTimeline.prototype.duration;
 
 
 /** @type {!DocumentTimeline} */
@@ -346,7 +589,13 @@ DocumentTimeline.prototype.getAnimations = function() {};
 var SequenceEffect = function(children, timing) {};
 
 /** @override */
+SequenceEffect.prototype.getTiming = function() {};
+
+/** @override */
 SequenceEffect.prototype.getComputedTiming = function() {};
+
+/** @override */
+SequenceEffect.prototype.updateTiming = function(timing) {};
 
 /** @override */
 SequenceEffect.prototype.timing;
@@ -364,10 +613,26 @@ SequenceEffect.prototype.children;
 var GroupEffect = function(children, timing) {};
 
 /** @override */
+GroupEffect.prototype.getTiming = function() {};
+
+/** @override */
 GroupEffect.prototype.getComputedTiming = function() {};
+
+/** @override */
+GroupEffect.prototype.updateTiming = function(timing) {};
 
 /** @override */
 GroupEffect.prototype.timing;
 
 /** @type {!Array<!AnimationEffect>} */
 GroupEffect.prototype.children;
+
+
+/**
+ * @record
+ * @see https://www.w3.org/TR/web-animations/#dom-animatable-getanimations
+ */
+var GetAnimationsOptions = function() {};
+
+/** @type {(undefined|boolean)} */
+GetAnimationsOptions.prototype.subtree;

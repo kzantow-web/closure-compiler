@@ -24,10 +24,9 @@ import static com.google.javascript.jscomp.serialization.TypePointers.isAxiomati
 import static com.google.javascript.jscomp.serialization.TypePointers.trimOffset;
 import static java.util.Comparator.naturalOrder;
 
-import com.google.common.annotations.GwtIncompatible;
 import com.google.common.collect.ComparisonChain;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableSortedSet;
 import com.google.gson.Gson;
 import com.google.gson.stream.JsonWriter;
 import com.google.javascript.jscomp.AbstractCompiler;
@@ -35,6 +34,7 @@ import com.google.javascript.jscomp.InvalidatingTypes;
 import com.google.javascript.jscomp.NodeTraversal;
 import com.google.javascript.jscomp.NodeUtil;
 import com.google.javascript.jscomp.TypeMismatch;
+import com.google.javascript.jscomp.base.LinkedIdentityHashMap;
 import com.google.javascript.jscomp.colors.ColorId;
 import com.google.javascript.jscomp.diagnostic.LogFile;
 import com.google.javascript.rhino.Node;
@@ -43,23 +43,23 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Grab an integer TypePool pointer for each JSType on the AST and log information about the
  * pointers.
  */
-@GwtIncompatible
 final class SerializeTypesToPointers {
 
   private final AbstractCompiler compiler;
   private final JSTypeReconserializer jstypeReconserializer;
   private final LinkedHashSet<String> propertiesReferencedInAst;
-  private final IdentityHashMap<JSType, Integer> typePointersByJstype = new IdentityHashMap<>();
+  private final LinkedIdentityHashMap<JSType, Integer> typePointersByJstype =
+      new LinkedIdentityHashMap<>();
   private static final Gson GSON = new Gson();
-  private TypePool typePool = null;
+  private @Nullable TypePool typePool = null;
 
   private SerializeTypesToPointers(
       AbstractCompiler compiler,
@@ -99,8 +99,8 @@ final class SerializeTypesToPointers {
     // these types are only used when debug logging is enabled, but we always serialize them as not
     // to have a different TypePool with and without debug logging.
     for (TypeMismatch mismatch : compiler.getTypeMismatches()) {
-      jstypeReconserializer.serializeType(mismatch.getFound());
-      jstypeReconserializer.serializeType(mismatch.getRequired());
+      jstypeReconserializer.serializeType(mismatch.found());
+      jstypeReconserializer.serializeType(mismatch.required());
     }
 
     this.typePool = jstypeReconserializer.generateTypePool();
@@ -124,20 +124,19 @@ final class SerializeTypesToPointers {
     @Override
     public void visit(NodeTraversal t, Node n, Node parent) {
       switch (n.getToken()) {
-        case GETPROP: // "name" from (someObject.name)
-        case OPTCHAIN_GETPROP: // "name" from (someObject?.name)
-          propertiesReferencedInAst.add(n.getString());
-          break;
-        case STRING_KEY: // "name" from obj = {name: 0}
-        case MEMBER_FUNCTION_DEF: // "name" from class C { name() {} }
-        case MEMBER_FIELD_DEF: // "name" from class C { name = 0; }
-        case GETTER_DEF: // "name" from class C { get name() {} }
-        case SETTER_DEF: // "name" from class C { set name(n) {} }
-          if (!n.isQuotedString()) {
+        case GETPROP, // "name" from (someObject.name)
+            OPTCHAIN_GETPROP -> // "name" from (someObject?.name)
+            propertiesReferencedInAst.add(n.getString());
+        case STRING_KEY, // "name" from obj = {name: 0}
+            MEMBER_FUNCTION_DEF, // "name" from class C { name() {} }
+            MEMBER_FIELD_DEF, // "name" from class C { name = 0; }
+            GETTER_DEF, // "name" from class C { get name() {} }
+            SETTER_DEF -> { // "name" from class C { set name(n) {} }
+          if (!n.isQuotedStringKey()) {
             propertiesReferencedInAst.add(n.getString());
           }
-          break;
-        default:
+        }
+        default -> {}
       }
     }
   }
@@ -160,10 +159,17 @@ final class SerializeTypesToPointers {
       if (type != null) {
         typePointersByJstype.computeIfAbsent(type, jstypeReconserializer::serializeType);
       }
+      Node shadow = n.getClosureUnawareShadow();
+      if (shadow != null) {
+        // Shadow roots are structured as
+        // ROOT -> SCRIPT -> EXPR_RESULT -> FUNCTION
+        NodeTraversal.traverse(
+            compiler, shadow.getFirstFirstChild().getFirstChild(), new TypeSearchCallback());
+      }
     }
   }
 
-  IdentityHashMap<JSType, Integer> getTypePointersByJstype() {
+  LinkedIdentityHashMap<JSType, Integer> getTypePointersByJstype() {
     return typePointersByJstype;
   }
 
@@ -175,11 +181,13 @@ final class SerializeTypesToPointers {
     // Log information about how the JSTypes correspond to the colors. This may be useful later on
     // in optimizations.
     try (LogFile log = this.compiler.createOrReopenLog(this.getClass(), "object_uuids.log")) {
-      ImmutableMap<String, Collection<JSType>> allSerializedTypes =
-          serializer.getColorIdToJSTypeMapForDebugging().asMap();
-      // Stream json writing here rather than building up the entire json representation at once
-      // because the latter used to cause OOMs.
-      log.logJson(new StreamObjectUuidsJson(allSerializedTypes));
+      if (log.isLogging()) {
+        ImmutableMap<String, Collection<JSType>> allSerializedTypes =
+            serializer.getColorIdToJSTypeMapForDebugging().asMap();
+        // Stream json writing here rather than building up the entire json representation at once
+        // because the latter used to cause OOMs.
+        log.logJson(new StreamObjectUuidsJson(allSerializedTypes));
+      }
     }
 
     // Log type mismatches, which contribute to the definition of an "invalidating" type
@@ -195,7 +203,7 @@ final class SerializeTypesToPointers {
    * <p>Not part of the main API for this callback. For use when serializing additional types for
    * debug logging.
    */
-  private ImmutableSet<TypeMismatchJson> logTypeMismatches(
+  private ImmutableSortedSet<TypeMismatchJson> logTypeMismatches(
       Iterable<TypeMismatch> typeMismatches, JSTypeReconserializer serializer, TypePool typePool) {
     return stream(typeMismatches)
         .map(mismatch -> TypeMismatchJson.create(mismatch, serializer, typePool))
@@ -241,15 +249,15 @@ final class SerializeTypesToPointers {
     final String requiredColorId;
 
     TypeMismatchJson(TypeMismatch x, ColorId found, ColorId required) {
-      this.location = x.getLocation().getLocation();
+      this.location = x.location().getLocation();
       this.foundColorId = found.toString();
       this.requiredColorId = required.toString();
     }
 
     static TypeMismatchJson create(
         TypeMismatch x, JSTypeReconserializer serializer, TypePool typePool) {
-      int foundPointer = serializer.serializeType(x.getFound());
-      int requiredPointer = serializer.serializeType(x.getRequired());
+      int foundPointer = serializer.serializeType(x.found());
+      int requiredPointer = serializer.serializeType(x.required());
 
       return new TypeMismatchJson(
           x, typePointerToId(foundPointer, typePool), typePointerToId(requiredPointer, typePool));
@@ -269,15 +277,16 @@ final class SerializeTypesToPointers {
 
       TypeProto typeProto = typePool.getTypeList().get(trimOffset(poolOffset));
       switch (typeProto.getKindCase()) {
-        case UNION:
+        case UNION -> {
           return ColorId.union(
               typeProto.getUnion().getUnionMemberList().stream()
                   .map(pointer -> typePointerToId(pointer, typePool))
                   .collect(toImmutableSet()));
-        case OBJECT:
+        }
+        case OBJECT -> {
           return ColorId.fromBytes(typeProto.getObject().getUuid());
-        case KIND_NOT_SET:
-          break;
+        }
+        case KIND_NOT_SET -> {}
       }
       throw new AssertionError("Unrecognized TypeProto " + typeProto);
     }

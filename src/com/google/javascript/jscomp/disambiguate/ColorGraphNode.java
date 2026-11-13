@@ -23,6 +23,7 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.MoreObjects;
 import com.google.errorprone.annotations.DoNotCall;
 import com.google.javascript.jscomp.colors.Color;
+import com.google.javascript.jscomp.colors.StandardColors;
 import java.util.BitSet;
 import java.util.LinkedHashMap;
 
@@ -64,7 +65,6 @@ final class ColorGraphNode {
   }
 
   static ColorGraphNode create(Color single, int index) {
-    checkNotNull(single);
     checkArgument(index >= 0);
     return new ColorGraphNode(single, index);
   }
@@ -72,10 +72,17 @@ final class ColorGraphNode {
   @VisibleForTesting
   static ColorGraphNode createForTesting(int index) {
     checkArgument(index < 0); // All test nodes have negative indexs to differentiate them.
-    return new ColorGraphNode(null, index);
+    return new ColorGraphNode(StandardColors.UNKNOWN, index);
+  }
+
+  @VisibleForTesting
+  static ColorGraphNode createForTesting(Color single, int index) {
+    checkArgument(index < 0); // All test nodes have negative indexs to differentiate them.
+    return new ColorGraphNode(single, index);
   }
 
   private ColorGraphNode(Color single, int index) {
+    checkNotNull(single);
     this.index = index;
     this.color = single;
   }
@@ -105,9 +112,15 @@ final class ColorGraphNode {
   @Override
   @DoNotCall // For debugging only.
   public String toString() {
+    // Just report a few important properties of color instead of the whole thing.
+    // The string generated here will become the label of the `.dot` graph node
+    // if this graph is logged for debugging. Including the entire color, recursively
+    // includes all the colors it extends also, making the labels unmanageably long
+    // to display and repeating information available from other nodes.
     return MoreObjects.toStringHelper(this)
         .add("index", this.index)
-        .add("color", this.color)
+        .add("color.id", this.color.getId())
+        .add("color.ownProperties", this.color.getOwnProperties())
         .toString();
   }
 }

@@ -20,6 +20,7 @@ import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.JSTypeExpression;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Checks for certain uses of the {@code this} keyword that are considered unsafe because they are
@@ -29,6 +30,7 @@ import com.google.javascript.rhino.Token;
  * property access, and not inside one of the following:
  *
  * <ol>
+ *   <li>a class static initialization block
  *   <li>a prototype method
  *   <li>a function annotated with {@code @constructor}
  *   <li>a function annotated with {@code @this}.
@@ -57,26 +59,24 @@ import com.google.javascript.rhino.Token;
  */
 final class CheckGlobalThis implements NodeTraversal.Callback {
 
-  static final DiagnosticType GLOBAL_THIS = DiagnosticType.warning(
-      "JSC_USED_GLOBAL_THIS",
-      "dangerous use of the global 'this' object");
+  static final DiagnosticType GLOBAL_THIS =
+      DiagnosticType.warning("JSC_USED_GLOBAL_THIS", "dangerous use of the global 'this' object");
 
   private final AbstractCompiler compiler;
 
   /**
-   * If {@code assignLhsChild != null}, then the node being traversed is
-   * a descendant of the first child of an ASSIGN node. assignLhsChild's
-   * parent is this ASSIGN node.
+   * If {@code assignLhsChild != null}, then the node being traversed is a descendant of the first
+   * child of an ASSIGN node. assignLhsChild's parent is this ASSIGN node.
    */
-  private Node assignLhsChild = null;
+  private @Nullable Node assignLhsChild = null;
 
   CheckGlobalThis(AbstractCompiler compiler) {
     this.compiler = compiler;
   }
 
   /**
-   * Since this pass reports errors only when a global {@code this} keyword
-   * is encountered, there is no reason to traverse non global contexts.
+   * Since this pass reports errors only when a global {@code this} keyword is encountered, there is
+   * no reason to traverse non global contexts.
    */
   @Override
   public boolean shouldTraverse(NodeTraversal t, Node n, Node parent) {
@@ -93,11 +93,11 @@ final class CheckGlobalThis implements NodeTraversal.Callback {
       // Don't traverse functions that are constructors or have the @this
       // or @override annotation.
       JSDocInfo jsDoc = NodeUtil.getBestJSDocInfo(n);
-      if (jsDoc != null &&
-          (jsDoc.isConstructor() ||
-           jsDoc.isInterface() ||
-           jsDoc.hasThisType() ||
-           jsDoc.isOverride())) {
+      if (jsDoc != null
+          && (jsDoc.isConstructor()
+              || jsDoc.isInterface()
+              || jsDoc.hasThisType()
+              || jsDoc.isOverride())) {
         return false;
       }
 
@@ -125,13 +125,12 @@ final class CheckGlobalThis implements NodeTraversal.Callback {
       // a.x = function() {}; // or
       // var a = {x: function() {}};
       Token pType = parent.getToken();
-      if (!(pType == Token.BLOCK ||
-            pType == Token.SCRIPT ||
-            pType == Token.NAME ||
-            pType == Token.ASSIGN ||
-
-            // object literal keys
-            pType == Token.STRING_KEY)) {
+      if (!(pType == Token.BLOCK
+          || pType == Token.SCRIPT
+          || pType == Token.NAME
+          || pType == Token.ASSIGN
+          // object literal keys
+          || pType == Token.STRING_KEY)) {
         return false;
       }
 
@@ -145,6 +144,17 @@ final class CheckGlobalThis implements NodeTraversal.Callback {
           return false;
         }
       }
+    }
+
+    // Don't traverse class static blocks, 'this' is never the global 'this'
+    if (NodeUtil.isClassStaticBlock(n)) {
+      return false;
+    }
+
+    // `this` in class field definitions refers to the instance (for non-static fields) or the class
+    // itself (for static fields), never the global 'this'.
+    if ((n.isMemberFieldDef() || n.isComputedFieldDef()) && n.getParent().isClassMembers()) {
+      return false;
     }
 
     if (parent != null && parent.isAssign()) {

@@ -86,8 +86,7 @@ public class CheckConstantCaseNames implements NodeTraversal.Callback, CompilerP
       return;
     }
     switch (n.getToken()) {
-      case VAR:
-      case LET:
+      case VAR, LET -> {
         // Skip CONST as it automatically meets the criteria and only look for module-level vars.
         if (!t.inModuleScope()) {
           return;
@@ -96,14 +95,15 @@ public class CheckConstantCaseNames implements NodeTraversal.Callback, CompilerP
         if (info != null && info.hasConstAnnotation()) {
           break;
         }
-        for (Node name : NodeUtil.findLhsNodesInNode(n)) {
-          if (convention.isConstant(name.getString())) {
-            this.invalidNamesPerModule.put(name.getString(), name);
-          }
-        }
-        break;
-
-      case NAME:
+        NodeUtil.visitLhsNodesInNode(
+            n,
+            (name) -> {
+              if (convention.isConstant(name.getString())) {
+                this.invalidNamesPerModule.put(name.getString(), name);
+              }
+            });
+      }
+      case NAME -> {
         if (!this.invalidNamesPerModule.containsKey(n.getString())) {
           return;
         }
@@ -115,10 +115,8 @@ public class CheckConstantCaseNames implements NodeTraversal.Callback, CompilerP
         if (v.getScopeRoot().isModuleBody()) {
           this.reassignedNames.add(n.getString());
         }
-        break;
-
-      default:
-        break;
+      }
+      default -> {}
     }
   }
 

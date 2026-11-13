@@ -28,12 +28,12 @@ import com.google.javascript.rhino.StaticSourceFile.SourceKind;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.Set;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Checks that all variables are declared, that file-private variables are accessed only in the file
- * that declares them, and that any var references that cross module boundaries respect declared
- * module dependencies.
+ * that declares them, and that any var references that cross chunk boundaries respect declared
+ * chunk dependencies.
  */
 class VarCheck implements ScopedCallback, CompilerPass {
 
@@ -41,24 +41,25 @@ class VarCheck implements ScopedCallback, CompilerPass {
       "JSC_UNDEFINED_VARIABLE",
       "variable {0} is undeclared");
 
-  static final DiagnosticType VIOLATED_MODULE_DEP_ERROR =
+  static final DiagnosticType VIOLATED_CHUNK_DEP_ERROR =
       DiagnosticType.error(
-          "JSC_VIOLATED_MODULE_DEPENDENCY",
-          "module {0} cannot reference {2}, defined in module {1}, since {1} loads after {0}");
+          "JSC_VIOLATED_CHUNK_DEPENDENCY",
+          "chunk {0} cannot reference {2}, defined in chunk {1}, since {1} loads after {0}");
 
-  static final DiagnosticType MISSING_MODULE_DEP_ERROR =
+  static final DiagnosticType MISSING_CHUNK_DEP_ERROR =
       DiagnosticType.warning(
-          "JSC_MISSING_MODULE_DEPENDENCY",
-          "missing module dependency; module {0} should depend"
-              + " on module {1} because it references {2}");
+          "JSC_MISSING_CHUNK_DEPENDENCY",
+          "missing chunk dependency; chunk {0} should depend"
+              + " on chunk {1} because it references {2}");
 
-  static final DiagnosticType STRICT_MODULE_DEP_ERROR = DiagnosticType.disabled(
-      "JSC_STRICT_MODULE_DEPENDENCY",
-      // The newline below causes the JS compiler not to complain when the
-      // referenced module's name changes because, for example, it's a
-      // synthetic module.
-      "cannot reference {2} because of a missing module dependency\n"
-      + "defined in module {1}, referenced from module {0}");
+  static final DiagnosticType STRICT_CHUNK_DEP_ERROR =
+      DiagnosticType.disabled(
+          "JSC_STRICT_CHUNK_DEPENDENCY",
+          // The newline below causes the JS compiler not to complain when the
+          // referenced chunk's name changes because, for example, it's a
+          // synthetic chunk.
+          "cannot reference {2} because of a missing chunk dependency\n"
+              + "defined in chunk {1}, referenced from chunk {0}");
 
   static final DiagnosticType NAME_REFERENCE_IN_EXTERNS_ERROR =
       DiagnosticType.warning(
@@ -89,6 +90,10 @@ class VarCheck implements ScopedCallback, CompilerPass {
   // The arguments variable is special, in that it's declared in every local
   // scope, but not explicitly declared.
   private static final String ARGUMENTS = "arguments";
+  // The IRFactory parse step adds references to this special name for @closureUnaware support, but
+  // it's not actually defined anywhere - just a compiler internal implementation detail.
+  private static final String JSCOMP_CLOSURE_UNAWARE_CODE_SHADOW_HOST_NAME =
+      "$jscomp_wrap_closure_unaware_code";
 
   private static final Node googForwardDeclare = IR.getprop(IR.name("goog"), "forwardDeclare");
 
@@ -190,6 +195,14 @@ class VarCheck implements ScopedCallback, CompilerPass {
       return;
     }
 
+    // In `#x in obj`, IRFactory represents `#x` as a NAME node and validates at parse time that it
+    // is inside a class and declared by an enclosing class. SyntacticScopeCreator only tracks
+    // variables, not class members, so skip `Scope` lookup and extern synthesis here.
+    if (n.isPrivateIdentifier()) {
+      checkState(parent.isIn() && n.isFirstChildOf(parent), n);
+      return;
+    }
+
     Scope scope = t.getScope();
     Var var = scope.getVar(varName);
 
@@ -229,31 +242,29 @@ class VarCheck implements ScopedCallback, CompilerPass {
       return;
     }
 
-    // Check module dependencies.
-    JSChunk currModule = currInput.getChunk();
-    JSChunk varModule = varInput.getChunk();
-    JSChunkGraph moduleGraph = compiler.getModuleGraph();
-    if (!validityCheck && varModule != currModule && varModule != null && currModule != null) {
-      if (varModule.isWeak()) {
+    // Check chunk dependencies.
+    JSChunk currChunk = currInput.getChunk();
+    JSChunk varChunk = varInput.getChunk();
+    JSChunkGraph chunkGraph = compiler.getChunkGraph();
+    if (!validityCheck && varChunk != currChunk && varChunk != null && currChunk != null) {
+      if (varChunk.isWeak()) {
         this.handleUndeclaredVariableRef(t, n);
       }
 
-      if (moduleGraph.dependsOn(currModule, varModule)) {
-        // The module dependency was properly declared.
+      if (chunkGraph.dependsOn(currChunk, varChunk)) {
+        // The chunk dependency was properly declared.
       } else {
         if (scope.isGlobal()) {
-          if (moduleGraph.dependsOn(varModule, currModule)) {
-            // The variable reference violates a declared module dependency.
-            t.report(
-                n, VIOLATED_MODULE_DEP_ERROR, currModule.getName(), varModule.getName(), varName);
+          if (chunkGraph.dependsOn(varChunk, currChunk)) {
+            // The variable reference violates a declared chunk dependency.
+            t.report(n, VIOLATED_CHUNK_DEP_ERROR, currChunk.getName(), varChunk.getName(), varName);
           } else {
-            // The variable reference is between two modules that have no dependency relationship.
+            // The variable reference is between two chunks that have no dependency relationship.
             // This should probably be considered an error, but just issue a warning for now.
-            t.report(
-                n, MISSING_MODULE_DEP_ERROR, currModule.getName(), varModule.getName(), varName);
+            t.report(n, MISSING_CHUNK_DEP_ERROR, currChunk.getName(), varChunk.getName(), varName);
           }
         } else {
-          t.report(n, STRICT_MODULE_DEP_ERROR, currModule.getName(), varModule.getName(), varName);
+          t.report(n, STRICT_CHUNK_DEP_ERROR, currChunk.getName(), varChunk.getName(), varName);
         }
       }
     }
@@ -275,6 +286,8 @@ class VarCheck implements ScopedCallback, CompilerPass {
 
     if (n.getParent().isTypeOf()) {
       // `typeof` is used for existence checks.
+    } else if (varName.equals(JSCOMP_CLOSURE_UNAWARE_CODE_SHADOW_HOST_NAME)) {
+      // Compiler internal, we just create an extern for it.
     } else if (strictExternCheck && t.getInput().isExtern()) {
       // The extern checks are stricter, don't report a second error.
     } else {
@@ -318,14 +331,16 @@ class VarCheck implements ScopedCallback, CompilerPass {
    */
   static final ImmutableSet<String> REQUIRED_SYMBOLS =
       ImmutableSet.of(
+          // go/keep-sorted start
           "AggregateError",
           "Array",
           "Error",
           "Float32Array",
           "Function",
           "Infinity",
-          "JSCompiler_renameProperty",
+          "Iterator",
           "JSCOMPILER_PRESERVE", // added by CheckSideEffects
+          "JSCompiler_renameProperty",
           "Map",
           "Math",
           "NaN",
@@ -333,10 +348,12 @@ class VarCheck implements ScopedCallback, CompilerPass {
           "Object",
           "Promise",
           "RangeError",
+          "ReferenceError",
           "Reflect",
           "RegExp",
           "Set",
           "String",
+          "SuppressedError",
           "Symbol",
           "TypeError",
           "WeakMap",
@@ -347,7 +364,9 @@ class VarCheck implements ScopedCallback, CompilerPass {
           "parseInt",
           "self",
           "undefined",
-          "window");
+          "window"
+          // go/keep-sorted end
+          );
 
   /**
    * Create a new variable in a synthetic script. This will prevent subsequent compiler passes from
@@ -389,24 +408,25 @@ class VarCheck implements ScopedCallback, CompilerPass {
     public void visit(NodeTraversal t, Node n, Node parent) {
       if (n.isName()) {
         switch (parent.getToken()) {
-          case VAR:
-          case LET:
-          case CONST:
-          case FUNCTION:
-          case CLASS:
-          case PARAM_LIST:
-          case DEFAULT_VALUE:
-          case ITER_REST:
-          case OBJECT_REST:
-          case ARRAY_PATTERN:
+          case VAR,
+              LET,
+              CONST,
+              FUNCTION,
+              CLASS,
+              PARAM_LIST,
+              DEFAULT_VALUE,
+              ITER_REST,
+              OBJECT_REST,
+              ARRAY_PATTERN -> {
             // These are okay.
             return;
-          case STRING_KEY:
+          }
+          case STRING_KEY -> {
             if (parent.getParent().isObjectPattern()) {
               return;
             }
-            break;
-          case GETPROP:
+          }
+          case GETPROP -> {
             if (n == parent.getFirstChild()) {
               Scope scope = t.getScope();
               Var var = scope.getVar(n.getString());
@@ -422,7 +442,8 @@ class VarCheck implements ScopedCallback, CompilerPass {
               undefinedNamesFromExterns.add(n.getString());
             }
             return;
-          case ASSIGN:
+          }
+          case ASSIGN -> {
             // Don't warn for the "window.foo = foo;" nodes added by
             // DeclaredGlobalExternsOnWindow, nor for alias declarations
             // of the form "/** @const */ ns.Foo = Bar;"
@@ -431,22 +452,21 @@ class VarCheck implements ScopedCallback, CompilerPass {
                 && parent.getFirstChild().isQualifiedName()) {
               return;
             }
-            break;
-          case NAME:
+          }
+          case NAME -> {
             // Don't warn for simple var assignments "/** @const */ var foo = bar;"
             // They are used to infer the types of namespace aliases.
             if (NodeUtil.isNameDeclaration(parent.getParent())) {
               return;
             }
-            break;
-          case OR:
+          }
+          case OR -> {
             // Don't warn for namespace declarations: "/** @const */ var ns = ns || {};"
             if (NodeUtil.isNamespaceDecl(parent.getParent())) {
               return;
             }
-            break;
-          default:
-            break;
+          }
+          default -> {}
         }
         t.report(n, NAME_REFERENCE_IN_EXTERNS_ERROR, n.getString());
         Scope scope = t.getScope();
@@ -490,35 +510,28 @@ class VarCheck implements ScopedCallback, CompilerPass {
       Node origParent = (origNode == null) ? null : NodeUtil.getDeclaringParent(origNode);
 
       switch (parent.getToken()) {
-        case CLASS:
-        case CONST:
-        case LET:
+        case CLASS, CONST, LET -> {
           reportBlockScopedMultipleDeclaration(n, name, origNode);
           return;
-
-        default:
-          break;
+        }
+        default -> {}
       }
 
       if (origParent != null) {
         switch (origParent.getToken()) {
-          case CLASS:
-          case CONST:
-          case LET:
+          case CLASS, CONST, LET -> {
             reportBlockScopedMultipleDeclaration(n, name, origNode);
             return;
-
-          case FUNCTION:
+          }
+          case FUNCTION -> {
             // Redeclarations of functions in global scope are fairly common, so allow them
             // (at least for now).
             if (!s.isGlobal() && parent.isFunction()) {
               reportBlockScopedMultipleDeclaration(n, name, origNode);
               return;
             }
-            break;
-
-          default:
-            break;
+          }
+          default -> {}
         }
       }
 
@@ -545,7 +558,7 @@ class VarCheck implements ScopedCallback, CompilerPass {
       }
     }
 
-    public void removeDuplicates() {
+    void removeDuplicates() {
       for (Node n : dupDeclNodes) {
         Node parent = n.getParent();
         if (parent != null) {

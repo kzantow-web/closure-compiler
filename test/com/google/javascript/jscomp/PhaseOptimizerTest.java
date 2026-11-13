@@ -18,11 +18,11 @@ package com.google.javascript.jscomp;
 
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
+import static org.junit.Assert.assertThrows;
 
 import com.google.common.collect.ImmutableList;
 import com.google.javascript.jscomp.CompilerOptions.TracerMode;
 import com.google.javascript.jscomp.PhaseOptimizer.Loop;
-import com.google.javascript.jscomp.parsing.parser.FeatureSet;
 import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
@@ -53,7 +53,6 @@ public final class PhaseOptimizerTest {
     compiler.initCompilerOptionsIfTesting();
     tracker = new PerformanceTracker(dummyExternsRoot, dummyRoot, TracerMode.TIMING_ONLY);
     optimizer = new PhaseOptimizer(compiler, tracker);
-    compiler.setPhaseOptimizer(optimizer);
   }
 
   @Test
@@ -88,7 +87,7 @@ public final class PhaseOptimizerTest {
   @Test
   public void testCapLoopIterations() {
     CompilerOptions options = compiler.getOptions();
-    options.optimizationLoopMaxIterations = 1;
+    options.setMaxOptimizationLoopIterations(1);
     optimizer = new PhaseOptimizer(compiler, tracker);
     Loop loop = optimizer.addFixedPointLoop();
     addLoopedPass(loop, PassNames.PEEPHOLE_OPTIMIZATIONS, 2);
@@ -179,6 +178,48 @@ public final class PhaseOptimizerTest {
     }
   }
 
+  @Test
+  public void preconditionCheck_success() {
+    PassFactory passFactory =
+        PassFactory.builder()
+            .setName("myPass")
+            .setInternalFactory((compiler) -> createPass("myPass", 0))
+            .setPreconditionCheck((options) -> new PassFactory.PreconditionResult(true, null))
+            .build();
+    optimizer.addOneTimePass(passFactory);
+    assertPasses("myPass");
+  }
+
+  @Test
+  public void preconditionCheck_failure() {
+    PassFactory passFactory =
+        PassFactory.builder()
+            .setName("myPass")
+            .setInternalFactory((compiler) -> createPass("myPass", 0))
+            .setPreconditionCheck((options) -> new PassFactory.PreconditionResult(false, "message"))
+            .build();
+    optimizer.addOneTimePass(passFactory);
+
+    IllegalArgumentException ex =
+        assertThrows(IllegalArgumentException.class, () -> assertPasses("myPass"));
+
+    assertThat(ex).hasMessageThat().isEqualTo("Precondition for pass myPass failed: message");
+  }
+
+  @Test
+  public void sizeHeuristicDisabled_runsCodeRemovalLoopToFixpoint() {
+    compiler.getOptions().setUseSizeHeuristicToStopOptimizationLoop(false);
+    optimizer = new PhaseOptimizer(compiler, tracker);
+    Loop loop = optimizer.addFixedPointLoop();
+    addLoopedPass(loop, PassNames.PEEPHOLE_OPTIMIZATIONS, 3);
+
+    assertPasses(
+        PassNames.PEEPHOLE_OPTIMIZATIONS,
+        PassNames.PEEPHOLE_OPTIMIZATIONS,
+        PassNames.PEEPHOLE_OPTIMIZATIONS,
+        PassNames.PEEPHOLE_OPTIMIZATIONS);
+  }
+
   public void assertPasses(String... names) {
     optimizer.process(null, dummyRoot);
     assertThat(passesRun).isEqualTo(ImmutableList.copyOf(names));
@@ -197,11 +238,6 @@ public final class PhaseOptimizerTest {
   }
 
   private PassFactory createPassFactory(String name, final CompilerPass pass, boolean isOneTime) {
-    return createPassFactory(name, pass, isOneTime, FeatureSet.latest());
-  }
-
-  private PassFactory createPassFactory(
-      String name, final CompilerPass pass, boolean isOneTime, FeatureSet featureSet) {
     return PassFactory.builder()
         .setName(name)
         .setRunInFixedPointLoop(!isOneTime)

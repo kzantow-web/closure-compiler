@@ -44,12 +44,15 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.javascript.jscomp.base.JSCompObjects.identical;
 
 import com.google.common.collect.ImmutableList;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.javascript.rhino.ErrorReporter;
 import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.Node;
+import java.util.Comparator;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The object type represents instances of JavaScript objects such as
@@ -84,7 +87,7 @@ public class PrototypeObjectType extends ObjectType {
   // If this is a function prototype, then this is the owner.
   // A PrototypeObjectType can only be the prototype of one function. If we try
   // to do this for multiple functions, then we'll have to create a new one.
-  private FunctionType ownerFunction = null;
+  private @Nullable FunctionType ownerFunction = null;
 
   // Whether the toString representation of this should be pretty-printed,
   // by printing all properties.
@@ -145,37 +148,44 @@ public class PrototypeObjectType extends ObjectType {
       this.templateTypeMap = registry.getEmptyTemplateTypeMap();
     }
 
+    @CanIgnoreReturnValue
     T setName(String x) {
       this.className = x;
       return castThis();
     }
 
+    @CanIgnoreReturnValue
     final T setImplicitPrototype(ObjectType x) {
       this.implicitPrototype = x;
       return castThis();
     }
 
+    @CanIgnoreReturnValue
     final T setNative(boolean x) {
       this.nativeType = x;
       return castThis();
     }
 
+    @CanIgnoreReturnValue
     final T setAnonymous(boolean x) {
       this.anonymousType = x;
       return castThis();
     }
 
+    @CanIgnoreReturnValue
     final T setTemplateTypeMap(TemplateTypeMap x) {
       this.templateTypeMap = x;
       return castThis();
     }
 
+    @CanIgnoreReturnValue
     final T setTemplateParamCount(int x) {
       this.templateParamCount = x;
       return castThis();
     }
 
     @SuppressWarnings("unchecked")
+    @CanIgnoreReturnValue
     final T castThis() {
       return (T) this;
     }
@@ -195,24 +205,17 @@ public class PrototypeObjectType extends ObjectType {
   }
 
   @Override
-  boolean defineProperty(String name, JSType type, boolean inferred,
-      Node propertyNode) {
+  boolean defineProperty(Property.Key name, JSType type, boolean inferred, Node propertyNode) {
     if (hasOwnDeclaredProperty(name)) {
       return false;
     }
-    Property newProp = new Property(
-        name, type, inferred, propertyNode);
+    Property newProp = new Property(name, type, inferred, propertyNode);
     properties.putProperty(name, newProp);
     return true;
   }
 
   @Override
-  public boolean removeProperty(String name) {
-    return properties.removeProperty(name);
-  }
-
-  @Override
-  public void setPropertyJSDocInfo(String propertyName, JSDocInfo info) {
+  public void setPropertyJSDocInfo(Property.Key propertyName, JSDocInfo info) {
     if (info != null) {
       if (properties.getOwnProperty(propertyName) == null) {
         // If docInfo was attached, but the type of the property
@@ -232,7 +235,7 @@ public class PrototypeObjectType extends ObjectType {
   }
 
   @Override
-  public void setPropertyNode(String propertyName, Node defSite) {
+  public void setPropertyNode(Property.Key propertyName, Node defSite) {
     Property property = properties.getOwnProperty(propertyName);
     if (property != null) {
       property.setNode(defSite);
@@ -290,6 +293,44 @@ public class PrototypeObjectType extends ObjectType {
     return true;
   }
 
+  private record PropertyForPrettyPrinting(Property.Key key, JSType type) {
+    private void appendTo(TypeStringBuilder sb) {
+      switch (key.kind()) {
+        case STRING -> sb.append(key.humanReadableName());
+        case SYMBOL -> {
+          sb.append("[");
+          sb.append(key.humanReadableName());
+          sb.append("]");
+        }
+      }
+      sb.append(": ").appendNonNull(type);
+    }
+  }
+
+  private static final Comparator<PropertyForPrettyPrinting> PROP_COMPARATOR =
+      (thisProp, otherProp) -> {
+        // Handle the easy case where the property names are distinct.
+        if (!thisProp.key().humanReadableName().equals(otherProp.key().humanReadableName())) {
+          return thisProp.key().humanReadableName().compareTo(otherProp.key().humanReadableName());
+        }
+        return switch (thisProp.key().kind()) {
+          case STRING ->
+              switch (otherProp.key().kind()) {
+                case STRING -> thisProp.key().string().compareTo(otherProp.key().string());
+                case SYMBOL -> -1; // order string keys before symbol keys
+              };
+          case SYMBOL ->
+              switch (otherProp.key().kind()) {
+                case STRING -> 1; // order string keys before symbol keys.
+                case SYMBOL ->
+                    // Given two symbol keys with the same human-readable name, compare them by
+                    // their type string. This should be rare, so it's not a big performance hit to
+                    // do the extra toString()s.
+                    thisProp.type().toString().compareTo(otherProp.type().toString());
+              };
+        };
+      };
+
   @Override
   void appendTo(TypeStringBuilder sb) {
     if (hasReferenceName()) {
@@ -302,20 +343,27 @@ public class PrototypeObjectType extends ObjectType {
       return;
     }
 
-    // Use a tree set so that the properties are sorted.
-    Set<String> propertyNames = new TreeSet<>();
-    for (ObjectType current = this; current != null; current = current.getImplicitPrototype()) {
-      if (current.isNativeObjectType() || propertyNames.size() > MAX_PRETTY_PRINTED_PROPERTIES) {
-        break;
-      }
-
-      propertyNames.addAll(current.getOwnPropertyNames());
-    }
-
     // Don't pretty print recursively. It would cause infinite recursion.
     this.prettyPrint = false;
 
-    boolean multiline = !sb.isForAnnotations() && propertyNames.size() > 1;
+    // Use a tree set so that the properties are sorted.
+    Set<PropertyForPrettyPrinting> properties = new TreeSet<>(PROP_COMPARATOR);
+    for (ObjectType current = this; current != null; current = current.getImplicitPrototype()) {
+      if (current.isNativeObjectType() || properties.size() > MAX_PRETTY_PRINTED_PROPERTIES) {
+        break;
+      }
+
+      for (String stringKey : current.getOwnPropertyNames()) {
+        var key = new Property.StringKey(stringKey);
+        properties.add(new PropertyForPrettyPrinting(key, current.getPropertyType(key)));
+      }
+      for (KnownSymbolType symbolKey : current.getOwnPropertyKnownSymbols()) {
+        var key = new Property.SymbolKey(symbolKey);
+        properties.add(new PropertyForPrettyPrinting(key, current.getPropertyType(key)));
+      }
+    }
+
+    boolean multiline = !sb.isForAnnotations() && properties.size() > 1;
     sb.append("{")
         .indent(
             () -> {
@@ -324,7 +372,7 @@ public class PrototypeObjectType extends ObjectType {
               }
 
               int i = 0;
-              for (String property : propertyNames) {
+              for (PropertyForPrettyPrinting property : properties) {
                 i++;
 
                 if (!sb.isForAnnotations() && i > MAX_PRETTY_PRINTED_PROPERTIES) {
@@ -332,8 +380,8 @@ public class PrototypeObjectType extends ObjectType {
                   break;
                 }
 
-                sb.append(property).append(": ").appendNonNull(this.getPropertyType(property));
-                if (i < propertyNames.size()) {
+                property.appendTo(sb);
+                if (i < properties.size()) {
                   sb.append(",");
                   if (multiline) {
                     sb.breakLineAndIndent();
@@ -388,7 +436,7 @@ public class PrototypeObjectType extends ObjectType {
   }
 
   @Override
-  public String getReferenceName() {
+  public @Nullable String getReferenceName() {
     if (className != null) {
       return className;
     } else if (ownerFunction != null) {

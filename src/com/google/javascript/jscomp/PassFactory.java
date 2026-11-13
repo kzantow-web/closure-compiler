@@ -20,7 +20,6 @@ import static com.google.common.base.Preconditions.checkState;
 
 import com.google.auto.value.AutoValue;
 import com.google.errorprone.annotations.ForOverride;
-import com.google.javascript.jscomp.parsing.parser.FeatureSet;
 import java.util.function.Function;
 
 /**
@@ -36,6 +35,16 @@ public abstract class PassFactory {
   public abstract String getName();
 
   public abstract Function<CompilerOptions, Boolean> getCondition();
+
+  record PreconditionResult(boolean success, String message) {
+    static final PreconditionResult SUCCESS = new PreconditionResult(true, null);
+  }
+
+  /**
+   * Runs before this pass runs to validate preconditions. Throws an exception if any are violated
+   * (unlike {@link #getCondition()}.)
+   */
+  abstract Function<CompilerOptions, PreconditionResult> getPreconditionCheck();
 
   /** Whether this factory must or must not appear in a {@link PhaseOptimizer} loop. */
   public abstract boolean isRunInFixedPointLoop();
@@ -62,35 +71,14 @@ public abstract class PassFactory {
 
     public abstract Builder setCondition(Function<CompilerOptions, Boolean> cond);
 
-    /**
-     * @deprecated Does nothing
-     */
-    @Deprecated
-    public final Builder setFeatureSet(FeatureSet x) {
-      return this;
-    }
+    public abstract Builder setPreconditionCheck(
+        Function<CompilerOptions, PreconditionResult> assertion);
 
     public abstract Builder setInternalFactory(
         Function<AbstractCompiler, ? extends CompilerPass> x);
 
     @ForOverride
     abstract PassFactory autoBuild();
-
-    /**
-     * @deprecated Does nothing.
-     */
-    @Deprecated
-    public final Builder setFeatureSetForChecks() {
-      return this;
-    }
-
-    /**
-     * @deprecated Does nothing.
-     */
-    @Deprecated
-    public final Builder setFeatureSetForOptimizations() {
-      return this;
-    }
 
     public final PassFactory build() {
       PassFactory result = autoBuild();
@@ -102,7 +90,16 @@ public abstract class PassFactory {
   public static Builder builder() {
     return new AutoValue_PassFactory.Builder()
         .setRunInFixedPointLoop(false)
-        .setCondition((o) -> true);
+        .setCondition((o) -> true)
+        .setPreconditionCheck((o) -> PreconditionResult.SUCCESS);
+  }
+
+  void validatePreconditions(CompilerOptions options) {
+    PreconditionResult canRun = getPreconditionCheck().apply(options);
+    if (!canRun.success) {
+      throw new IllegalArgumentException(
+          String.format("Precondition for pass %s failed: %s", this.getName(), canRun.message()));
+    }
   }
 
   /** Create a no-op pass that can only run once. Used to break up loops. */
@@ -111,7 +108,7 @@ public abstract class PassFactory {
   }
 
   /** Creates a new compiler pass to be run. */
-  final CompilerPass create(AbstractCompiler compiler) {
+  public final CompilerPass create(AbstractCompiler compiler) {
     return getInternalFactory().apply(compiler);
   }
 }

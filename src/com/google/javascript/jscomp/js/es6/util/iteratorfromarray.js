@@ -16,8 +16,10 @@
 
 /**
  * @fileoverview Utilities for iterator-returning methods.
+ * @suppress {uselessCode} for the require lines below.
  */
 'require es6/symbol';
+'require util/defines';
 
 
 /**
@@ -29,22 +31,21 @@
  * @suppress {checkTypes|reportUnknownTypes}
  */
 $jscomp.iteratorFromArray = function(array, transform) {
+  if ($jscomp.ASSUME_ES6){
+    return array[Symbol.iterator]();
+  }
   // NOTE: IE8 doesn't support indexing from boxed Strings.
   if (array instanceof String) array = array + '';
   var i = 0;
   var done = false;
-  var iter = {
-    next: function() {
-      // Once we return done, we must always return done, even if the array
-      // grows later.
-      if (!done && i < array.length) {
-        var index = i++;
-        return {value: transform(index, array[index]), done: false};
-      }
-      done = true;
-      return {done: true, value: void 0};
+  return $jscomp.iteratorPrototype(function() {
+    // Once we return done, we must always return done, even if the array
+    // grows later.
+    if (!done && i < array.length) {
+      var index = i++;
+      return {value: transform(index, array[index]), done: false};
     }
-  };
-  iter[Symbol.iterator] = function() { return iter; };
-  return iter;
+    done = true;
+    return {done: true, value: void 0};
+  });
 };

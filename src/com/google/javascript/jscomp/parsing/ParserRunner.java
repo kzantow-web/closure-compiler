@@ -30,23 +30,25 @@ import com.google.javascript.jscomp.parsing.parser.Parser;
 import com.google.javascript.jscomp.parsing.parser.Parser.Config.Mode;
 import com.google.javascript.jscomp.parsing.parser.SourceFile;
 import com.google.javascript.jscomp.parsing.parser.trees.Comment;
+import com.google.javascript.jscomp.parsing.parser.trees.ParseTree;
 import com.google.javascript.jscomp.parsing.parser.trees.ProgramTree;
 import com.google.javascript.jscomp.parsing.parser.util.SourcePosition;
+import com.google.javascript.jscomp.parsing.parser.util.SourceRange;
 import com.google.javascript.rhino.ErrorReporter;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.StaticSourceFile;
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** parser runner */
 public final class ParserRunner {
 
-  private static Set<String> annotationNames = null;
-  private static Set<String> suppressionNames = null;
-  private static Set<String> reservedVars = null;
-  private static Set<String> closurePrimitiveNames = null;
+  private static @Nullable ImmutableSet<String> annotationNames = null;
+  private static @Nullable ImmutableSet<String> suppressionNames = null;
+  private static @Nullable ImmutableSet<String> reservedVars = null;
+  private static @Nullable ImmutableSet<String> closurePrimitiveNames = null;
 
   // Should never need to instantiate class of static methods.
   private ParserRunner() {}
@@ -75,7 +77,7 @@ public final class ParserRunner {
     if (extraAnnotationNames == null) {
       effectiveAnnotationNames = annotationNames;
     } else {
-      effectiveAnnotationNames = new HashSet<>(annotationNames);
+      effectiveAnnotationNames = new LinkedHashSet<>(annotationNames);
       effectiveAnnotationNames.addAll(extraAnnotationNames);
     }
     return Config.builder()
@@ -90,12 +92,12 @@ public final class ParserRunner {
         .build();
   }
 
-  public static Set<String> getReservedVars() {
+  public static ImmutableSet<String> getReservedVars() {
     initResourceConfig();
     return reservedVars;
   }
 
-  public static Set<String> getSuppressionNames() {
+  public static ImmutableSet<String> getSuppressionNames() {
     initResourceConfig();
     return suppressionNames;
   }
@@ -125,25 +127,33 @@ public final class ParserRunner {
     String sourceName = sourceFile.getName();
     try {
       SourceFile file = new SourceFile(sourceName, sourceString);
-      boolean keepGoing = config.runMode() == Config.RunMode.KEEP_GOING;
+      boolean keepGoing = config.runMode() == RunMode.KEEP_GOING;
       Es6ErrorReporter es6ErrorReporter = new Es6ErrorReporter(errorReporter, keepGoing);
       com.google.javascript.jscomp.parsing.parser.Parser.Config es6config = newParserConfig(config);
       Parser p = new Parser(es6config, es6ErrorReporter, file);
       ProgramTree tree = p.parseProgram();
       Node root = null;
       List<Comment> comments = ImmutableList.of();
+      ImmutableList<SourceRange> topLevelStatementRanges = ImmutableList.of();
       FeatureSet features = p.getFeatures();
       if (tree != null && (!es6ErrorReporter.hadError() || keepGoing)) {
-        IRFactory factory = IRFactory.transformTree(tree, sourceFile, config, errorReporter);
+        IRFactory factory = IRFactory.transformTree(tree, sourceFile, config, errorReporter, file);
         root = factory.getResultNode();
         features = features.union(factory.getFeatures());
-        root.putProp(Node.FEATURE_SET, features);
+        root.setFeatureSet(features);
 
         if (config.jsDocParsingMode().shouldParseDescriptions()) {
           comments = p.getComments();
+          ImmutableList.Builder<SourceRange> builder =
+              ImmutableList.builderWithExpectedSize(tree.sourceElements.size());
+          for (ParseTree element : tree.sourceElements) {
+            builder.add(element.location);
+          }
+          topLevelStatementRanges = builder.build();
         }
       }
-      return new ParseResult(root, comments, features, p.getSourceMapURL());
+      return new ParseResult(
+          root, comments, topLevelStatementRanges, features, p.getSourceMapURL());
     } catch (Throwable t) {
       throw new RuntimeException("Exception parsing \"" + sourceName + "\"", t);
     }
@@ -153,31 +163,22 @@ public final class ParserRunner {
       Config config) {
     LanguageMode languageMode = config.languageMode();
     boolean isStrictMode = config.strictMode().isStrict();
-    Mode parserConfigLanguageMode = null;
-    switch (languageMode) {
-      case ECMASCRIPT3:
-        parserConfigLanguageMode = Mode.ES3;
-        break;
-
-      case ECMASCRIPT5:
-        parserConfigLanguageMode = Mode.ES5;
-        break;
-
-      case ECMASCRIPT_2015:
-      case ECMASCRIPT_2016:
-        parserConfigLanguageMode = Mode.ES6_OR_ES7;
-        break;
-      case ECMASCRIPT_2017:
-      case ECMASCRIPT_2018:
-      case ECMASCRIPT_2019:
-      case ECMASCRIPT_2020:
-      case ECMASCRIPT_2021:
-      case ES_NEXT:
-      case UNSTABLE:
-      case UNSUPPORTED:
-        parserConfigLanguageMode = Mode.ES8_OR_GREATER;
-        break;
-    }
+    Mode parserConfigLanguageMode =
+        switch (languageMode) {
+          case ECMASCRIPT3 -> Mode.ES3;
+          case ECMASCRIPT5 -> Mode.ES5;
+          case ECMASCRIPT_2015, ECMASCRIPT_2016 -> Mode.ES6_OR_ES7;
+          case ECMASCRIPT_2017,
+              ECMASCRIPT_2018,
+              ECMASCRIPT_2019,
+              ECMASCRIPT_2020,
+              ECMASCRIPT_2021,
+              ECMASCRIPT_2022,
+              ES_NEXT,
+              UNSTABLE,
+              UNSUPPORTED ->
+              Mode.ES8_OR_GREATER;
+        };
     return new com.google.javascript.jscomp.parsing.parser.Parser.Config(
         checkNotNull(parserConfigLanguageMode), isStrictMode);
   }
@@ -188,9 +189,7 @@ public final class ParserRunner {
     private boolean errorSeen = false;
     private final boolean reportAllErrors;
 
-    Es6ErrorReporter(
-        ErrorReporter reporter,
-        boolean reportAllErrors) {
+    Es6ErrorReporter(ErrorReporter reporter, boolean reportAllErrors) {
       this.reporter = reporter;
       this.reportAllErrors = reportAllErrors;
     }
@@ -201,32 +200,46 @@ public final class ParserRunner {
       // sometimes it is useful to keep going.
       if (reportAllErrors || !errorSeen) {
         errorSeen = true;
-        this.reporter.error(
-            message, location.source.name,
-            location.line + 1, location.column);
+        this.reporter.error(message, location.source.name, location.line + 1, location.column);
       }
     }
 
     @Override
     protected void reportWarning(SourcePosition location, String message) {
-      this.reporter.warning(
-          message, location.source.name,
-          location.line + 1, location.column);
+      this.reporter.warning(message, location.source.name, location.line + 1, location.column);
     }
   }
 
-  /**
-   * Holds results of parsing.
-   */
+  /** Holds results of parsing. */
   public static class ParseResult {
     public final Node ast;
     public final List<Comment> comments;
+
+    /**
+     * Source ranges of the top-level statements, in source order, using the same character offsets
+     * as {@link #comments}. Only populated when JSDoc descriptions are parsed.
+     *
+     * <p>Unlike {@link Node#getSourceOffset}, these offsets are exact for any file size and line
+     * length.
+     */
+    public final ImmutableList<SourceRange> topLevelStatementRanges;
+
     public final FeatureSet features;
-    @Nullable public final String sourceMapURL;
+    public final @Nullable String sourceMapURL;
 
     public ParseResult(Node ast, List<Comment> comments, FeatureSet features, String sourceMapURL) {
+      this(ast, comments, ImmutableList.of(), features, sourceMapURL);
+    }
+
+    public ParseResult(
+        Node ast,
+        List<Comment> comments,
+        ImmutableList<SourceRange> topLevelStatementRanges,
+        FeatureSet features,
+        String sourceMapURL) {
       this.ast = ast;
       this.comments = comments;
+      this.topLevelStatementRanges = topLevelStatementRanges;
       this.features = features;
       this.sourceMapURL = sourceMapURL;
     }

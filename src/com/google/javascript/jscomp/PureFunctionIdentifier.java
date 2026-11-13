@@ -19,12 +19,14 @@ package com.google.javascript.jscomp;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
+import static java.util.stream.Collectors.joining;
 
 import com.google.common.base.MoreObjects;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Multimaps;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.errorprone.annotations.DoNotCall;
 import com.google.javascript.jscomp.AccessorSummary.PropertyAccessKind;
 import com.google.javascript.jscomp.CodingConvention.Cache;
@@ -34,17 +36,19 @@ import com.google.javascript.jscomp.graph.DiGraph;
 import com.google.javascript.jscomp.graph.DiGraph.DiGraphNode;
 import com.google.javascript.jscomp.graph.FixedPointGraphTraversal;
 import com.google.javascript.jscomp.graph.LinkedDirectedGraph;
+import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.Node;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashMap;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Predicate;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Compiler pass that computes function purity and annotates invocation nodes with those purities.
@@ -74,6 +78,7 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
 
   private final AbstractCompiler compiler;
   private final AstAnalyzer astAnalyzer;
+  private final boolean validateArtificialPurity;
 
   /**
    * Map of function names to the summary of the functions with that name.
@@ -83,7 +88,7 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
    *
    * @see {@link AmbiguatedFunctionSummary}
    */
-  private final Map<String, AmbiguatedFunctionSummary> summariesByName = new HashMap<>();
+  private final Map<String, AmbiguatedFunctionSummary> summariesByName = new LinkedHashMap<>();
 
   /**
    * Mapping from function node to summaries for all names associated with that node.
@@ -107,6 +112,17 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
    */
   private final Multimap<Node, AmbiguatedFunctionSummary> summariesForAllNamesOfFunctionByNode =
       ArrayListMultimap.create();
+
+  /**
+   * Set of FUNCTION nodes which are artificially marked as pure, via a `@nosideeffects` JSDoc tag
+   * in source code, which triggers the compiler to ignore any actual side effects.
+   *
+   * <p>We store this here instead of in the {@link AmbiguatedFunctionSummary} because 1) this is
+   * only for debugging, and we don't want to accidentally depend on it for side effect analysis and
+   * 2) we expect the set of functions with artificial purity annotations to be small and not scale
+   * linearly with the size of the application.
+   */
+  private final LinkedHashSet<Node> artificiallyPureLiteralsForDebugging = new LinkedHashSet<>();
 
   // List of all function call sites. Storing them here during the function analysis traversal
   // prevents us from doing a second traversal to annotate them with side-effects. We can just
@@ -135,16 +151,34 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
    */
   private final AmbiguatedFunctionSummary unknownFunctionSummary =
       AmbiguatedFunctionSummary.createInGraph(reverseCallGraph, "<unknown>")
-          .setMutatesGlobalStateAndAllOtherFlags();
+          .setMutatesGlobalStateAndAllOtherFlags(null);
+
+  /**
+   * A function node representing a function implicit in the AST that is known to be pure
+   *
+   * <p>For example: `class C {}` would get this node.
+   */
+  private static final Node IMPLICIT_PURE_FN = IR.function(IR.name(""), IR.paramList(), IR.block());
+
+  // Enable this error if you are debugging why a `@nosideeffects` annotation seems to be ignored.
+  static final DiagnosticType UNUSED_ARTIFICIAL_PURE_ANNOTATION =
+      DiagnosticType.disabled(
+          "JSC_UNUSED_ARTIFICIAL_PURE_ANNOTATION",
+          "Artificial @nosideeffects annotation cannot be enforced: found ambiguous definitions of"
+              + " {0}.\n\n"
+              + "Side-effectful definitions:\n  {1}"
+          );
 
   private final boolean assumeGettersArePure;
 
   private boolean hasProcessed = false;
 
-  public PureFunctionIdentifier(AbstractCompiler compiler, boolean assumeGettersArePure) {
+  public PureFunctionIdentifier(
+      AbstractCompiler compiler, boolean assumeGettersArePure, boolean validateArtificialPurity) {
     this.compiler = checkNotNull(compiler);
     this.assumeGettersArePure = assumeGettersArePure;
     this.astAnalyzer = compiler.getAstAnalyzer();
+    this.validateArtificialPurity = validateArtificialPurity;
   }
 
   @Override
@@ -161,7 +195,59 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
 
     propagateSideEffects();
 
+    validateArtificialPurity();
+
     markPureFunctionCalls();
+  }
+
+  /**
+   * Check whether any function literals marked as artificially pure still have an overall
+   * AmbiguatedFunctionSummary with some side-effects, for debugging purposes.
+   *
+   * <p>This can happen when there are multiple definitions of the same function name, and one is
+   * marked as artificially pure but another is side-effect-full.
+   */
+  private void validateArtificialPurity() {
+    if (!validateArtificialPurity) {
+      // Avoid unnecessary computation.
+      return;
+    }
+    for (Node function : this.artificiallyPureLiteralsForDebugging) {
+      for (AmbiguatedFunctionSummary summary : summariesForAllNamesOfFunctionByNode.get(function)) {
+        if (summary.hasNoFlagsSet()) {
+          // no flags set == the function is successfully treated as pure.
+          continue;
+        }
+        if (summary.name.equals(".constructor")) {
+          // .constructor is a special case - almost all the time, constructors get invoked by
+          // `new Foo();` instead of `new something.constructor();` are a special case - most of the
+          // time they are invoked not by the
+          // this.constructor property & JSCompiler doesn't support this.constructor + property
+          // renaming well. So don't report this error, as it's not particularly helpful.
+          continue;
+        }
+        String sideEffectfulDefinitions =
+            summary.impureFunctionReasonsForDebugging.stream()
+                .sorted(SOURCE_LOCATION_COMPARATOR)
+                .map(PureFunctionIdentifier::formatSourceLocation)
+                .collect(joining("\n  "));
+        compiler.report(
+            JSError.make(
+                function,
+                UNUSED_ARTIFICIAL_PURE_ANNOTATION,
+                summary.name,
+                sideEffectfulDefinitions));
+      }
+    }
+  }
+
+  private static final Comparator<Node> SOURCE_LOCATION_COMPARATOR =
+      Comparator.comparing(Node::getSourceFileName)
+          .thenComparingInt(Node::getLineno)
+          .thenComparingInt(Node::getCharno);
+
+  private static String formatSourceLocation(Node node) {
+    return String.format("%s:%s:%s", node.getSourceFileName(), node.getLineno(), node.getCharno());
   }
 
   /**
@@ -171,10 +257,10 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
    * @see {@link #collectCallableLeavesInternal}
    * @return the disovered callables, or {@code null} if an unexpected possible value was found.
    */
-  @Nullable
-  private static ImmutableList<Node> collectCallableLeaves(Node expr) {
+  private static @Nullable ImmutableList<Node> collectCallableLeaves(
+      Node expr, AstAnalyzer astAnalyzer) {
     ArrayList<Node> callables = new ArrayList<>();
-    boolean allLegal = collectCallableLeavesInternal(expr, callables);
+    boolean allLegal = collectCallableLeavesInternal(expr, callables, astAnalyzer);
     return allLegal ? ImmutableList.copyOf(callables) : null;
   }
 
@@ -195,14 +281,16 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
    * representing the final callee to this method.
    *
    * <p>If a node that isn't understood is detected, false is returned and the caller is expected to
-   * invalidate the entire collection.
+   * invalidate the entire collection. If true is returned, this method is guaranteed to have added
+   * at least one result to the collection.
    *
    * @see {@link #collectCallableLeaves}
-   * @param exp A possibly complicated expression.
+   * @param expr A possibly complicated expression.
    * @param results The collection of qualified names and functions.
    * @return {@code true} iff only understood results were discovered.
    */
-  private static boolean collectCallableLeavesInternal(Node expr, ArrayList<Node> results) {
+  private static boolean collectCallableLeavesInternal(
+      Node expr, ArrayList<Node> results, AstAnalyzer astAnalyzer) {
     switch (expr.getToken()) {
       case FUNCTION:
       case GETPROP:
@@ -215,35 +303,52 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
         {
           // Pretend that `super` is an alias for the superclass reference.
           Node clazz = checkNotNull(NodeUtil.getEnclosingClass(expr));
-          return collectCallableLeavesInternal(clazz.getSecondChild(), results);
+          return collectCallableLeavesInternal(clazz.getSecondChild(), results, astAnalyzer);
         }
 
       case CLASS:
         {
+          // Instance field initializers run when the constructor is invoked (during class
+          // instantiation), so any side-effectful instance field initializers make the constructor
+          // invocation impure. Static field initializers run when the class definition itself is
+          // evaluated, not upon constructor invocation.
+          Node members = expr.getLastChild();
+          if (members != null && members.isClassMembers()) {
+            for (Node member = members.getFirstChild(); member != null; member = member.getNext()) {
+              Node initializer = member.getLastChild();
+              if (initializer != null
+                  && NodeUtil.isNonStaticClassFieldInitializer(initializer)
+                  && astAnalyzer.mayHaveSideEffects(initializer)) {
+                return false;
+              }
+            }
+          }
+
           // Collect the constructor function, or failing that, the superclass reference.
           @Nullable Node ctorDef = NodeUtil.getEs6ClassConstructorMemberFunctionDef(expr);
           if (ctorDef != null) {
-            return collectCallableLeavesInternal(ctorDef.getOnlyChild(), results);
+            return collectCallableLeavesInternal(ctorDef.getOnlyChild(), results, astAnalyzer);
           } else if (expr.getSecondChild().isEmpty()) {
+            results.add(IMPLICIT_PURE_FN);
             return true; // A class an implicit ctor is pure when there is no superclass.
           } else {
-            return collectCallableLeavesInternal(expr.getSecondChild(), results);
+            return collectCallableLeavesInternal(expr.getSecondChild(), results, astAnalyzer);
           }
         }
 
       case AND:
       case OR:
       case COALESCE:
-        return collectCallableLeavesInternal(expr.getFirstChild(), results)
-            && collectCallableLeavesInternal(expr.getSecondChild(), results);
+        return collectCallableLeavesInternal(expr.getFirstChild(), results, astAnalyzer)
+            && collectCallableLeavesInternal(expr.getSecondChild(), results, astAnalyzer);
 
       case COMMA:
       case ASSIGN:
-        return collectCallableLeavesInternal(expr.getSecondChild(), results);
+        return collectCallableLeavesInternal(expr.getSecondChild(), results, astAnalyzer);
 
       case HOOK:
-        return collectCallableLeavesInternal(expr.getSecondChild(), results)
-            && collectCallableLeavesInternal(expr.getChildAtIndex(2), results);
+        return collectCallableLeavesInternal(expr.getSecondChild(), results, astAnalyzer)
+            && collectCallableLeavesInternal(expr.getChildAtIndex(2), results, astAnalyzer);
 
       case NEW_TARGET:
       case THIS:
@@ -270,64 +375,56 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
   private static boolean isDefinitelyRValue(Node rvalue) {
     Node parent = rvalue.getParent();
 
-    switch (parent.getToken()) {
-      case AND:
-      case ARRAYLIT:
-      case CALL:
-      case COALESCE:
-      case COMMA:
-      case EQ:
-      case GETELEM:
-      case GETPROP:
-      case HOOK:
-      case INSTANCEOF:
-      case NEW:
-      case NOT:
-      case NAME:
-      case OPTCHAIN_CALL:
-      case OPTCHAIN_GETELEM:
-      case OPTCHAIN_GETPROP:
-      case OR:
-      case RETURN:
-      case SHEQ:
-      case TAGGED_TEMPLATELIT:
-      case TYPEOF:
-      case YIELD:
-        return true;
-
-      case CASE:
-      case IF:
-      case SWITCH:
-      case WHILE:
-        return rvalue.isFirstChildOf(parent);
-
-      case EXPR_RESULT:
-        // Extern declarations are sometimes stubs. These must be considered L-values with no
-        // associated R-values.
-        return !rvalue.isFromExterns();
-
-      case ASSIGN:
-      case CLASS: // `extends` clause.
-        return rvalue.isSecondChildOf(parent);
-
-      case STRING_KEY: // Assignment to an object literal property. Excludes object destructuring.
-        return parent.getParent().isObjectLit();
-
-      default:
-        // Anything not explicitly listed may not be an R-value. We only worry about the likely
-        // cases for nominal function values since those are what interest us and its safe to miss
-        // some R-values. It's more important that we correctly identify L-values.
-        return false;
-    }
+    return switch (parent.getToken()) {
+      case AND,
+          ARRAYLIT,
+          CALL,
+          COALESCE,
+          COMMA,
+          EQ,
+          GETELEM,
+          GETPROP,
+          HOOK,
+          INSTANCEOF,
+          NEW,
+          NOT,
+          NAME,
+          OPTCHAIN_CALL,
+          OPTCHAIN_GETELEM,
+          OPTCHAIN_GETPROP,
+          OR,
+          RETURN,
+          SHEQ,
+          TAGGED_TEMPLATELIT,
+          TYPEOF,
+          YIELD ->
+          true;
+      case CASE, IF, SWITCH, WHILE ->
+          rvalue.isFirstChildOf(parent); // the condition is always an r-value
+      case EXPR_RESULT ->
+          // Extern declarations are sometimes stubs. These must be considered L-values with no
+          // associated R-values.
+          !rvalue.isFromExterns();
+      case ASSIGN, CLASS -> // `extends` clause.
+          rvalue.isSecondChildOf(parent);
+      case STRING_KEY -> // Assignment to an object literal property. Excludes object destructuring.
+          parent.getParent().isObjectLit();
+      default ->
+          // Anything not explicitly listed may not be an R-value. We only worry about the likely
+          // cases for nominal function values since those are what interest us and its safe to miss
+          // some R-values. It's more important that we correctly identify L-values.
+          false;
+    };
   }
 
   private ImmutableList<Node> getGoogCacheCallableExpression(Cache cacheCall) {
     checkNotNull(cacheCall);
 
     ImmutableList.Builder<Node> builder =
-        ImmutableList.<Node>builder().addAll(collectCallableLeaves(cacheCall.valueFn));
+        ImmutableList.<Node>builder()
+            .addAll(collectCallableLeaves(cacheCall.valueFn, this.astAnalyzer));
     if (cacheCall.keyFn != null) {
-      builder.addAll(collectCallableLeaves(cacheCall.keyFn));
+      builder.addAll(collectCallableLeaves(cacheCall.keyFn, this.astAnalyzer));
     }
     return builder.build();
   }
@@ -343,13 +440,14 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
     } else if (isInvocationViaCallOrApply(invocation)) {
       callees = ImmutableList.of(invocation.getFirstFirstChild());
     } else {
-      callees = collectCallableLeaves(invocation.getFirstChild());
+      callees = collectCallableLeaves(invocation.getFirstChild(), this.astAnalyzer);
     }
 
     if (callees == null) {
       return ImmutableList.of(unknownFunctionSummary);
     }
 
+    checkState(!callees.isEmpty(), "Unexpected empty callees for valid result");
     ImmutableList.Builder<AmbiguatedFunctionSummary> results = ImmutableList.builder();
     for (Node callee : callees) {
       if (callee.isFunction()) {
@@ -397,6 +495,9 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
     }
 
     Multimaps.asMap(referencesByName).forEach(this::populateFunctionDefinitions);
+    this.summariesForAllNamesOfFunctionByNode.put(
+        IMPLICIT_PURE_FN,
+        AmbiguatedFunctionSummary.createInGraph(reverseCallGraph, "<implicit pure class ctor"));
   }
 
   /**
@@ -428,10 +529,20 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
           // If the assigned R-value is an analyzable expression, collect all the possible
           // FUNCTIONs that could result from that expression. If the expression isn't analyzable,
           // represent that with `null` so we can skiplist `name`.
-          ImmutableList<Node> callables = collectCallableLeaves(rvalue);
+          ImmutableList<Node> callables = collectCallableLeaves(rvalue, this.astAnalyzer);
           if (callables == null) {
             invalid = true;
             break;
+          }
+          if (this.validateArtificialPurity && !reference.isFromExterns()) {
+            for (Node callable : callables) {
+              JSDocInfo jsdoc = NodeUtil.getBestJSDocInfo(callable);
+              boolean isArtificiallyPure = jsdoc != null && jsdoc.isNoSideEffects();
+              if (isArtificiallyPure) {
+                this.artificiallyPureLiteralsForDebugging.add(callable);
+                summaryForName.setCollectImpureDebuggingReason();
+              }
+            }
           }
 
           rvaluesAssignedToName.add(callables);
@@ -444,12 +555,13 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
       // - There are no L-values with this name.
       // - There's a an L-value and we can't find the associated R-values.
       // - There's a an L-value with R-values are not all known to be callable.
-      summaryForName.setMutatesGlobalStateAndAllOtherFlags();
+      summaryForName.setMutatesGlobalStateAndAllOtherFlags(null);
     } else {
       for (ImmutableList<Node> callables : rvaluesAssignedToName) {
         for (Node rvalue : callables) {
           if (rvalue.isFunction()) {
             summariesForAllNamesOfFunctionByNode.put(rvalue, summaryForName);
+          } else if (NodeUtil.isUndefined(rvalue)) {
           } else {
             String rvalueName = nameForReference(rvalue);
             AmbiguatedFunctionSummary rvalueSummary =
@@ -482,7 +594,7 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
   /** Set no side effect property at pure-function call sites. */
   private void markPureFunctionCalls() {
     for (Node callNode : allFunctionCalls) {
-      List<AmbiguatedFunctionSummary> calleeSummaries = getSummariesForCallee(callNode);
+      ImmutableList<AmbiguatedFunctionSummary> calleeSummaries = getSummariesForCallee(callNode);
 
       // Default to side effects, non-local results
       Node.SideEffectFlags flags = new Node.SideEffectFlags();
@@ -575,23 +687,23 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
       JSDocInfo info = NodeUtil.getBestJSDocInfo(externFunction);
       if (info == null) {
         // We don't know anything about this function so we assume it has side effects.
-        summary.setMutatesGlobalStateAndAllOtherFlags();
+        summary.setMutatesGlobalStateAndAllOtherFlags(externFunction);
         return;
       }
 
       if (info.modifiesThis()) {
-        summary.setMutatesThis();
+        summary.setMutatesThis(externFunction);
       }
       if (info.hasSideEffectsArgumentsAnnotation()) {
-        summary.setMutatesArguments();
+        summary.setMutatesArguments(externFunction);
       }
       if (!info.getThrowsAnnotations().isEmpty()) {
-        summary.setThrows();
+        summary.setThrows(externFunction);
       }
 
       if (!info.isNoSideEffects() && summary.hasNoFlagsSet()) {
         // We don't know anything about this function so we assume it has side effects.
-        summary.setMutatesGlobalStateAndAllOtherFlags();
+        summary.setMutatesGlobalStateAndAllOtherFlags(externFunction);
       }
     }
   }
@@ -614,16 +726,49 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
 
     // Preloaded with an entry to represent the global scope.
     private final ArrayDeque<FunctionStackEntry> functionScopeStack =
-        new ArrayDeque<>(ImmutableList.of(new FunctionStackEntry(null)));
+        new ArrayDeque<>(ImmutableList.of(new FunctionStackEntry(null, false)));
 
-    final class FunctionStackEntry {
+    /**
+     * A single function literal definition and associated side-effect-related information.
+     *
+     * <p>We define separate objects for function literal to simplify handling of nested function
+     * literal definitions - we push a new entry onto the stack when entering a new function
+     * literal, and pop the entry when leaving the function literal.
+     */
+    static final class FunctionStackEntry {
       final Node root;
       final LinkedHashSet<Var> skiplistedVars = new LinkedHashSet<>();
       final LinkedHashSet<Var> taintedVars = new LinkedHashSet<>();
+      // Whether this function was marked as artificially pure, i.e. had a `@nosideeffects`
+      // annotation. This tells the compiler to ignore side effects from within the function body
+      // when deciding whether the given function as a whole is pure. Note that within the function
+      // body, we still record side effects on individual variables accesses; so e.g. given
+      //   /** @nosideeffects */
+      //   function foo() { console.log(1); }
+      //   foo();
+      // `foo()` will be marked as pure, but `console.log` will still be marked as impure.
+      // Also note that this doesn't extend to nested function definitions: a nested function does
+      // not inherit artificial purity from its enclosing function, which is why we need to track
+      // this on the function stack.
+      final boolean isArtificiallyPure;
       int catchDepth = 0; // The number of try-catch blocks around the current node.
 
-      FunctionStackEntry(Node root) {
+      FunctionStackEntry(Node root, boolean isArtificiallyPure) {
         this.root = root;
+        this.isArtificiallyPure = isArtificiallyPure;
+      }
+
+      /**
+       * Whether {@code v}, as seen from {@code scope}, is a variable of this function that only
+       * holds values local to the current invocation, so that mutating them is invisible to the
+       * callers.
+       */
+      boolean isLocalVar(@Nullable Var v, Scope scope) {
+        return isVarDeclaredInSameContainerScope(v, scope)
+            && !skiplistedVars.contains(v)
+            // Parameters and catch values can come from other scopes.
+            && !v.isParam()
+            && !v.isCatch();
       }
     }
 
@@ -644,12 +789,20 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
         allFunctionCalls.add(node);
       }
 
-      Node root = this.functionScopeStack.getLast().root;
-      if (root != null) {
-        // We only need to look at nodes in function scopes.
-        for (AmbiguatedFunctionSummary summary : summariesForAllNamesOfFunctionByNode.get(root)) {
-          updateSideEffectsForNode(checkNotNull(summary), traversal, node);
-        }
+      FunctionStackEntry enclosingFunction = this.functionScopeStack.getLast();
+      Node root = enclosingFunction.root;
+      if (root == null || enclosingFunction.isArtificiallyPure) {
+        // Within artificially pure function literal bodies, we do not ever need to call
+        // updateSideEffectsForNode because we intentionally ignore any side effects, and still
+        // consider the function as a whole to be pure.
+        // Note: this doesn't mean that individual invocations within the function body are always
+        // considered pure - those will still be marked in a later stage of PureFunctionIdentifier.
+        // We just don't propagate any impurity to the enclosing function literal.
+        return;
+      }
+
+      for (AmbiguatedFunctionSummary summary : summariesForAllNamesOfFunctionByNode.get(root)) {
+        updateSideEffectsForNode(checkNotNull(summary), traversal, node);
       }
     }
 
@@ -676,20 +829,19 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
               lhs.isDestructuringPattern()
                   ? RHS_IS_NEVER_LOCAL
                   : FIND_RHS_AND_CHECK_FOR_LOCAL_VALUE;
-          visitLhsNodes(
-              encloserSummary,
-              traversal.getScope(),
-              NodeUtil.findLhsNodesInNode(node),
-              rhsLocality);
+          NodeUtil.visitLhsNodesInNode(
+              node,
+              (lhsNode) ->
+                  visitLhsNode(encloserSummary, traversal.getScope(), lhsNode, rhsLocality));
           break;
 
         case INC: // e.g. x++;
         case DEC:
         case DELPROP:
-          visitLhsNodes(
+          visitLhsNode(
               encloserSummary,
               traversal.getScope(),
-              ImmutableList.of(node.getOnlyChild()),
+              node.getOnlyChild(),
               // The value assigned by a unary op is always local.
               RHS_IS_ALWAYS_LOCAL);
           break;
@@ -701,13 +853,17 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
           // e.g.
           // for (const {prop1, prop2} of iterable) {...}
           // for ({prop1: x.p1, prop2: x.p2} of iterable) {...}
-          visitLhsNodes(
-              encloserSummary,
-              traversal.getScope(),
-              NodeUtil.findLhsNodesInNode(node),
-              // The RHS of a for-of must always be an iterable, making it a container, so we can't
-              // consider its contents to be local
-              RHS_IS_NEVER_LOCAL);
+          NodeUtil.visitLhsNodesInNode(
+              node,
+              (lhsNode) ->
+                  visitLhsNode(
+                      encloserSummary,
+                      traversal.getScope(),
+                      lhsNode,
+                      // The RHS of a for-of must always be an iterable, making it a container, so
+                      // we can't
+                      // consider its contents to be local
+                      RHS_IS_NEVER_LOCAL));
           checkIteratesImpureIterable(node, encloserSummary);
           break;
 
@@ -716,19 +872,22 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
           // for (prop in obj) {...}
           // Also this, though not very useful or readable.
           // for ([char1, char2, ...x.rest] in obj) {...}
-          visitLhsNodes(
-              encloserSummary,
-              traversal.getScope(),
-              NodeUtil.findLhsNodesInNode(node),
-              // A for-in always assigns a string, which is a local value by definition.
-              RHS_IS_ALWAYS_LOCAL);
+          NodeUtil.visitLhsNodesInNode(
+              node,
+              (lhsNode) ->
+                  visitLhsNode(
+                      encloserSummary,
+                      traversal.getScope(),
+                      lhsNode,
+                      // A for-in always assigns a string, which is a local value by definition.
+                      RHS_IS_ALWAYS_LOCAL));
           break;
 
         case OPTCHAIN_CALL:
         case CALL:
         case NEW:
         case TAGGED_TEMPLATELIT:
-          visitCall(encloserSummary, node);
+          visitCall(encloserSummary, traversal.getScope(), node);
           break;
 
         case DESTRUCTURING_LHS:
@@ -738,11 +897,10 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
           }
           // Assume the value assigned to each item is potentially global state. This is overly
           // conservative but necessary because in the common case the rhs is not a literal.
-          visitLhsNodes(
-              encloserSummary,
-              traversal.getScope(),
-              NodeUtil.findLhsNodesInNode(node.getParent()),
-              RHS_IS_NEVER_LOCAL);
+          NodeUtil.visitLhsNodesInNode(
+              node.getParent(),
+              (lhsNode) ->
+                  visitLhsNode(encloserSummary, traversal.getScope(), lhsNode, RHS_IS_NEVER_LOCAL));
           break;
 
         case NAME:
@@ -779,7 +937,7 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
         case OBJECT_SPREAD:
           if (!assumeGettersArePure) {
             // May trigger a getter.
-            encloserSummary.setMutatesGlobalStateAndAllOtherFlags();
+            encloserSummary.setMutatesGlobalStateAndAllOtherFlags(node);
           }
           break;
 
@@ -793,7 +951,7 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
             // This is an l-value STRING_KEY.
             // Assumption: GETELEM (via a COMPUTED_PROP) is never side-effectful.
             if (getPropertyKind(node.getString()).hasGetter()) {
-              encloserSummary.setMutatesGlobalStateAndAllOtherFlags();
+              encloserSummary.setMutatesGlobalStateAndAllOtherFlags(node);
             }
           }
           break;
@@ -802,24 +960,24 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
         case GETPROP:
           // Assumption: GETELEM and OPTCHAIN_GETELEM are never side-effectful.
           if (getPropertyKind(node.getString()).hasGetterOrSetter()) {
-            encloserSummary.setMutatesGlobalStateAndAllOtherFlags();
+            encloserSummary.setMutatesGlobalStateAndAllOtherFlags(node);
           }
           break;
 
         case DYNAMIC_IMPORT:
-          // Modules may be imported for side-effecfts only. This is frequently
+          // Modules may be imported for side-effects only. This is frequently
           // a pattern used to load polyfills.
-          encloserSummary.setMutatesGlobalStateAndAllOtherFlags();
+          encloserSummary.setMutatesGlobalStateAndAllOtherFlags(node);
           break;
 
         default:
           if (NodeUtil.isCompoundAssignmentOp(node)) {
             // e.g.
             // x += 3;
-            visitLhsNodes(
+            visitLhsNode(
                 encloserSummary,
                 traversal.getScope(),
-                ImmutableList.of(node.getFirstChild()),
+                node.getFirstChild(),
                 // The update assignments (e.g. `+=) always assign primitive, and therefore local,
                 // values.
                 RHS_IS_ALWAYS_LOCAL);
@@ -840,7 +998,7 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
       if (!NodeUtil.iteratesImpureIterable(node)) {
         return;
       }
-      encloserSummary.setMutatesGlobalStateAndAllOtherFlags();
+      encloserSummary.setMutatesGlobalStateAndAllOtherFlags(node);
     }
 
     /**
@@ -858,7 +1016,7 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
 
     private void recordThrowsBasedOnContext(AmbiguatedFunctionSummary encloserSummary) {
       if (this.functionScopeStack.getLast().catchDepth == 0) {
-        encloserSummary.setThrows();
+        encloserSummary.setThrows(this.functionScopeStack.getLast().root);
       }
     }
 
@@ -870,8 +1028,10 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
 
       Node function = t.getScopeRoot();
       checkState(function.isFunction(), function);
+      JSDocInfo jsdoc = NodeUtil.getBestJSDocInfo(function);
+      boolean isArtificiallyPure = jsdoc != null && jsdoc.isNoSideEffects();
 
-      this.functionScopeStack.addLast(new FunctionStackEntry(function));
+      this.functionScopeStack.addLast(new FunctionStackEntry(function, isArtificiallyPure));
       if (!summariesForAllNamesOfFunctionByNode.containsKey(function)) {
         // This function was not part of a definition which is why it was not created by
         // {@link populateDatastructuresForAnalysisTraversal}. For example, an anonymous
@@ -914,24 +1074,16 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
               && !isFromDestructuring
               && !functionEntry.skiplistedVars.contains(v)
               && functionEntry.taintedVars.contains(v)) {
-            sideEffectInfo.setMutatesArguments();
+            sideEffectInfo.setMutatesArgumentAt(getParamIndex(v), v.getNode());
             continue;
           }
 
-          boolean localVar = false;
-          // Parameters and catch values can come from other scopes.
-          if (!v.isParam() && !v.isCatch()) {
-            // TODO(johnlenz): create a useful parameter list
-            // sideEffectInfo.addKnownLocal(v.getName());
-            localVar = true;
-          }
-
           // Take care of locals that might have been tainted.
-          if (!localVar || functionEntry.skiplistedVars.contains(v)) {
+          if (!functionEntry.isLocalVar(v, t.getScope())) {
             if (functionEntry.taintedVars.contains(v)) {
               // If the function has global side-effects
               // don't bother with the local side-effects.
-              sideEffectInfo.setMutatesGlobalStateAndAllOtherFlags();
+              sideEffectInfo.setMutatesGlobalStateAndAllOtherFlags(v.getNode());
               break;
             }
           }
@@ -939,7 +1091,7 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
       }
     }
 
-    private boolean isVarDeclaredInSameContainerScope(@Nullable Var v, Scope scope) {
+    private static boolean isVarDeclaredInSameContainerScope(@Nullable Var v, Scope scope) {
       return v != null && v.getScope().hasSameContainerScope(scope);
     }
 
@@ -954,53 +1106,57 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
      * @param lhsNodes LHS nodes that are all assigned values by a given parent node
      * @param hasLocalRhs Predicate indicating whether a given LHS is being assigned a local value
      */
-    private void visitLhsNodes(
+    private void visitLhsNode(
         AmbiguatedFunctionSummary encloserSummary,
         Scope scope,
-        List<Node> lhsNodes,
+        Node lhs,
         Predicate<Node> hasLocalRhs) {
-      for (Node lhs : lhsNodes) {
-        if (NodeUtil.isNormalOrOptChainGet(lhs)) {
-          // Although OPTCHAIN_GETPROP can not be an LHS of an assign, it can be a child to DELPROP.
-          // e.g. `delete obj?.prop` <==> `obj == null ?  true : delete obj.prop;`
-          // Hence the enclosing function's side effects must be recorded.
-          if (lhs.getFirstChild().isThis()) {
-            encloserSummary.setMutatesThis();
+      if (NodeUtil.isNormalOrOptChainGet(lhs)) {
+        // Although OPTCHAIN_GETPROP can not be an LHS of an assign, it can be a child to DELPROP.
+        // e.g. `delete obj?.prop` <==> `obj == null ?  true : delete obj.prop;`
+        // Hence the enclosing function's side effects must be recorded.
+        if (lhs.getFirstChild().isThis()) {
+          if (this.functionScopeStack.getLast().root.isArrowFunction()) {
+            // `this` in an arrow function is the `this` of the enclosing function, which is not
+            // the receiver the arrow function is called with.
+            encloserSummary.setMutatesGlobalStateAndAllOtherFlags(lhs);
           } else {
-            Node objectNode = lhs.getFirstChild();
-            if (objectNode.isName()) {
-              Var var = scope.getVar(objectNode.getString());
-              if (isVarDeclaredInSameContainerScope(var, scope)) {
-                // Maybe a local object modification.  We won't know for sure until
-                // we exit the scope and can validate the value of the local.
-                this.functionScopeStack.getLast().taintedVars.add(var);
-              } else {
-                encloserSummary.setMutatesGlobalStateAndAllOtherFlags();
-              }
-            } else {
-              // Don't track multi level locals: local.prop.prop2++;
-              encloserSummary.setMutatesGlobalStateAndAllOtherFlags();
-            }
+            encloserSummary.setMutatesThis(lhs);
           }
         } else {
-          checkState(lhs.isName(), lhs);
-          Var var = scope.getVar(lhs.getString());
-          if (isVarDeclaredInSameContainerScope(var, scope)) {
-            if (!hasLocalRhs.test(lhs)) {
-              // Assigned value is not guaranteed to be a local value,
-              // so if we see any property assignments on this variable,
-              // they could be tainting a non-local value.
-              this.functionScopeStack.getLast().skiplistedVars.add(var);
+          Node objectNode = lhs.getFirstChild();
+          if (objectNode.isName()) {
+            Var var = scope.getVar(objectNode.getString());
+            if (isVarDeclaredInSameContainerScope(var, scope)) {
+              // Maybe a local object modification.  We won't know for sure until
+              // we exit the scope and can validate the value of the local.
+              this.functionScopeStack.getLast().taintedVars.add(var);
+            } else {
+              encloserSummary.setMutatesGlobalStateAndAllOtherFlags(lhs);
             }
           } else {
-            encloserSummary.setMutatesGlobalStateAndAllOtherFlags();
+            // Don't track multi level locals: local.prop.prop2++;
+            encloserSummary.setMutatesGlobalStateAndAllOtherFlags(lhs);
           }
+        }
+      } else {
+        checkState(lhs.isName(), lhs);
+        Var var = scope.getVar(lhs.getString());
+        if (isVarDeclaredInSameContainerScope(var, scope)) {
+          if (!hasLocalRhs.test(lhs)) {
+            // Assigned value is not guaranteed to be a local value,
+            // so if we see any property assignments on this variable,
+            // they could be tainting a non-local value.
+            this.functionScopeStack.getLast().skiplistedVars.add(var);
+          }
+        } else {
+          encloserSummary.setMutatesGlobalStateAndAllOtherFlags(lhs);
         }
       }
     }
 
     /** Record information about a call site. */
-    private void visitCall(AmbiguatedFunctionSummary callerInfo, Node invocation) {
+    private void visitCall(AmbiguatedFunctionSummary callerInfo, Scope scope, Node invocation) {
       // Handle special cases (Math, RegExp)
       // TODO: This logic can probably be replaced with @nosideeffects annotations in externs.
       if (invocation.isCall() && !astAnalyzer.functionCallHasSideEffects(invocation)) {
@@ -1012,18 +1168,36 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
         return;
       }
 
-      List<AmbiguatedFunctionSummary> calleeSummaries = getSummariesForCallee(invocation);
+      ImmutableList<AmbiguatedFunctionSummary> calleeSummaries = getSummariesForCallee(invocation);
       if (calleeSummaries.isEmpty()) {
-        callerInfo.setMutatesGlobalStateAndAllOtherFlags();
+        callerInfo.setMutatesGlobalStateAndAllOtherFlags(null);
         return;
       }
 
-      boolean propatesThrows = this.functionScopeStack.getLast().catchDepth == 0;
+      FunctionStackEntry enclosingFunction = this.functionScopeStack.getLast();
+      boolean propagatesThrows = enclosingFunction.catchDepth == 0;
       for (AmbiguatedFunctionSummary calleeInfo : calleeSummaries) {
         SideEffectPropagation edge =
-            SideEffectPropagation.forInvocation(invocation, propatesThrows);
+            SideEffectPropagation.forInvocation(
+                invocation,
+                scope,
+                enclosingFunction,
+                argumentsMatchParameters(invocation),
+                propagatesThrows);
         reverseCallGraph.connect(calleeInfo.graphNode, edge, callerInfo.graphNode);
       }
+    }
+
+    /**
+     * Whether the i-th argument of {@code invocation} is passed as the i-th parameter of the
+     * callee, in the absence of spread arguments.
+     */
+    private boolean argumentsMatchParameters(Node invocation) {
+      return !invocation.isTaggedTemplateLit()
+          && !isInvocationViaCallOrApply(invocation)
+          // For caching calls like `goog.reflect.cache(cacheObj, key, valueFn)`, the analyzed
+          // callee is `valueFn(key)`, whose 0th parameter is the 2nd argument (`key`).
+          && compiler.getCodingConvention().describeCachingCall(invocation) == null;
     }
 
     private void addToCatchDepthIfTryBlock(Node n, int delta) {
@@ -1039,6 +1213,17 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
 
       this.functionScopeStack.getLast().catchDepth += delta;
     }
+  }
+
+  /**
+   * Returns the index of {@code param} in the parameter list of its function.
+   *
+   * <p>{@code param} must not be destructured (which includes rest parameters).
+   */
+  private static int getParamIndex(Var param) {
+    Node node = param.isDefaultParam() ? param.getParentNode() : param.getNameNode();
+    checkState(node.getParent().isParamList(), node);
+    return node.getParent().getIndexOfChild(node);
   }
 
   private static boolean isInvocationViaCallOrApply(Node callSite) {
@@ -1060,17 +1245,12 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
    *
    * <p>For NAMEs this is the name. For GETPROPs this is the last segment including a leading dot.
    */
-  @Nullable
-  private static String nameForReference(Node nameRef) {
-    switch (nameRef.getToken()) {
-      case NAME:
-        return nameRef.getString();
-      case GETPROP:
-      case OPTCHAIN_GETPROP:
-        return PROP_NAME_PREFIX + nameRef.getString();
-      default:
-        throw new IllegalStateException("Unexpected name reference: " + nameRef);
-    }
+  private static @Nullable String nameForReference(Node nameRef) {
+    return switch (nameRef.getToken()) {
+      case NAME -> nameRef.getString();
+      case GETPROP, OPTCHAIN_GETPROP -> PROP_NAME_PREFIX + nameRef.getString();
+      default -> throw new IllegalStateException("Unexpected name reference: " + nameRef);
+    };
   }
 
   private PropertyAccessKind getPropertyKind(String name) {
@@ -1089,9 +1269,6 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
     // side effects of the "callee" just need to be copied onto the "caller".
     private final boolean callerIsAlias;
 
-    // If all the arguments passed to the callee are local to the caller.
-    private final boolean allArgsUnescapedLocal;
-
     /*
      * If you call a function with apply or call, one of the arguments at the call site will be used
      * as 'this' inside the implementation. If this is pass into apply like so: function.apply(this,
@@ -1108,36 +1285,96 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
     private final boolean propagateThrows;
 
     // The token used to invoke the callee by the caller.
-    @Nullable private final Node invocation;
+    private final @Nullable Node invocation;
+
+    // The scope containing the invocation.
+    private final @Nullable Scope callScope;
+
+    // The function containing the invocation.
+    private final FunctionBodyAnalyzer.@Nullable FunctionStackEntry callerEntry;
+
+    // Whether the i-th argument of the invocation is passed as the i-th parameter of the callee,
+    // in the absence of spread arguments.
+    private final boolean argumentsMatchParameters;
 
     private SideEffectPropagation(
         boolean callerIsAlias,
-        boolean allArgsUnescapedLocal,
         boolean calleeThisEqualsCallerThis,
         boolean propagateThrows,
-        Node invocation) {
+        @Nullable Node invocation,
+        @Nullable Scope callScope,
+        FunctionBodyAnalyzer.@Nullable FunctionStackEntry callerEntry,
+        boolean argumentsMatchParameters) {
       checkArgument(invocation == null || NodeUtil.isInvocation(invocation), invocation);
 
       this.callerIsAlias = callerIsAlias;
-      this.allArgsUnescapedLocal = allArgsUnescapedLocal;
       this.calleeThisEqualsCallerThis = calleeThisEqualsCallerThis;
       this.propagateThrows = propagateThrows;
       this.invocation = invocation;
+      this.callScope = callScope;
+      this.callerEntry = callerEntry;
+      this.argumentsMatchParameters = argumentsMatchParameters;
     }
 
     static SideEffectPropagation forAlias() {
-      return new SideEffectPropagation(true, false, false, true, null);
+      return new SideEffectPropagation(true, false, true, null, null, null, false);
     }
 
-    static SideEffectPropagation forInvocation(Node invocation, boolean propagateThrows) {
+    static SideEffectPropagation forInvocation(
+        Node invocation,
+        Scope callScope,
+        FunctionBodyAnalyzer.FunctionStackEntry callerEntry,
+        boolean argumentsMatchParameters,
+        boolean propagateThrows) {
       checkArgument(NodeUtil.isInvocation(invocation), invocation);
 
       return new SideEffectPropagation(
           false,
-          NodeUtil.allArgsUnescapedLocal(invocation),
-          calleeAndCallerShareThis(invocation),
+          // `this` in an arrow function is the `this` of the enclosing function, which is not
+          // tracked.
+          calleeAndCallerShareThis(invocation) && !callerEntry.root.isArrowFunction(),
           propagateThrows,
-          invocation);
+          invocation,
+          callScope,
+          callerEntry,
+          argumentsMatchParameters);
+    }
+
+    /**
+     * Whether {@code expr}, passed to the callee, holds a value that is local to the caller.
+     *
+     * <p>Must only be called once the caller has been fully traversed.
+     */
+    private boolean holdsLocalValue(Node expr) {
+      return NodeUtil.evaluatesToLocalValue(expr)
+          || (expr.isName()
+              && callerEntry.isLocalVar(callScope.getVar(expr.getString()), callScope));
+    }
+
+    /** Whether all the arguments that may be mutated by the callee are local to the caller. */
+    private boolean mutatedArgumentsAreLocal(long mutatedParamMask) {
+      if (!argumentsMatchParameters) {
+        return NodeUtil.allArgsUnescapedLocal(invocation);
+      }
+      int index = 0;
+      for (Node arg = invocation.getSecondChild(); arg != null; arg = arg.getNext(), index++) {
+        if (arg.isSpread()) {
+          return false;
+        }
+        if ((index >= Long.SIZE || (mutatedParamMask & (1L << index)) != 0)
+            && !holdsLocalValue(arg)) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    /** Whether the receiver of the invocation is local to the caller, e.g. `o` in `o.m()`. */
+    private boolean receiverIsLocal() {
+      Node callee = invocation.getFirstChild();
+      return !isInvocationViaCallOrApply(invocation)
+          && NodeUtil.isNormalOrOptChainGetProp(callee)
+          && holdsLocalValue(callee.getFirstChild());
     }
 
     private static boolean calleeAndCallerShareThis(Node invocation) {
@@ -1150,7 +1387,7 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
         return true;
       }
 
-      @Nullable final Node thisArg;
+      final @Nullable Node thisArg;
       if (isInvocationViaCallOrApply(invocation)) {
         // If the call site is actually a `.call` or `.apply`, then `this` will be an argument.
         thisArg = invocation.getSecondChild();
@@ -1182,36 +1419,39 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
      */
     boolean propagate(AmbiguatedFunctionSummary callee, AmbiguatedFunctionSummary caller) {
       int initialCallerFlags = caller.bitmask;
+      long initialCallerParamMask = caller.mutatedParamMask;
 
       if (callerIsAlias) {
         caller.setMask(callee.bitmask);
-        return caller.bitmask != initialCallerFlags;
-      }
-
-      if (callee.mutatesGlobalState()) {
+        caller.mutatedParamMask |= callee.mutatedParamMask;
+      } else if (callee.mutatesGlobalState()) {
         // If the callee modifies global state then so does that caller.
-        caller.setMutatesGlobalStateAndAllOtherFlags();
-      }
-      if (this.propagateThrows && callee.functionThrows()) {
-        // If the callee throws an exception then so does the caller.
-        caller.setThrows();
-      }
-      if (callee.mutatesArguments() && !allArgsUnescapedLocal) {
-        // If the callee mutates its input arguments and the arguments escape the caller then it has
-        // unbounded side effects.
-        caller.setMutatesGlobalStateAndAllOtherFlags();
-      }
-      if (callee.mutatesThis()) {
-        if (invocation.isNew()) {
-          // NEWing a constructor provide a unescaped "this" making side-effects impossible.
-        } else if (calleeThisEqualsCallerThis) {
-          caller.setMutatesThis();
-        } else {
-          caller.setMutatesGlobalStateAndAllOtherFlags();
+        caller.setMutatesGlobalStateAndAllOtherFlags(invocation);
+      } else {
+        if (this.propagateThrows && callee.functionThrows()) {
+          // If the callee throws an exception then so does the caller.
+          caller.setThrows(invocation);
+        }
+        if (callee.mutatesArguments() && !mutatedArgumentsAreLocal(callee.mutatedParamMask)) {
+          // If the callee mutates its input arguments and the arguments escape the caller then it
+          // has unbounded side effects.
+          caller.setMutatesGlobalStateAndAllOtherFlags(invocation);
+        }
+        if (callee.mutatesThis()) {
+          if (invocation.isNew()) {
+            // NEWing a constructor provide a unescaped "this" making side-effects impossible.
+          } else if (calleeThisEqualsCallerThis) {
+            caller.setMutatesThis(invocation);
+          } else if (receiverIsLocal()) {
+            // The callee mutates an object local to the caller, e.g. `const o = new Foo(); o.m();`.
+          } else {
+            caller.setMutatesGlobalStateAndAllOtherFlags(invocation);
+          }
         }
       }
 
-      return caller.bitmask != initialCallerFlags;
+      return caller.bitmask != initialCallerFlags
+          || caller.mutatedParamMask != initialCallerParamMask;
     }
   }
 
@@ -1240,6 +1480,15 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
     // The side effect flags for this set of functions.
     // TODO(nickreid): Replace this with a `Node.SideEffectFlags`.
     private int bitmask = 0;
+    // The indices of the parameters (0..63) mutated by this function, if MUTATES_ARGUMENTS is set.
+    private long mutatedParamMask = 0L;
+    private boolean collectImpureDebuggingReason;
+    // FUNCTION nodes with a name corresponding to this summary that are impure.
+    // Only ever initialized if `collectImpureDebuggingReason` is true, and if
+    // PureFunctionIdentifier
+    // finds that this summary has a non-extern function that's "artificially pure", i.e. has a
+    // @nosideeffects annotation.
+    private LinkedHashSet<Node> impureFunctionReasonsForDebugging; // lazily initialized
 
     /** Adds a new summary node to {@code graph}, storing the node and returning the summary. */
     static AmbiguatedFunctionSummary createInGraph(
@@ -1253,6 +1502,7 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
       this.graphNode = graph.createNode(this);
     }
 
+    @CanIgnoreReturnValue
     private AmbiguatedFunctionSummary setMask(int mask) {
       bitmask |= mask;
       return this;
@@ -1262,13 +1512,25 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
       return (bitmask & mask) != 0;
     }
 
+    private void maybeCollectImpureDebuggingReason(@Nullable Node debuggingReason) {
+      if (!this.collectImpureDebuggingReason || debuggingReason == null) {
+        return;
+      }
+      if (this.impureFunctionReasonsForDebugging == null) {
+        this.impureFunctionReasonsForDebugging = new LinkedHashSet<>();
+      }
+      this.impureFunctionReasonsForDebugging.add(NodeUtil.getEnclosingFunction(debuggingReason));
+    }
+
     boolean mutatesThis() {
       // MUTATES_GLOBAL_STATE implies MUTATES_THIS
       return getMask(MUTATES_THIS);
     }
 
     /** Marks the function as having "modifies this" side effects. */
-    AmbiguatedFunctionSummary setMutatesThis() {
+    @CanIgnoreReturnValue
+    AmbiguatedFunctionSummary setMutatesThis(Node debuggingReason) {
+      maybeCollectImpureDebuggingReason(debuggingReason);
       return setMask(MUTATES_THIS);
     }
 
@@ -1279,7 +1541,9 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
     }
 
     /** Marks the function as having "throw" side effects. */
-    AmbiguatedFunctionSummary setThrows() {
+    @CanIgnoreReturnValue
+    AmbiguatedFunctionSummary setThrows(Node debuggingReason) {
+      maybeCollectImpureDebuggingReason(debuggingReason);
       return setMask(THROWS);
     }
 
@@ -1289,7 +1553,10 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
     }
 
     /** Marks the function as having "modifies globals" side effects. */
-    AmbiguatedFunctionSummary setMutatesGlobalStateAndAllOtherFlags() {
+    @CanIgnoreReturnValue
+    AmbiguatedFunctionSummary setMutatesGlobalStateAndAllOtherFlags(Node debuggingReason) {
+      maybeCollectImpureDebuggingReason(debuggingReason);
+      this.mutatedParamMask = ~0L;
       return setMask(THROWS | MUTATES_THIS | MUTATES_ARGUMENTS | MUTATES_GLOBAL_STATE);
     }
 
@@ -1300,12 +1567,30 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
     }
 
     /** Marks the function as having "modifies arguments" side effects. */
-    AmbiguatedFunctionSummary setMutatesArguments() {
+    @CanIgnoreReturnValue
+    AmbiguatedFunctionSummary setMutatesArguments(Node debuggingReason) {
+      maybeCollectImpureDebuggingReason(debuggingReason);
+      this.mutatedParamMask = ~0L;
+      return setMask(MUTATES_ARGUMENTS);
+    }
+
+    /** Marks the function as mutating the parameter at {@code paramIndex}. */
+    @CanIgnoreReturnValue
+    AmbiguatedFunctionSummary setMutatesArgumentAt(int paramIndex, Node debuggingReason) {
+      checkArgument(paramIndex >= 0, paramIndex);
+      maybeCollectImpureDebuggingReason(debuggingReason);
+      // A parameter that doesn't fit in the mask is approximated by all the parameters.
+      long paramBit = paramIndex < Long.SIZE ? 1L << paramIndex : ~0L;
+      this.mutatedParamMask |= paramBit;
       return setMask(MUTATES_ARGUMENTS);
     }
 
     boolean hasNoFlagsSet() {
       return this.bitmask == 0;
+    }
+
+    void setCollectImpureDebuggingReason() {
+      this.collectImpureDebuggingReason = true;
     }
 
     @Override
@@ -1355,11 +1640,19 @@ class PureFunctionIdentifier implements OptimizeCalls.CallGraphCompilerPass {
 
     @Override
     public void process(Node externs, Node root) {
+      CheckLevel shouldValidate =
+          compiler
+              .getOptions()
+              .getWarningsGuard()
+              .level(JSError.make(UNUSED_ARTIFICIAL_PURE_ANNOTATION, "", ""));
       OptimizeCalls.builder()
           .setCompiler(compiler)
           .setConsiderExterns(true)
           .addPass(
-              new PureFunctionIdentifier(compiler, compiler.getOptions().getAssumeGettersArePure()))
+              new PureFunctionIdentifier(
+                  compiler,
+                  compiler.getOptions().getAssumeGettersArePure(),
+                  shouldValidate != CheckLevel.OFF))
           .build()
           .process(externs, root);
     }

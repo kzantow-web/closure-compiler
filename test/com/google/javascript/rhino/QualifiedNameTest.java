@@ -62,6 +62,12 @@ public class QualifiedNameTest {
   }
 
   @Test
+  public void testJoin_onSeparator_fromString() {
+    QualifiedName n = QualifiedName.of("foo.bar.baz");
+    assertThat(n.join('$')).isEqualTo("foo$bar$baz");
+  }
+
+  @Test
   public void testJoin_fromNode() {
     QualifiedName n = qname(IR.name("foo"), "bar", "baz").getQualifiedNameObject();
     assertThat(n.join()).isEqualTo("foo.bar.baz");
@@ -74,9 +80,27 @@ public class QualifiedNameTest {
   }
 
   @Test
+  public void testJoin_onSeparator_fromNode() {
+    QualifiedName n = qname(IR.name("foo"), "bar", "baz").getQualifiedNameObject();
+    assertThat(n.join('$')).isEqualTo("foo$bar$baz");
+
+    n = qname(IR.thisNode(), "bar", "baz").getQualifiedNameObject();
+    assertThat(n.join('$')).isEqualTo("this$bar$baz");
+
+    n = qname(IR.superNode(), "bar", "baz").getQualifiedNameObject();
+    assertThat(n.join('$')).isEqualTo("super$bar$baz");
+  }
+
+  @Test
   public void testJoin_fromGetprop() {
     QualifiedName n = QualifiedName.of("foo").getprop("bar").getprop("baz");
     assertThat(n.join()).isEqualTo("foo.bar.baz");
+  }
+
+  @Test
+  public void testJoin_onSeparator_fromGetprop() {
+    QualifiedName n = QualifiedName.of("foo").getprop("bar").getprop("baz");
+    assertThat(n.join('$')).isEqualTo("foo$bar$baz");
   }
 
   @Test
@@ -192,5 +216,35 @@ public class QualifiedNameTest {
     n = QualifiedName.of("super").getprop("qux");
     assertThat(n.matches(qname(IR.superNode(), "qux"))).isTrue();
     assertThat(n.matches(qname(IR.name("x"), "qux"))).isFalse();
+  }
+
+  @Test
+  public void testEdgeCases_fromString() {
+    assertThat(QualifiedName.of("").components()).containsExactly("");
+    assertThat(QualifiedName.of(".").components()).containsExactly("", "");
+    assertThat(QualifiedName.of(".foo.bar").components()).containsExactly("", "foo", "bar");
+    assertThat(QualifiedName.of("foo.bar.").components()).containsExactly("foo", "bar", "");
+    assertThat(QualifiedName.of("foo..bar").components()).containsExactly("foo", "", "bar");
+  }
+
+  @Test
+  public void testGetComponentCount_fromString() {
+    assertThat(QualifiedName.of("foo").getComponentCount()).isEqualTo(1);
+    assertThat(QualifiedName.of("foo.bar").getComponentCount()).isEqualTo(2);
+    assertThat(QualifiedName.of("foo.bar.baz").getComponentCount()).isEqualTo(3);
+  }
+
+  @Test
+  public void testGetComponentCount_fromNode() {
+    assertThat(IR.name("foo").getQualifiedNameObject().getComponentCount()).isEqualTo(1);
+    assertThat(qname(IR.name("foo"), "bar").getQualifiedNameObject().getComponentCount())
+        .isEqualTo(2);
+    assertThat(qname(IR.name("foo"), "bar", "baz").getQualifiedNameObject().getComponentCount())
+        .isEqualTo(3);
+  }
+
+  @Test
+  public void testGetComponentCount_fromGetprop() {
+    assertThat(QualifiedName.of("foo").getprop("bar").getComponentCount()).isEqualTo(2);
   }
 }

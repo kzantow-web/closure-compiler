@@ -172,7 +172,7 @@ ReadableStreamSource.prototype.start;
  */
 ReadableStreamSource.prototype.pull;
 
-/** @type {(undefined|function(*):(!Promise<*>|undefined))} */
+/** @type {(undefined|function(*):(!Promise<void>|undefined))} */
 ReadableStreamSource.prototype.cancel;
 
 /** @type {(undefined|string)} */
@@ -212,13 +212,6 @@ ReadableStream.prototype.locked;
 ReadableStream.prototype.cancel = function(reason) {};
 
 /**
- * @param {!ReadableStreamIteratorOptions=} options
- * @return {!AsyncIterator<VALUE>}
- * @see https://streams.spec.whatwg.org/#rs-get-iterator
- */
-ReadableStream.prototype.getIterator = function(options) {};
-
-/**
  * @param {{ mode:(undefined|string) }=} opt_options
  * @return {(!ReadableStreamDefaultReader<VALUE>|!ReadableStreamBYOBReader)}
  * @see https://streams.spec.whatwg.org/#rs-get-reader
@@ -250,10 +243,17 @@ ReadableStream.prototype.tee = function() {};
 
 /**
  * @param {!ReadableStreamIteratorOptions=} options
- * @return {!AsyncIterator}
+ * @return {!AsyncIteratorIterable<VALUE>}
  * @see https://streams.spec.whatwg.org/#rs-asynciterator
  */
 ReadableStream.prototype[Symbol.asyncIterator] = function(options) {};
+
+/**
+ * @param {!ReadableStreamIteratorOptions=} options
+ * @return {!AsyncIteratorIterable<VALUE>}
+ * @see https://streams.spec.whatwg.org/#rs-asynciterator
+ */
+ReadableStream.prototype.values = function(options) {};
 
 /**
  * The ReadableStreamDefaultReader constructor is generally not meant to be used
@@ -273,7 +273,7 @@ ReadableStreamDefaultReader.prototype.closed;
 
 /**
  * @param {*} reason
- * @return {!Promise<*>}
+ * @return {!Promise<void>}
  * @see https://streams.spec.whatwg.org/#default-reader-cancel
  */
 ReadableStreamDefaultReader.prototype.cancel = function(reason) {};
@@ -308,18 +308,28 @@ ReadableStreamBYOBReader.prototype.closed;
 
 /**
  * @param {*} reason
- * @return {!Promise<*>}
+ * @return {!Promise<void>}
  * @see https://streams.spec.whatwg.org/#byob-reader-cancel
  */
 ReadableStreamBYOBReader.prototype.cancel = function(reason) {};
 
 /**
+ * @record
+ * @see https://streams.spec.whatwg.org/#dictdef-readablestreambyobreaderreadoptions
+ */
+function ReadableStreamBYOBReaderReadOptions() {}
+
+/** @type {number|undefined} */
+ReadableStreamBYOBReaderReadOptions.prototype.min;
+
+/**
  * @template BUFFER
  * @param {BUFFER} view
+ * @param {ReadableStreamBYOBReaderReadOptions=} opt_options
  * @return {!Promise<!IIterableResult<BUFFER>>}
  * @see https://streams.spec.whatwg.org/#byob-reader-read
  */
-ReadableStreamBYOBReader.prototype.read = function(view) {};
+ReadableStreamBYOBReader.prototype.read = function(view, opt_options) {};
 
 /**
  * @return {undefined}

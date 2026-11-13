@@ -22,6 +22,7 @@ import static com.google.common.base.Preconditions.checkState;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
+import org.jspecify.annotations.Nullable;
 
 /**
  * A class that represents a minimized conditional expression.
@@ -62,16 +63,10 @@ class MinimizedCondition {
    */
   static MinimizedCondition fromConditionNode(Node n) {
     checkState(n.hasParent());
-    switch (n.getToken()) {
-      case NOT:
-      case AND:
-      case OR:
-      case HOOK:
-      case COMMA:
-        return computeMinimizedCondition(n);
-      default:
-        return unoptimized(n);
-    }
+    return switch (n.getToken()) {
+      case NOT, AND, OR, HOOK, COMMA -> computeMinimizedCondition(n);
+      default -> unoptimized(n);
+    };
   }
 
   /**
@@ -138,78 +133,64 @@ class MinimizedCondition {
    * @return a MinimizedCondition object representing that tree.
    */
   private static MinimizedCondition computeMinimizedCondition(Node n) {
-    switch (n.getToken()) {
-      case NOT: {
+    return switch (n.getToken()) {
+      case NOT -> {
         MinimizedCondition subtree = computeMinimizedCondition(n.getFirstChild());
-        MeasuredNode positive = pickBest(
-            MeasuredNode.addNode(n, subtree.positive),
-            subtree.negative);
-          MeasuredNode negative =
-              pickBest(
-                  subtree.negative
-                      .negate(), // since parent node `n` is a NOT, we need to negate the subtree's
-                  // computed `negative` to obtain the parent `n`'s real negative.
-                  subtree.positive);
-        return new MinimizedCondition(positive, negative);
+        MeasuredNode positive =
+            pickBest(MeasuredNode.addNode(n, subtree.positive), subtree.negative);
+        MeasuredNode negative =
+            pickBest(
+                subtree.negative
+                    .negate(), // since parent node `n` is a NOT, we need to negate the subtree's
+                // computed `negative` to obtain the parent `n`'s real negative.
+                subtree.positive);
+        yield new MinimizedCondition(positive, negative);
       }
-      case AND:
-      case OR: {
-          Node complementNode = new Node(n.isAnd() ? Token.OR : Token.AND).srcref(n);
+      case AND, OR -> {
+        Node complementNode = new Node(n.isAnd() ? Token.OR : Token.AND).srcref(n);
         MinimizedCondition leftSubtree = computeMinimizedCondition(n.getFirstChild());
         MinimizedCondition rightSubtree = computeMinimizedCondition(n.getLastChild());
-        MeasuredNode positive = pickBest(
-            MeasuredNode.addNode(n,
-                leftSubtree.positive,
-                rightSubtree.positive),
-            MeasuredNode.addNode(complementNode,
-                leftSubtree.negative,
-                rightSubtree.negative).negate());
-        MeasuredNode negative = pickBest(
-            MeasuredNode.addNode(n,
-                leftSubtree.positive,
-                rightSubtree.positive).negate(),
-            MeasuredNode.addNode(complementNode,
-                leftSubtree.negative,
-                rightSubtree.negative).change());
-        return new MinimizedCondition(positive, negative);
+        MeasuredNode positive =
+            pickBest(
+                MeasuredNode.addNode(n, leftSubtree.positive, rightSubtree.positive),
+                MeasuredNode.addNode(complementNode, leftSubtree.negative, rightSubtree.negative)
+                    .negate());
+        MeasuredNode negative =
+            pickBest(
+                MeasuredNode.addNode(n, leftSubtree.positive, rightSubtree.positive).negate(),
+                MeasuredNode.addNode(complementNode, leftSubtree.negative, rightSubtree.negative)
+                    .change());
+        yield new MinimizedCondition(positive, negative);
       }
-      case HOOK: {
+      case HOOK -> {
         Node cond = n.getFirstChild();
         Node thenNode = cond.getNext();
         Node elseNode = thenNode.getNext();
         MinimizedCondition thenSubtree = computeMinimizedCondition(thenNode);
         MinimizedCondition elseSubtree = computeMinimizedCondition(elseNode);
-        MeasuredNode positive = MeasuredNode.addNode(
-            n,
-            MeasuredNode.forNode(cond),
-            thenSubtree.positive,
-            elseSubtree.positive);
-        MeasuredNode negative = MeasuredNode.addNode(
-            n,
-            MeasuredNode.forNode(cond),
-            thenSubtree.negative,
-            elseSubtree.negative);
-        return new MinimizedCondition(positive, negative);
+        MeasuredNode positive =
+            MeasuredNode.addNode(
+                n, MeasuredNode.forNode(cond), thenSubtree.positive, elseSubtree.positive);
+        MeasuredNode negative =
+            MeasuredNode.addNode(
+                n, MeasuredNode.forNode(cond), thenSubtree.negative, elseSubtree.negative);
+        yield new MinimizedCondition(positive, negative);
       }
-      case COMMA: {
+      case COMMA -> {
         Node lhs = n.getFirstChild();
         MinimizedCondition rhsSubtree = computeMinimizedCondition(lhs.getNext());
-        MeasuredNode positive = MeasuredNode.addNode(
-            n,
-            MeasuredNode.forNode(lhs),
-            rhsSubtree.positive);
-        MeasuredNode negative = MeasuredNode.addNode(
-            n,
-            MeasuredNode.forNode(lhs),
-            rhsSubtree.negative);
-        return new MinimizedCondition(positive, negative);
+        MeasuredNode positive =
+            MeasuredNode.addNode(n, MeasuredNode.forNode(lhs), rhsSubtree.positive);
+        MeasuredNode negative =
+            MeasuredNode.addNode(n, MeasuredNode.forNode(lhs), rhsSubtree.negative);
+        yield new MinimizedCondition(positive, negative);
       }
-      default: {
+      default -> {
         MeasuredNode pos = MeasuredNode.forNode(n);
         MeasuredNode neg = pos.negate();
-        return new MinimizedCondition(pos, neg);
+        yield new MinimizedCondition(pos, neg);
       }
-    }
+    };
   }
 
   /** An AST-node along with some additional metadata. */
@@ -219,7 +200,7 @@ class MinimizedCondition {
     private final boolean changed;
     private final MeasuredNode[] children;
 
-    MeasuredNode(Node n, MeasuredNode[] children, int len, boolean ch) {
+    MeasuredNode(@Nullable Node n, MeasuredNode @Nullable [] children, int len, boolean ch) {
       node = n;
       this.children = children;
       length = len;
@@ -240,20 +221,14 @@ class MinimizedCondition {
     }
 
     private MeasuredNode negate() {
-      switch (node.getToken()) {
-        case EQ:
-          return updateToken(Token.NE);
-        case NE:
-          return updateToken(Token.EQ);
-        case SHEQ:
-          return updateToken(Token.SHNE);
-        case SHNE:
-          return updateToken(Token.SHEQ);
-        case NOT:
-          return withoutNot();
-        default:
-          return addNot();
-      }
+      return switch (node.getToken()) {
+        case EQ -> updateToken(Token.NE);
+        case NE -> updateToken(Token.EQ);
+        case SHEQ -> updateToken(Token.SHNE);
+        case SHNE -> updateToken(Token.SHEQ);
+        case NOT -> withoutNot();
+        default -> addNot();
+      };
     }
 
     static MeasuredNode[] normalizeChildren(Node node, MeasuredNode[] children) {

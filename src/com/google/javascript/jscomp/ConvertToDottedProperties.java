@@ -21,6 +21,7 @@ import com.google.javascript.jscomp.parsing.parser.FeatureSet;
 import com.google.javascript.jscomp.parsing.parser.FeatureSet.Feature;
 import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.Node;
+import com.google.javascript.rhino.Token;
 
 /**
  * Converts property accesses from quoted string or bracket access syntax to dot or unquoted string
@@ -43,18 +44,22 @@ class ConvertToDottedProperties extends AbstractPostOrderCallback implements Com
   @Override
   public void visit(NodeTraversal t, Node n, Node parent) {
     switch (n.getToken()) {
-      case COMPUTED_PROP:
-      case COMPUTED_FIELD_DEF:
+      case COMPUTED_PROP, COMPUTED_FIELD_DEF -> {
         Node leftElem = n.getFirstChild();
         Node rightElem = leftElem.getNext();
 
-        // not convert property named constructor.
+        // not convert property named constructor or __proto__ in object literals.
         // ['constructor']() and constructor() are different.
+        // {['__proto__']: v} defines an own property; {__proto__: v} sets prototype.
         if (leftElem.isStringLit()
             && NodeUtil.isValidPropertyName(FeatureSet.ES3, leftElem.getString())
-            && !leftElem.getString().equals("constructor")) {
+            && !leftElem.getString().equals("constructor")
+            && !(parent.isObjectLit() && leftElem.getString().equals("__proto__"))) {
           leftElem.detach();
-          rightElem.detach();
+          if (rightElem != null) {
+            // A COMPUTED_FIELD_DEF has no second child when the field has no initializer.
+            rightElem.detach();
+          }
           Node temp;
           if (n.isComputedProp()) {
             if (rightElem.isFunction()) {
@@ -79,6 +84,10 @@ class ConvertToDottedProperties extends AbstractPostOrderCallback implements Com
             } else {
               temp = IR.stringKey(leftElem.getString(), rightElem);
             }
+          } else if (rightElem == null) {
+            // An uninitialized field, e.g. `class C { ['x']; }`, becomes a 0-child
+            // MEMBER_FIELD_DEF, matching how the parser represents `class C { x; }`.
+            temp = Node.newString(Token.MEMBER_FIELD_DEF, leftElem.getString());
           } else {
             temp = IR.memberFieldDef(leftElem.getString(), rightElem);
           }
@@ -87,19 +96,16 @@ class ConvertToDottedProperties extends AbstractPostOrderCallback implements Com
           n.replaceWith(temp);
           compiler.reportChangeToEnclosingScope(temp);
         }
-        break;
-      case GETTER_DEF:
-      case SETTER_DEF:
-      case STRING_KEY:
+      }
+      case GETTER_DEF, SETTER_DEF, STRING_KEY -> {
         if (NodeUtil.isValidPropertyName(FeatureSet.ES3, n.getString())) {
           if (n.getBooleanProp(Node.QUOTED_PROP)) {
             n.putBooleanProp(Node.QUOTED_PROP, false);
             compiler.reportChangeToEnclosingScope(n);
           }
         }
-        break;
-      case OPTCHAIN_GETELEM:
-      case GETELEM:
+      }
+      case OPTCHAIN_GETELEM, GETELEM -> {
         Node left = n.getFirstChild();
         Node right = left.getNext();
         if (right.isStringLit()
@@ -115,9 +121,8 @@ class ConvertToDottedProperties extends AbstractPostOrderCallback implements Com
           n.replaceWith(newGetProp);
           compiler.reportChangeToEnclosingScope(newGetProp);
         }
-        break;
-      default:
-        break;
+      }
+      default -> {}
     }
   }
 }

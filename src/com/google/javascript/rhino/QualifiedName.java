@@ -41,7 +41,8 @@
 package com.google.javascript.rhino;
 
 import com.google.common.collect.ImmutableList;
-import javax.annotation.Nullable;
+import java.util.Iterator;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Abstraction over a qualified name. Unifies Node-based qualified names and string-based names,
@@ -73,8 +74,7 @@ public abstract class QualifiedName {
    * Returns the qualified name of the owner, or null for simple names. For the name "foo.bar.baz",
    * this returns an object representing "foo.bar".
    */
-  @Nullable
-  public abstract QualifiedName getOwner();
+  public abstract @Nullable QualifiedName getOwner();
 
   /**
    * Returns outer-most term of this qualified name, or the entire name for simple names. For the
@@ -90,7 +90,7 @@ public abstract class QualifiedName {
   // further into TypedScopeCreator.
 
   /** Appends the joined qualified name to the given StringBuilder. */
-  abstract void appendTo(StringBuilder sb);
+  abstract void appendTo(StringBuilder sb, Character separator);
 
   /** Checks whether the given node matches this name. */
   public abstract boolean matches(Node n);
@@ -124,10 +124,17 @@ public abstract class QualifiedName {
 
   /** Returns the qualified name as a string. */
   public String join() {
+    return join('.');
+  }
+
+  /** Returns the qualified name as a string, with the given separator between components. */
+  public String join(Character separator) {
     StringBuilder sb = new StringBuilder();
-    appendTo(sb);
+    appendTo(sb, separator);
     return sb.toString();
   }
+
+  public abstract int getComponentCount();
 
   /**
    * Returns a new qualified name object with {@code this} name as the owner and the given string as
@@ -148,7 +155,7 @@ public abstract class QualifiedName {
     }
 
     @Override
-    public QualifiedName getOwner() {
+    public @Nullable QualifiedName getOwner() {
       return size > 1 ? new StringListQname(terms, size - 1) : null;
     }
 
@@ -163,10 +170,10 @@ public abstract class QualifiedName {
     }
 
     @Override
-    void appendTo(StringBuilder sb) {
+    void appendTo(StringBuilder sb, Character separator) {
       for (int i = 0; i < size; i++) {
         if (i > 0) {
-          sb.append('.');
+          sb.append(separator);
         }
         sb.append(terms.get(i));
       }
@@ -175,6 +182,11 @@ public abstract class QualifiedName {
     @Override
     public Iterable<String> components() {
       return terms.subList(0, size);
+    }
+
+    @Override
+    public int getComponentCount() {
+      return size;
     }
 
     @Override
@@ -192,17 +204,12 @@ public abstract class QualifiedName {
       }
 
       String term = this.terms.get(0);
-      switch (n.getToken()) {
-        case NAME:
-        case MEMBER_FUNCTION_DEF:
-          return RhinoStringPool.uncheckedEquals(term, n.getString());
-        case THIS:
-          return RhinoStringPool.uncheckedEquals(term, THIS);
-        case SUPER:
-          return RhinoStringPool.uncheckedEquals(term, SUPER);
-        default:
-          return false;
-      }
+      return switch (n.getToken()) {
+        case NAME, MEMBER_FUNCTION_DEF -> RhinoStringPool.uncheckedEquals(term, n.getString());
+        case THIS -> RhinoStringPool.uncheckedEquals(term, THIS);
+        case SUPER -> RhinoStringPool.uncheckedEquals(term, SUPER);
+        default -> false;
+      };
     }
   }
 
@@ -232,9 +239,9 @@ public abstract class QualifiedName {
     }
 
     @Override
-    void appendTo(StringBuilder sb) {
-      owner.appendTo(sb);
-      sb.append('.').append(prop);
+    void appendTo(StringBuilder sb, Character separator) {
+      owner.appendTo(sb, separator);
+      sb.append(separator).append(prop);
     }
 
     @Override
@@ -242,6 +249,11 @@ public abstract class QualifiedName {
       return n.isGetProp()
           && RhinoStringPool.uncheckedEquals(n.getString(), prop)
           && owner.matches(n.getFirstChild());
+    }
+
+    @Override
+    public int getComponentCount() {
+      return owner.getComponentCount() + 1;
     }
   }
 
@@ -257,24 +269,18 @@ public abstract class QualifiedName {
     }
 
     @Override
-    public QualifiedName getOwner() {
+    public @Nullable QualifiedName getOwner() {
       return node.isGetProp() ? new NodeQname(node.getFirstChild()) : null;
     }
 
     @Override
     public String getComponent() {
-      switch (node.getToken()) {
-        case THIS:
-          return THIS;
-        case SUPER:
-          return SUPER;
-        case NAME:
-        case GETPROP:
-        case MEMBER_FUNCTION_DEF:
-          return node.getString();
-        default:
-          throw new IllegalStateException("Not a qualified name: " + node);
-      }
+      return switch (node.getToken()) {
+        case THIS -> THIS;
+        case SUPER -> SUPER;
+        case NAME, GETPROP, MEMBER_FUNCTION_DEF -> node.getString();
+        default -> throw new IllegalStateException("Not a qualified name: " + node);
+      };
     }
 
     @Override
@@ -283,8 +289,12 @@ public abstract class QualifiedName {
     }
 
     @Override
-    void appendTo(StringBuilder sb) {
-      sb.append(join());
+    void appendTo(StringBuilder sb, Character separator) {
+      Iterator<String> components = this.components().iterator();
+      sb.append(components.next());
+      while (components.hasNext()) {
+        sb.append(separator).append(components.next());
+      }
     }
 
     @Override
@@ -295,6 +305,17 @@ public abstract class QualifiedName {
     @Override
     public boolean matches(Node n) {
       return n.matchesQualifiedName(node);
+    }
+
+    @Override
+    public int getComponentCount() {
+      int count = 1;
+      Node current = this.node;
+      while (current.isGetProp()) {
+        count++;
+        current = current.getFirstChild();
+      }
+      return count;
     }
   }
 

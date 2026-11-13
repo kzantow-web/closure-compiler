@@ -22,7 +22,6 @@ import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Multimaps.toMultimap;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
-import static com.google.javascript.jscomp.CompilerTestCase.lines;
 import static com.google.javascript.rhino.Token.GETPROP;
 import static com.google.javascript.rhino.Token.GETTER_DEF;
 import static com.google.javascript.rhino.Token.MEMBER_FIELD_DEF;
@@ -55,7 +54,8 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import javax.annotation.Nullable;
+import java.util.function.Consumer;
+import org.jspecify.annotations.Nullable;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -67,7 +67,8 @@ public final class ColorFindPropertyReferencesTest extends CompilerTestCase {
 
   private final Compiler compiler = new Compiler();
 
-  private CompilerPass processor;
+  private Consumer<Node> externsCallback;
+  private @Nullable CompilerPass processor;
   private ImmutableSet<String> expectedOriginalNameTypes = ImmutableSet.of();
 
   /**
@@ -86,6 +87,7 @@ public final class ColorFindPropertyReferencesTest extends CompilerTestCase {
     this.enableTypeCheck();
     this.replaceTypesWithColors();
     this.disableCompareJsDoc();
+    this.externsCallback = (Node unused) -> {};
   }
 
   @Override
@@ -141,12 +143,13 @@ public final class ColorFindPropertyReferencesTest extends CompilerTestCase {
     this.propIndex =
         this.collectProperties(
             "",
-            lines(
-                "class Foo { }", //
-                "",
-                "new Foo().a;",
-                "",
-                "FOO: new Foo();"));
+            """
+            class Foo { }
+
+            new Foo().a;
+
+            FOO: new Foo();
+            """);
 
     // Then
     assertThat(this.propIndex.keySet()).containsExactly("a");
@@ -160,12 +163,13 @@ public final class ColorFindPropertyReferencesTest extends CompilerTestCase {
     this.propIndex =
         this.collectProperties(
             "",
-            lines(
-                "class Foo { }", //
-                "",
-                "new Foo()?.a;",
-                "",
-                "FOO: new Foo();"));
+            """
+            class Foo { }
+
+            new Foo()?.a;
+
+            FOO: new Foo();
+            """);
 
     // Then
     assertThat(this.propIndex.keySet()).containsExactly("a");
@@ -179,20 +183,21 @@ public final class ColorFindPropertyReferencesTest extends CompilerTestCase {
     this.propIndex =
         this.collectProperties(
             "",
-            lines(
-                "class Foo { }",
-                "",
-                "/** @type {!Foo} */ ({", //
-                "      a: 0,",
-                "      b() { },",
-                "  get c() { },",
-                "  set d(x) { },",
-                "     'e': 0,",
-                "    ['f']: 0,",
-                "    ...x,",
-                "})",
-                "",
-                "FOO: new Foo();"));
+            """
+            class Foo { }
+
+            /** @type {!Foo} */ ({
+                  a: 0,
+                  b() { },
+              get c() { },
+              set d(x) { },
+                 'e': 0,
+                ['f']: 0,
+                ...x,
+            })
+
+            FOO: new Foo();
+            """);
 
     // Then
     assertThat(this.propIndex.keySet()).containsExactly("a", "b", "c", "d");
@@ -209,17 +214,18 @@ public final class ColorFindPropertyReferencesTest extends CompilerTestCase {
     this.propIndex =
         this.collectProperties(
             "",
-            lines(
-                "class Foo { }",
-                "",
-                "const {", //
-                "      a: a,",
-                "     'e': e,",
-                "    ['f']: f,",
-                "    ...x",
-                "} = /** @type {!Foo} */ (unknown);",
-                "",
-                "FOO: new Foo();"));
+            """
+            class Foo { }
+
+            const {
+                  a: a,
+                 'e': e,
+                ['f']: f,
+                ...x
+            } = /** @type {!Foo} */ (unknown);
+
+            FOO: new Foo();
+            """);
 
     // Then
     assertThat(this.propIndex.keySet()).containsExactly("a");
@@ -233,15 +239,16 @@ public final class ColorFindPropertyReferencesTest extends CompilerTestCase {
     this.propIndex =
         this.collectProperties(
             "",
-            lines(
-                "class Foo {", //
-                "      b() { }",
-                "  get c() { }",
-                "  set d(x) { }",
-                "    ['f']() { }",
-                "}",
-                "",
-                "FOO_PROTOTYPE: Foo.prototype;"));
+            """
+            class Foo {
+                  b() { }
+              get c() { }
+              set d(x) { }
+                ['f']() { }
+            }
+
+            FOO_PROTOTYPE: Foo.prototype;
+            """);
 
     // Then
     assertThat(this.propIndex.keySet()).containsExactly("b", "c", "d", "prototype");
@@ -257,14 +264,15 @@ public final class ColorFindPropertyReferencesTest extends CompilerTestCase {
     this.propIndex =
         this.collectProperties(
             "",
-            lines(
-                "class Foo {", //
-                "  constructor() {",
-                "    this.a = 0;",
-                "  }",
-                "}",
-                "",
-                "FOO: new Foo();"));
+            """
+            class Foo {
+              constructor() {
+                this.a = 0;
+              }
+            }
+
+            FOO: new Foo();
+            """);
 
     // Then
     assertThat(this.propIndex.keySet()).containsExactly("a", "constructor");
@@ -278,16 +286,17 @@ public final class ColorFindPropertyReferencesTest extends CompilerTestCase {
     this.propIndex =
         this.collectProperties(
             "",
-            lines(
-                "class Foo {", //
-                "  a = 0;",
-                "  b;",
-                "  ['c'] = 1;",
-                "  'd' = 2;",
-                "  3 = 'hi'",
-                "}",
-                "",
-                "FOO: new Foo();"));
+            """
+            class Foo {
+              a = 0;
+              b;
+              ['c'] = 1;
+              'd' = 2;
+              3 = 'hi'
+            }
+
+            FOO: new Foo();
+            """);
 
     assertThat(this.propIndex.keySet()).containsExactly("a", "b");
 
@@ -301,16 +310,17 @@ public final class ColorFindPropertyReferencesTest extends CompilerTestCase {
     this.propIndex =
         this.collectProperties(
             "",
-            lines(
-                "class Foo {", //
-                "  static a = 0;",
-                "  static b;",
-                "  static ['c'] = 1;",
-                "  static 'd' = 2;",
-                "  static 3 = 'hi'",
-                "}",
-                "",
-                "TYPEOF_FOO: Foo;"));
+            """
+            class Foo {
+              static a = 0;
+              static b;
+              static ['c'] = 1;
+              static 'd' = 2;
+              static 3 = 'hi'
+            }
+
+            TYPEOF_FOO: Foo;
+            """);
 
     assertThat(this.propIndex.keySet()).containsExactly("a", "b");
 
@@ -324,15 +334,16 @@ public final class ColorFindPropertyReferencesTest extends CompilerTestCase {
     this.propIndex =
         this.collectProperties(
             "",
-            lines(
-                "class Foo {", //
-                "  static     b() { }",
-                "  static get c() { }",
-                "  static set d(x) { }",
-                "  static   ['f']() { }",
-                "}",
-                "",
-                "TYPEOF_FOO: Foo;"));
+            """
+            class Foo {
+              static     b() { }
+              static get c() { }
+              static set d(x) { }
+              static   ['f']() { }
+            }
+
+            TYPEOF_FOO: Foo;
+            """);
 
     // Then
     assertThat(this.propIndex.keySet()).containsExactly("b", "c", "d");
@@ -348,18 +359,19 @@ public final class ColorFindPropertyReferencesTest extends CompilerTestCase {
     this.propIndex =
         this.collectProperties(
             "",
-            lines(
-                "class Foo { }", //
-                "",
-                "Object.defineProperties(Foo.prototype, {",
-                "      a: 0,",
-                "      b() { },",
-                "  get c() { },",
-                "  set d(x) { },",
-                "    ['f']() { },",
-                "});",
-                "",
-                "FOO_PROTOTYPE: Foo.prototype;"));
+            """
+            class Foo { }
+
+            Object.defineProperties(Foo.prototype, {
+                  a: 0,
+                  b() { },
+              get c() { },
+              set d(x) { },
+                ['f']() { },
+            });
+
+            FOO_PROTOTYPE: Foo.prototype;
+            """);
 
     // Then
     assertThat(this.propIndex.keySet())
@@ -378,12 +390,13 @@ public final class ColorFindPropertyReferencesTest extends CompilerTestCase {
         this.collectProperties(
             ImmutableSet.of("reflect"),
             "",
-            lines(
-                "class Foo { }", //
-                "",
-                "reflect('a', Foo.prototype);",
-                "",
-                "FOO_PROTOTYPE: Foo.prototype;"));
+            """
+            class Foo { }
+
+            reflect('a', Foo.prototype);
+
+            FOO_PROTOTYPE: Foo.prototype;
+            """);
 
     // Then
     this.assertThatUsesOf("a").containsExactly("FOO_PROTOTYPE", Token.STRINGLIT);
@@ -392,13 +405,7 @@ public final class ColorFindPropertyReferencesTest extends CompilerTestCase {
   @Test
   public void propDefinerFunction_noObject_associatesWithJavaNull() {
     // When
-    this.propIndex =
-        this.collectProperties(
-            ImmutableSet.of("reflect"),
-            "",
-            lines(
-                "reflect('a');" //
-                ));
+    this.propIndex = this.collectProperties(ImmutableSet.of("reflect"), "", "reflect('a');");
 
     // Then
     this.assertThatUsesOf("a").containsExactly(null, Token.STRINGLIT);
@@ -407,13 +414,7 @@ public final class ColorFindPropertyReferencesTest extends CompilerTestCase {
   @Test
   public void propDefinerFunction_noString_findsNoNodes() {
     // When
-    this.propIndex =
-        this.collectProperties(
-            ImmutableSet.of("reflect"),
-            "",
-            lines(
-                "reflect();" //
-                ));
+    this.propIndex = this.collectProperties(ImmutableSet.of("reflect"), "", "reflect();");
 
     // Then
     assertThat(this.propIndex.keySet()).isEmpty();
@@ -426,9 +427,10 @@ public final class ColorFindPropertyReferencesTest extends CompilerTestCase {
         this.collectProperties(
             ImmutableSet.of("reflect"),
             "",
-            lines(
-                "const foo = 'a';", //
-                "reflect(foo, {});"));
+            """
+            const foo = 'a';
+            reflect(foo, {});
+            """);
 
     // Then
     assertThat(this.propIndex.keySet()).isEmpty();
@@ -442,23 +444,76 @@ public final class ColorFindPropertyReferencesTest extends CompilerTestCase {
     // When
     this.propIndex =
         this.collectProperties(
-            lines(
-                "class Foo { }", //
-                "class Bar { }",
-                "class Tum { }",
-                "",
-                "new Foo().a;",
-                "new Bar().a;",
-                "new Tum().notA;"),
-            lines(
-                "class Qux { }", //
-                "",
-                "new Qux().a;",
-                "",
-                "FOO: new Foo();",
-                "BAR: new Bar();",
-                "QUX: new Qux();",
-                "TUM: new Tum();"));
+            """
+            class Foo { }
+            class Bar { }
+            class Tum { }
+
+            new Foo().a;
+            new Bar().a;
+            new Tum().notA;
+            """,
+            """
+            class Qux { }
+
+            new Qux().a;
+
+            FOO: new Foo();
+            BAR: new Bar();
+            QUX: new Qux();
+            TUM: new Tum();
+            """);
+
+    // Then
+    this.assertThatUsesOf("a").containsExactly("FOO", GETPROP, "BAR", GETPROP, "QUX", GETPROP);
+
+    // "Original name" type clusters are checked during teardown.
+  }
+
+  private void clearSourceFileRecursive(Node root) {
+    root.setStaticSourceFile(null);
+    for (Node child : root.children()) {
+      clearSourceFileRecursive(child);
+    }
+  }
+
+  @Test
+  public void externProps_areClusteredTogether_evenIfSourceInformationIsMissingWithinExterns() {
+    // Given
+    this.expectedOriginalNameTypes = ImmutableSet.of("FOO", "BAR", "TUM");
+    // Strip source file information from our externs to ensure they are still put in the
+    // original name cluster. See b/186056977 for a real-world case where externs node are lacking
+    // source info.
+    this.externsCallback =
+        (Node externs) -> {
+          Node externsScript = this.compiler.getRoot().getFirstChild().getLastChild();
+          for (Node externsNode : externsScript.children()) {
+            clearSourceFileRecursive(externsNode);
+          }
+        };
+
+    // When
+    this.propIndex =
+        this.collectProperties(
+            """
+            class Foo { } // externs
+            class Bar { }
+            class Tum { }
+
+            new Foo().a;
+            new Bar().a;
+            new Tum().notA;
+            """,
+            """
+            class Qux { } // sources
+
+            new Qux().a;
+
+            FOO: new Foo();
+            BAR: new Bar();
+            QUX: new Qux();
+            TUM: new Tum();
+            """);
 
     // Then
     this.assertThatUsesOf("a").containsExactly("FOO", GETPROP, "BAR", GETPROP, "QUX", GETPROP);
@@ -474,21 +529,23 @@ public final class ColorFindPropertyReferencesTest extends CompilerTestCase {
     // When
     this.propIndex =
         this.collectProperties(
-            lines(
-                "class Foo {}", //
-                "new Foo().a;"),
-            lines(
-                "class Qux { }", //
-                "/** @enum */",
-                "const Bar = {",
-                "  a: 0",
-                "};",
-                "",
-                "new Qux().a;",
-                "",
-                "FOO: new Foo();",
-                "BAR: Bar;",
-                "QUX: new Qux();"));
+            """
+            class Foo {}
+            new Foo().a;
+            """,
+            """
+            class Qux { }
+            /** @enum */
+            const Bar = {
+              a: 0
+            };
+
+            new Qux().a;
+
+            FOO: new Foo();
+            BAR: Bar;
+            QUX: new Qux();
+            """);
 
     // Then
     this.assertThatUsesOf("a").containsExactly("FOO", GETPROP, "BAR", STRING_KEY, "QUX", GETPROP);
@@ -501,17 +558,18 @@ public final class ColorFindPropertyReferencesTest extends CompilerTestCase {
     this.propIndex =
         this.collectProperties(
             "",
-            lines(
-                "class Foo {}",
-                "/** @constructor */ function Bar() {}",
-                "/** @interface */ function Quz() {}",
-                "/** @record */ function Baz() {}",
-                "function other() {}",
-                "",
-                "TYPEOF_FOO: Foo;",
-                "TYPEOF_BAR: Bar;",
-                "TYPEOF_QUZ: Quz;",
-                "TYPEOF_BAZ: Baz;"));
+            """
+            class Foo {}
+            /** @constructor */ function Bar() {}
+            /** @interface */ function Quz() {}
+            /** @record */ function Baz() {}
+            function other() {}
+
+            TYPEOF_FOO: Foo;
+            TYPEOF_BAR: Bar;
+            TYPEOF_QUZ: Quz;
+            TYPEOF_BAZ: Baz;
+            """);
 
     assertThat(this.flattener.created)
         .containsExactlyElementsIn(
@@ -555,6 +613,7 @@ public final class ColorFindPropertyReferencesTest extends CompilerTestCase {
     labeledStatementMap = HashBiMap.create();
     this.processor =
         (e, s) -> {
+          this.externsCallback.accept(e);
           NodeTraversal.traverse(compiler, s, new LabelledStatementCollector());
           this.flattener = new StubColorGraphNodeFactory();
           this.finder =
@@ -602,7 +661,7 @@ public final class ColorFindPropertyReferencesTest extends CompilerTestCase {
 
         @Override
         public CheckLevel level(JSError error) {
-          return error.getDescription().contains("Parse") ? null : CheckLevel.OFF;
+          return error.description().contains("Parse") ? null : CheckLevel.OFF;
         }
       };
 

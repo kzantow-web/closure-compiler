@@ -55,7 +55,6 @@ import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.jstype.EqualityChecker.EqMethod;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -63,7 +62,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * This derived type provides extended information about a function, including its return type and
@@ -130,7 +129,7 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
   private Node source;
 
   /** The ID of the goog.module in which this function was declared. */
-  @Nullable private final String googModuleId;
+  private final @Nullable String googModuleId;
 
   /** if this is an interface, indicate whether or not it supports structural interface matching */
   private boolean isStructuralInterface;
@@ -180,21 +179,12 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
 
     if (builder.typeOfThis != null) {
       this.typeOfThis = builder.typeOfThis;
-    } else if (this instanceof NoResolvedType) {
-      /**
-       * TODO(b/112425334): Delete this special case if NO_RESOLVED_TYPE is deleted.
-       *
-       * <p>Despite being a subclass of `NoType`, `NoResolvedType` should behave more like `?`.
-       * There's no reason to believe its properties are of its own type.
-       */
-      this.typeOfThis = this.registry.getNativeType(JSTypeNative.UNKNOWN_TYPE);
     } else {
       switch (kind) {
-        case CONSTRUCTOR:
-        case INTERFACE:
+        case CONSTRUCTOR, INTERFACE -> {
           InstanceObjectType.Builder typeOfThisBuilder = InstanceObjectType.builderForCtor(this);
 
-          Set<TemplateType> ctorKeys = builder.constructorOnlyKeys;
+          ImmutableSet<TemplateType> ctorKeys = builder.constructorOnlyKeys;
           if (!ctorKeys.isEmpty()) {
             typeOfThisBuilder
                 .setTemplateTypeMap(this.templateTypeMap.copyWithoutKeys(ctorKeys))
@@ -202,15 +192,10 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
           }
 
           this.typeOfThis = typeOfThisBuilder.build();
-          break;
-
-        case ORDINARY:
-          this.typeOfThis = this.registry.getNativeObjectType(JSTypeNative.UNKNOWN_TYPE);
-          break;
-
-        case NONE:
-          this.typeOfThis = this;
-          break;
+        }
+        case ORDINARY ->
+            this.typeOfThis = this.registry.getNativeObjectType(JSTypeNative.UNKNOWN_TYPE);
+        case NONE -> this.typeOfThis = this;
       }
     }
 
@@ -282,22 +267,24 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
    * annotation, if B's constructor is not explicitly annotated.
    */
   public final boolean makesStructs() {
-    if (!hasInstanceType()) {
+    if (!hasInstanceType() || this.propAccess == null) {
       return false;
     }
-    if (propAccess == PropAccess.STRUCT) {
-      return true;
-    }
-    if (propAccess == PropAccess.ANY_EXPLICIT) {
-      // For anything EXPLICITLY marked as @unresticted do not look to the super type.
-      return false;
-    }
-    FunctionType superc = getSuperClassConstructor();
-    if (superc != null && superc.makesStructs()) {
-      setStruct();
-      return true;
-    }
-    return false;
+    return switch (this.propAccess) {
+      case STRUCT -> true;
+      case DICT -> false;
+      case ANY_EXPLICIT ->
+          // For anything EXPLICITLY marked as @unresticted do not look to the super type.
+          false;
+      case ANY -> {
+        FunctionType superc = getSuperClassConstructor();
+        if (superc != null && superc.makesStructs()) {
+          setStruct();
+          yield true;
+        }
+        yield false;
+      }
+    };
   }
 
   /**
@@ -305,22 +292,24 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
    * annotation, if B's constructor is not explicitly annotated.
    */
   public final boolean makesDicts() {
-    if (!isConstructor()) {
+    if (!isConstructor() || this.propAccess == null) {
       return false;
     }
-    if (propAccess == PropAccess.DICT) {
-      return true;
-    }
-    if (propAccess == PropAccess.ANY_EXPLICIT) {
-      // For anything EXPLICITLY marked as @unresticted do not look to the super type.
-      return false;
-    }
-    FunctionType superc = getSuperClassConstructor();
-    if (superc != null && superc.makesDicts()) {
-      setDict();
-      return true;
-    }
-    return false;
+    return switch (this.propAccess) {
+      case DICT -> true;
+      case STRUCT -> false;
+      case ANY_EXPLICIT ->
+          // For anything EXPLICITLY marked as @unresticted do not look to the super type.
+          false;
+      case ANY -> {
+        FunctionType superc = getSuperClassConstructor();
+        if (superc != null && superc.makesDicts()) {
+          setDict();
+          yield true;
+        }
+        yield false;
+      }
+    };
   }
 
   public final void setStruct() {
@@ -407,8 +396,8 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
   }
 
   @Override
-  public final Property getSlot(String name) {
-    if ("prototype".equals(name)) {
+  public final Property getSlot(Property.Key name) {
+    if (name.matches("prototype")) {
       // Lazy initialization of the prototype field.
       getPrototype();
       return prototypeSlot;
@@ -472,7 +461,10 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
     setPrototypeBasedOn(baseType, null);
   }
 
-  private void setPrototypeBasedOn(ObjectType baseType, Node propertyNode) {
+  private void setPrototypeBasedOn(ObjectType baseType, @Nullable Node propertyNode) {
+    if (isNativeObjectType()) {
+      return;
+    }
     // First handle class-side inheritance for ES6 classes, before reassigning baseType.
     if (source != null && source.isClass()) {
       FunctionType superCtor = baseType.getConstructor();
@@ -517,7 +509,7 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
    *
    * @param prototype the prototype. If this value is {@code null} it will silently be discarded.
    */
-  final boolean setPrototype(ObjectType prototype, Node propertyNode) {
+  final boolean setPrototype(ObjectType prototype, @Nullable Node propertyNode) {
     if (prototype == null) {
       return false;
     }
@@ -529,7 +521,7 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
   }
 
   /** Set the prototype without doing any sanity checks. */
-  private boolean setPrototypeNoCheck(ObjectType prototype, Node propertyNode) {
+  private boolean setPrototypeNoCheck(ObjectType prototype, @Nullable Node propertyNode) {
     ObjectType oldPrototype = prototypeSlot == null ? null : (ObjectType) prototypeSlot.getType();
     boolean replacedPrototype = oldPrototype != null;
 
@@ -584,7 +576,7 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
   }
 
   public final Collection<ObjectType> getAncestorInterfaces() {
-    Set<ObjectType> result = new HashSet<>();
+    Set<ObjectType> result = new LinkedHashSet<>();
     if (isConstructor()) {
       result.addAll((Collection<? extends ObjectType>) getImplementedInterfaces());
     } else {
@@ -642,14 +634,14 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
   }
 
   @Override
-  public final JSType getPropertyType(String name) {
+  public final JSType getPropertyType(Property.Key name) {
     if (!hasOwnProperty(name)) {
       // Define the "call", "apply", and "bind" functions lazily.
-      boolean isCall = "call".equals(name);
-      boolean isBind = "bind".equals(name);
+      boolean isCall = name.matches("call");
+      boolean isBind = name.matches("bind");
       if (isCall || isBind) {
         defineDeclaredProperty(name, getCallOrBindSignature(isCall), source);
-      } else if ("apply".equals(name)) {
+      } else if (name.matches("apply")) {
         // Define the "apply" function lazily.
         FunctionParamBuilder builder = new FunctionParamBuilder(registry);
 
@@ -712,7 +704,7 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
             .withReturnType(isCall ? getReturnType() : getBindReturnType(-1))
             .withTemplateKeys(getTemplateTypeMap().getTemplateKeys());
 
-    List<Parameter> origParams = getInternalArrowType().getParameterList();
+    ImmutableList<Parameter> origParams = getInternalArrowType().getParameterList();
 
     List<Parameter> params = new ArrayList<>(origParams);
 
@@ -749,8 +741,8 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
   }
 
   @Override
-  boolean defineProperty(String name, JSType type, boolean inferred, Node propertyNode) {
-    if ("prototype".equals(name)) {
+  boolean defineProperty(Property.Key name, JSType type, boolean inferred, Node propertyNode) {
+    if (name.matches("prototype")) {
       ObjectType objType = type.toObjectType();
       if (objType != null) {
         if (prototypeSlot != null && objType.equals(prototypeSlot.getType())) {
@@ -844,8 +836,8 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
   }
 
   /** Try to get the sup/inf of two functions by looking at the piecewise components. */
-  private FunctionType tryMergeFunctionPiecewise(FunctionType other, boolean leastSuper) {
-    List<Parameter> newParamsNode = null;
+  private @Nullable FunctionType tryMergeFunctionPiecewise(FunctionType other, boolean leastSuper) {
+    ImmutableList<Parameter> newParamsNode = null;
     if (new EqualityChecker()
         .setEqMethod(EqMethod.IDENTITY)
         .checkParameters(this.call, other.call)) {
@@ -886,7 +878,7 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
    * none exists.
    */
   @Override
-  public final FunctionType getSuperClassConstructor() {
+  public final @Nullable FunctionType getSuperClassConstructor() {
     checkArgument(isConstructor() || isInterface());
     ObjectType maybeSuperInstanceType = getPrototype().getImplicitPrototype();
     if (maybeSuperInstanceType == null) {
@@ -898,24 +890,21 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
   @Override
   int recursionUnsafeHashCode() {
     int hc = kind.hashCode();
-    switch (kind) {
-      case CONSTRUCTOR:
-      case INTERFACE:
-        return 31 * hc + System.identityHashCode(this); // constructors use identity semantics
-      case ORDINARY:
+    return switch (kind) {
+      // constructors use identity semantics
+      case CONSTRUCTOR, INTERFACE -> 31 * hc + System.identityHashCode(this);
+      case ORDINARY -> {
         hc = 31 * hc + typeOfThis.hashCode();
         hc = 31 * hc + call.hashCode();
         hc = 31 * hc + Objects.hashCode(getClosurePrimitive());
-        return hc;
-      default:
-        throw new AssertionError();
-    }
+        yield hc;
+      }
+      default -> throw new AssertionError();
+    };
   }
 
   public final boolean hasEqualCallType(FunctionType that) {
-    return new EqualityChecker()
-        .setEqMethod(EqMethod.IDENTITY)
-        .check(this.call, that.call);
+    return new EqualityChecker().setEqMethod(EqMethod.IDENTITY).check(this.call, that.call);
   }
 
   /**
@@ -968,7 +957,6 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
     sb.appendNonNull(call.getReturnType());
 
     setPrettyPrint(true);
-    return;
   }
 
   private void appendArgString(TypeStringBuilder sb, Parameter p) {
@@ -1035,12 +1023,13 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
   }
 
   /** Gets the source node or null if this is an unknown function. */
+  @Override
   public final Node getSource() {
     return source;
   }
 
-  @Nullable
-  public String getGoogModuleId() {
+  @Override
+  public @Nullable String getGoogModuleId() {
     return this.googModuleId;
   }
 
@@ -1129,7 +1118,7 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
    * Resolve each item in the list, and return a new list if any references changed. Otherwise,
    * return null.
    */
-  private ImmutableList<ObjectType> resolveTypeListHelper(
+  private @Nullable ImmutableList<ObjectType> resolveTypeListHelper(
       ImmutableList<ObjectType> list, ErrorReporter reporter) {
     boolean changed = false;
     ImmutableList.Builder<ObjectType> resolvedList = ImmutableList.builder();
@@ -1188,14 +1177,14 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
   @Override
   public final Map<String, JSType> getPropertyTypeMap() {
     Map<String, JSType> propTypeMap = new LinkedHashMap<>();
-    updatePropertyTypeMap(this, propTypeMap, new HashSet<FunctionType>());
+    updatePropertyTypeMap(this, propTypeMap, new LinkedHashSet<FunctionType>());
     return propTypeMap;
   }
 
   // cache is added to prevent infinite recursion when retrieving
   // the super type: see testInterfaceExtendsLoop in TypeCheckTest.java
   private static void updatePropertyTypeMap(
-      FunctionType type, Map<String, JSType> propTypeMap, HashSet<FunctionType> cache) {
+      FunctionType type, Map<String, JSType> propTypeMap, LinkedHashSet<FunctionType> cache) {
     if (type == null) {
       return;
     }
@@ -1211,7 +1200,7 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
       }
     }
     // retrieve all property types from its super class
-    Iterable<ObjectType> iterable = type.getExtendedInterfaces();
+    ImmutableList<ObjectType> iterable = type.getExtendedInterfaces();
     if (iterable != null) {
       for (ObjectType interfaceType : iterable) {
         FunctionType superConstructor = interfaceType.getConstructor();
@@ -1231,11 +1220,12 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
    * @return an array of all functions in the loop chain if a loop exists, otherwise returns null
    */
   public final List<FunctionType> checkExtendsLoop() {
-    return checkExtendsLoop(new HashSet<FunctionType>(), new ArrayList<FunctionType>());
+    return checkExtendsLoop(new LinkedHashSet<FunctionType>(), new ArrayList<FunctionType>());
   }
 
-  private List<FunctionType> checkExtendsLoop(Set<FunctionType> cache, List<FunctionType> path) {
-    Iterable<ObjectType> iterable = this.getExtendedInterfaces();
+  private @Nullable List<FunctionType> checkExtendsLoop(
+      Set<FunctionType> cache, List<FunctionType> path) {
+    ImmutableList<ObjectType> iterable = this.getExtendedInterfaces();
     if (iterable != null) {
       for (ObjectType interfaceType : iterable) {
         FunctionType superConstructor = interfaceType.getConstructor();
@@ -1308,7 +1298,7 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
   public final ImmutableList<TemplateType> getConstructorOnlyTemplateParameters() {
     checkState(this.isConstructor(), this);
 
-    /**
+    /*
      * Structural constructor types (e.g `function(new:Foo<T>)`) cannot have template params of
      * their own.
      */
@@ -1425,20 +1415,20 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
   /** A builder class for function and arrow types. */
   public static final class Builder extends PrototypeObjectType.Builder<Builder> {
 
-    private Node sourceNode = null;
-    private String googModuleId = null;
-    private List<Parameter> parameters = null;
-    private JSType returnType = null;
-    private JSType typeOfThis = null;
-    private ObjectType setPrototypeBasedOn = null;
-    private Set<TemplateType> constructorOnlyKeys = ImmutableSet.of();
+    private @Nullable Node sourceNode = null;
+    private @Nullable String googModuleId = null;
+    private @Nullable List<Parameter> parameters = null;
+    private @Nullable JSType returnType = null;
+    private @Nullable JSType typeOfThis = null;
+    private @Nullable ObjectType setPrototypeBasedOn = null;
+    private ImmutableSet<TemplateType> constructorOnlyKeys = ImmutableSet.of();
     private Kind kind = Kind.ORDINARY;
     private boolean isAbstract;
     private boolean isKnownAmbiguous = false;
     private boolean returnTypeIsInferred;
     private boolean returnsOwnInstanceType;
-    private ClosurePrimitive primitiveId = null;
-    private FunctionType canonicalRepresentation = null;
+    private @Nullable ClosurePrimitive primitiveId = null;
+    private @Nullable FunctionType canonicalRepresentation = null;
 
     private Builder(JSTypeRegistry registry) {
       super(registry);
@@ -1541,6 +1531,7 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
       this.kind = kind;
       return this;
     }
+
     /** Make this a constructor. */
     public Builder forConstructor() {
       this.kind = Kind.CONSTRUCTOR;
@@ -1594,20 +1585,15 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
       // Verify that the builder is an a sensible state before instantiating a function.
 
       switch (this.kind) {
-        case CONSTRUCTOR:
-        case INTERFACE:
-          /**
+        case CONSTRUCTOR, INTERFACE -> {
+          /*
            * These kinds have no implication on whether `returnsOwnInstanceType` is reasonable. This
            * configuration may be intended to synthesize an instance type. The return type and
            * instance type are independent.
            */
-          break;
-        case NONE:
-          checkState(this.returnsOwnInstanceType);
-          break;
-        case ORDINARY:
-          checkState(!this.returnsOwnInstanceType);
-          break;
+        }
+        case NONE -> checkState(this.returnsOwnInstanceType);
+        case ORDINARY -> checkState(!this.returnsOwnInstanceType);
       }
 
       if (this.returnsOwnInstanceType) {
@@ -1618,13 +1604,8 @@ public class FunctionType extends PrototypeObjectType implements JSType.WithSour
       }
 
       switch (this.kind) {
-        case CONSTRUCTOR:
-        case INTERFACE:
-          break;
-        case NONE:
-        case ORDINARY:
-          checkState(this.constructorOnlyKeys.isEmpty());
-          break;
+        case CONSTRUCTOR, INTERFACE -> {}
+        case NONE, ORDINARY -> checkState(this.constructorOnlyKeys.isEmpty());
       }
 
       return new FunctionType(this);

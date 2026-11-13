@@ -16,8 +16,8 @@
 package com.google.javascript.jscomp;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
-import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 import static com.google.javascript.jscomp.PolymerPassErrors.POLYMER_INVALID_EXTENDS;
 import static com.google.javascript.jscomp.PolymerPassErrors.POLYMER_MISSING_EXTERNS;
 
@@ -31,8 +31,9 @@ import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.JSTypeExpression;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.Set;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Rewrites "Polymer({})" calls into a form that is suitable for type checking and dead code
@@ -47,9 +48,6 @@ final class PolymerPass extends ExternsSkippingCallback implements CompilerPass 
 
   private final AbstractCompiler compiler;
   private final ImmutableMap<String, String> tagNameMap;
-  private final int polymerVersion;
-  private final PolymerExportPolicy polymerExportPolicy;
-  private final boolean propertyRenamingEnabled;
 
   private Node polymerElementExterns;
   private final Set<String> nativeExternsAdded;
@@ -59,22 +57,10 @@ final class PolymerPass extends ExternsSkippingCallback implements CompilerPass 
   private boolean warnedPolymer1ExternsMissing = false;
   private boolean propertySinkExternInjected = false;
 
-  PolymerPass(
-      AbstractCompiler compiler,
-      Integer polymerVersion,
-      PolymerExportPolicy polymerExportPolicy,
-      boolean propertyRenamingEnabled) {
-    checkArgument(
-        polymerVersion == null || polymerVersion == 1 || polymerVersion == 2,
-        "Invalid Polymer version:",
-        polymerVersion);
+  PolymerPass(AbstractCompiler compiler) {
     this.compiler = compiler;
     tagNameMap = TagNameToType.getMap();
-    nativeExternsAdded = new HashSet<>();
-    this.polymerVersion = polymerVersion == null ? 1 : polymerVersion;
-    this.polymerExportPolicy =
-        polymerExportPolicy == null ? PolymerExportPolicy.LEGACY : polymerExportPolicy;
-    this.propertyRenamingEnabled = propertyRenamingEnabled;
+    nativeExternsAdded = new LinkedHashSet<>();
   }
 
   @Override
@@ -84,16 +70,6 @@ final class PolymerPass extends ExternsSkippingCallback implements CompilerPass 
     polymerElementExterns = externsCallback.getPolymerElementExterns();
     polymerElementProps = externsCallback.getPolymerElementProps();
 
-    if (polymerVersion == 1 && polymerElementExterns == null) {
-      this.warnedPolymer1ExternsMissing = true;
-      compiler.report(JSError.make(POLYMER_MISSING_EXTERNS));
-      return;
-    }
-
-    if (polymerVersion > 1 && propertyRenamingEnabled) {
-      compiler.ensureLibraryInjected("util/reflectobject", false);
-    }
-
     globalNames = new GlobalNamespace(compiler, externs, root);
     behaviorExtractor =
         new PolymerBehaviorExtractor(
@@ -101,15 +77,13 @@ final class PolymerPass extends ExternsSkippingCallback implements CompilerPass 
 
     Node externsAndJsRoot = root.getParent();
     NodeTraversal.traverse(compiler, externsAndJsRoot, this);
-    PolymerPassSuppressBehaviors suppressBehaviorsCallback =
-        new PolymerPassSuppressBehaviors(compiler);
+    PolymerPassSuppressBehaviorsAndProtectKeys suppressBehaviorsCallback =
+        new PolymerPassSuppressBehaviorsAndProtectKeys(compiler);
     NodeTraversal.traverse(compiler, externsAndJsRoot, suppressBehaviorsCallback);
   }
 
   @Override
   public void visit(NodeTraversal traversal, Node node, Node parent) {
-    checkNotNull(globalNames, "Cannot call visit() before process()");
-
     if (PolymerPassStaticUtils.isPolymerCall(node)) {
       if (polymerElementExterns != null) {
         rewritePolymer1ClassDefinition(node, parent, traversal);
@@ -122,7 +96,7 @@ final class PolymerPass extends ExternsSkippingCallback implements CompilerPass 
     }
   }
 
-  private ModuleMetadata getModuleMetadata(NodeTraversal traversal) {
+  private @Nullable ModuleMetadata getModuleMetadata(NodeTraversal traversal) {
     Node script = traversal.getCurrentScript();
     if (script != null && script.getFirstChild().isModuleBody()) {
       return ModuleImportResolver.getModuleFromScopeRoot(
@@ -161,30 +135,22 @@ final class PolymerPass extends ExternsSkippingCallback implements CompilerPass 
       if (def.nativeBaseElement != null) {
         appendPolymerElementExterns(def);
       }
-      PolymerClassRewriter rewriter =
-          new PolymerClassRewriter(
-              compiler,
-              polymerVersion,
-              polymerExportPolicy,
-              this.propertyRenamingEnabled);
+      PolymerClassRewriter rewriter = new PolymerClassRewriter(compiler);
       rewriter.rewritePolymerCall(def, traversal);
     }
   }
 
   /** Polymer 2.x Class Nodes */
   private void rewritePolymer2ClassDefinition(Node node, NodeTraversal traversal) {
-    PolymerClassDefinition def =
-        PolymerClassDefinition.extractFromClassNode(node, compiler, globalNames);
+    PolymerClassDefinition def = PolymerClassDefinition.extractFromClassNode(node, compiler);
     if (def != null) {
-      PolymerClassRewriter rewriter =
-          new PolymerClassRewriter(
-              compiler,
-              polymerVersion,
-              polymerExportPolicy,
-              this.propertyRenamingEnabled);
+      PolymerClassRewriter rewriter = new PolymerClassRewriter(compiler);
       rewriter.propertySinkExternInjected = propertySinkExternInjected;
       rewriter.rewritePolymerClassDeclaration(node, traversal, def);
       propertySinkExternInjected = rewriter.propertySinkExternInjected;
+
+      // Support Polymer implicit property edge cases by just @exporting all non-private properties.
+      exportTsickleProps(def.definition, def.target.getQualifiedName());
     }
   }
 
@@ -200,9 +166,9 @@ final class PolymerPass extends ExternsSkippingCallback implements CompilerPass 
   }
 
   /**
-   * Duplicates the PolymerElement externs with a different element base class if needed.
-   * For example, if the base class is HTMLInputElement, then a class PolymerInputElement will be
-   * added. If the element does not extend a native HTML element, this method is a no-op.
+   * Duplicates the PolymerElement externs with a different element base class if needed. For
+   * example, if the base class is HTMLInputElement, then a class PolymerInputElement will be added.
+   * If the element does not extend a native HTML element, this method is a no-op.
    */
   private void appendPolymerElementExterns(final PolymerClassDefinition def) {
     if (!nativeExternsAdded.add(def.nativeBaseElement)) {
@@ -231,8 +197,7 @@ final class PolymerPass extends ExternsSkippingCallback implements CompilerPass 
 
     for (Node baseProp : polymerElementProps) {
       Node newProp = baseProp.cloneTree();
-      Node newPropRootName =
-          NodeUtil.getRootOfQualifiedName(newProp.getFirstFirstChild());
+      Node newPropRootName = NodeUtil.getRootOfQualifiedName(newProp.getFirstFirstChild());
       newPropRootName.setString(polymerElementType);
       block.addChildToBack(newProp);
     }
@@ -246,6 +211,77 @@ final class PolymerPass extends ExternsSkippingCallback implements CompilerPass 
     compiler.reportChangeToEnclosingScope(stmts);
   }
 
+  /**
+   * Finds the tsickle-generated {@code if (false)} block and exports all non-private properties.
+   */
+  private static void exportTsickleProps(Node classNode, String classQualifiedName) {
+    Node classStmt = checkNotNull(NodeUtil.getEnclosingStatement(classNode));
+
+    for (Node sibling = classStmt.getNext(); sibling != null; sibling = sibling.getNext()) {
+      Node ifBlock = maybeGetTsicklePropTypesIfBlock(sibling);
+      if (ifBlock == null) {
+        continue;
+      }
+
+      for (Node stmt = ifBlock.getFirstChild(); stmt != null; stmt = stmt.getNext()) {
+        Node prop = getTsickleClassPrototypeProp(stmt, classQualifiedName);
+        if (prop == null) {
+          continue;
+        }
+
+        JSDocInfo jsdoc = checkNotNull(prop.getJSDocInfo(), "No JSDoc found for %s", prop);
+        if (jsdoc.getVisibility() == JSDocInfo.Visibility.PRIVATE) {
+          continue;
+        }
+
+        JSDocInfo.Builder builder = JSDocInfo.Builder.copyFrom(jsdoc);
+        builder.recordExport();
+        // @export implicitly overwrites visibility.
+        builder.overwriteVisibility(JSDocInfo.Visibility.INHERITED);
+        prop.setJSDocInfo(builder.build());
+      }
+    }
+  }
+
+  /**
+   * If the given node is an {@code if (false) {}}, returns its block node. Otherwise returns {@code
+   * null}.
+   */
+  private static @Nullable Node maybeGetTsicklePropTypesIfBlock(Node node) {
+    if (!node.isIf()) {
+      return null;
+    }
+    Node condition = node.getFirstChild();
+    if (!condition.isFalse()) {
+      return null;
+    }
+    Node block = condition.getNext();
+    checkState(block != null && block.isBlock(), "Expected block but got %s", block);
+    return block;
+  }
+
+  /**
+   * Looks for {@code ClassName.prototype.foo} expressions and returns the property node (if found).
+   */
+  private static @Nullable Node getTsickleClassPrototypeProp(Node stmt, String classQualifiedName) {
+    if (!stmt.isExprResult()) {
+      return null;
+    }
+    Node expr = stmt.getFirstChild();
+    if (!expr.isGetProp()) {
+      return null;
+    }
+    Node owner = expr.getFirstChild();
+    if (!owner.isGetProp() || !owner.getString().equals("prototype")) {
+      return null;
+    }
+    Node classRef = owner.getFirstChild();
+    if (!classRef.matchesQualifiedName(classQualifiedName)) {
+      return null;
+    }
+    return expr;
+  }
+
   /** Any member of a Polymer element or Behavior. These can be functions, properties, etc. */
   static class MemberDefinition {
     /** Any {@link JSDocInfo} tied to this member. */
@@ -257,10 +293,13 @@ final class PolymerPass extends ExternsSkippingCallback implements CompilerPass 
     /** Value {@link Node} (RHS) for the definition of this member. */
     final Node value;
 
-    MemberDefinition(JSDocInfo info, Node name, Node value) {
+    final Node enclosingModule;
+
+    MemberDefinition(JSDocInfo info, Node name, Node value, Node enclosingModule) {
       this.info = info;
       this.name = name;
       this.value = value;
+      this.enclosingModule = enclosingModule;
     }
 
     @Override

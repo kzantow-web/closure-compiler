@@ -18,7 +18,6 @@ package com.google.javascript.jscomp.instrumentation;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
-import com.google.common.annotations.GwtIncompatible;
 import com.google.common.collect.ImmutableMap;
 import com.google.debugging.sourcemap.Base64VLQ;
 import com.google.gson.Gson;
@@ -33,7 +32,6 @@ import com.google.javascript.rhino.Node;
 import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.Deque;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -46,7 +44,6 @@ import java.util.Objects;
  * it can be run on client browsers with the goal of better detecting dead code. The callback will
  * instrument by pushing a string onto an array which identifies what piece of code was executed.
  */
-@GwtIncompatible
 final class ProductionCoverageInstrumentationCallback implements NodeTraversal.Callback {
 
   /**
@@ -113,13 +110,13 @@ final class ProductionCoverageInstrumentationCallback implements NodeTraversal.C
     String functionName = functionNameStack.peek();
 
     switch (node.getToken()) {
-      case FUNCTION:
+      case FUNCTION -> {
         // If the function node has been visited by visit() then we can be assured that all its
         // children nodes have been visited and properly instrumented.
         functionNameStack.pop();
         instrumentBlockNode(node.getLastChild(), fileName, functionName, Type.FUNCTION);
-        break;
-      case IF:
+      }
+      case IF -> {
         Node ifTrueNode = node.getSecondChild();
         instrumentBlockNode(ifTrueNode, sourceFileName, functionName, Type.BRANCH);
         if (node.getChildCount() == 2) {
@@ -135,10 +132,11 @@ final class ProductionCoverageInstrumentationCallback implements NodeTraversal.C
             || (ifFalseNode.hasChildren() && !ifFalseNode.getFirstChild().isIf())) {
           instrumentBlockNode(ifFalseNode, sourceFileName, functionName, Type.BRANCH_DEFAULT);
         }
-        break;
-      case SWITCH:
+      }
+      case SWITCH -> {
         boolean hasDefaultCase = false;
-        for (Node c = node.getSecondChild(); c != null; c = c.getNext()) {
+        Node switchBody = node.getSecondChild();
+        for (Node c = switchBody.getFirstChild(); c != null; c = c.getNext()) {
           if (c.isDefaultCase()) {
             instrumentBlockNode(
                 c.getLastChild(), sourceFileName, functionName, Type.BRANCH_DEFAULT);
@@ -151,11 +149,11 @@ final class ProductionCoverageInstrumentationCallback implements NodeTraversal.C
           Node defaultBlock = IR.block();
           defaultBlock.srcrefTreeIfMissing(node);
           Node defaultCase = IR.defaultCase(defaultBlock).srcrefTreeIfMissing(node);
-          node.addChildToBack(defaultCase);
+          switchBody.addChildToBack(defaultCase);
           instrumentBlockNode(defaultBlock, sourceFileName, functionName, Type.BRANCH_DEFAULT);
         }
-        break;
-      case HOOK:
+      }
+      case HOOK -> {
         Node ifTernaryIsTrueExpression = node.getSecondChild();
         Node ifTernaryIsFalseExpression = node.getLastChild();
 
@@ -165,10 +163,8 @@ final class ProductionCoverageInstrumentationCallback implements NodeTraversal.C
             ifTernaryIsFalseExpression, sourceFileName, functionName, Type.BRANCH);
 
         compiler.reportChangeToEnclosingScope(node);
-        break;
-      case OR:
-      case AND:
-      case COALESCE:
+      }
+      case OR, AND, COALESCE -> {
         // Only instrument the second child of the binary operation because the first child will
         // always execute, or the first child is part of a chain of binary operations and would have
         // already been instrumented.
@@ -177,13 +173,14 @@ final class ProductionCoverageInstrumentationCallback implements NodeTraversal.C
             secondExpression, sourceFileName, functionName, Type.BRANCH);
 
         compiler.reportChangeToEnclosingScope(node);
-        break;
-      default:
+      }
+      default -> {
         if (NodeUtil.isLoopStructure(node)) {
           Node blockNode = NodeUtil.getLoopCodeBlock(node);
           checkNotNull(blockNode);
           instrumentBlockNode(blockNode, sourceFileName, functionName, Type.BRANCH);
         }
+      }
     }
   }
 
@@ -286,7 +283,7 @@ final class ProductionCoverageInstrumentationCallback implements NodeTraversal.C
     ParameterMapping() {
       nextUniqueIdentifier = 0;
 
-      paramValueEncodings = new HashMap<>();
+      paramValueEncodings = new LinkedHashMap<>();
 
       // A LinkedHashMap is used so that when keys are printed, keySet() will obtain them in the
       // insertion order which corroborates to the index. This helps to avoid the need of sorting

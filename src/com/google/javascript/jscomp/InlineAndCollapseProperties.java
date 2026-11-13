@@ -25,18 +25,19 @@ import com.google.common.base.Preconditions;
 import com.google.common.base.Predicates;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.javascript.jscomp.CompilerOptions.ChunkOutputType;
 import com.google.javascript.jscomp.CompilerOptions.PropertyCollapseLevel;
 import com.google.javascript.jscomp.GlobalNamespace.AstChange;
 import com.google.javascript.jscomp.GlobalNamespace.Inlinability;
 import com.google.javascript.jscomp.GlobalNamespace.Name;
 import com.google.javascript.jscomp.GlobalNamespace.Ref;
+import com.google.javascript.jscomp.GlobalNamespace.RefBasedAstChange;
+import com.google.javascript.jscomp.GlobalNamespace.SimpleAstChange;
 import com.google.javascript.jscomp.NodeTraversal.AbstractPostOrderCallback;
 import com.google.javascript.jscomp.NodeTraversal.ExternsSkippingCallback;
-import com.google.javascript.jscomp.Normalize.PropagateConstantAnnotationsOverVars;
 import com.google.javascript.jscomp.deps.ModuleLoader.ResolutionMode;
 import com.google.javascript.jscomp.diagnostic.LogFile;
-import com.google.javascript.jscomp.parsing.parser.util.format.SimpleFormat;
 import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.Node;
@@ -45,7 +46,6 @@ import com.google.javascript.rhino.TokenStream;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -54,7 +54,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Perform inlining of aliases and collapsing of qualified names in order to improve later
@@ -68,7 +68,7 @@ class InlineAndCollapseProperties implements CompilerPass {
           "JSC_PARTIAL_NAMESPACE",
           "Partial alias created for namespace {0}, possibly due to await/yield transpilation.\n"
               + "This may prevent optimization of anything nested under this namespace.\n"
-              + "See https://github.com/google/closure-compiler/wiki/FAQ#i-got-an-incomplete-alias-created-for-namespace-error--what-do-i-do"
+              + "See https://github.com/google/closure-compiler/wiki/FAQ#i-got-a-partial-alias-created-for-namespace-error--what-do-i-do"
               + " for more details.");
 
   static final DiagnosticType NAMESPACE_REDEFINED_WARNING =
@@ -115,7 +115,7 @@ class InlineAndCollapseProperties implements CompilerPass {
    * <p>This field is allocated and cleaned up by process(). It's a class field to avoid having to
    * pass it as an extra argument through a lot of methods.
    */
-  private LogFile decisionsLog = null;
+  private @Nullable LogFile decisionsLog = null;
 
   /** A `GlobalNamespace` that is shared by alias inlining and property collapsing code. */
   private GlobalNamespace namespace;
@@ -143,26 +143,31 @@ class InlineAndCollapseProperties implements CompilerPass {
       this.compiler = compiler;
     }
 
+    @CanIgnoreReturnValue
     public Builder setPropertyCollapseLevel(PropertyCollapseLevel propertyCollapseLevel) {
       this.propertyCollapseLevel = propertyCollapseLevel;
       return this;
     }
 
+    @CanIgnoreReturnValue
     public Builder setChunkOutputType(ChunkOutputType chunkOutputType) {
       this.chunkOutputType = chunkOutputType;
       return this;
     }
 
+    @CanIgnoreReturnValue
     public Builder setHaveModulesBeenRewritten(boolean haveModulesBeenRewritten) {
       this.haveModulesBeenRewritten = haveModulesBeenRewritten;
       return this;
     }
 
+    @CanIgnoreReturnValue
     public Builder setModuleResolutionMode(ResolutionMode moduleResolutionMode) {
       this.moduleResolutionMode = moduleResolutionMode;
       return this;
     }
 
+    @CanIgnoreReturnValue
     @VisibleForTesting
     public Builder testAggressiveInliningOnly(Consumer<GlobalNamespace> globalNamespaceTester) {
       this.testAggressiveInliningOnly = true;
@@ -190,19 +195,15 @@ class InlineAndCollapseProperties implements CompilerPass {
       // was given an option telling it to generate log files and where to put them.
       decisionsLog = logFile;
       switch (propertyCollapseLevel) {
-        case NONE:
-          performMinimalInliningAndNoCollapsing(externs, root);
-          break;
-        case MODULE_EXPORT:
-          performMinimalInliningAndModuleExportCollapsing(externs, root);
-          break;
-        case ALL:
+        case NONE -> performMinimalInliningAndNoCollapsing(externs, root);
+        case MODULE_EXPORT -> performMinimalInliningAndModuleExportCollapsing(externs, root);
+        case ALL -> {
           if (testAggressiveInliningOnly) {
             performAggressiveInliningForTest(externs, root);
           } else {
             performAggressiveInliningAndCollapsing(externs, root);
           }
-          break;
+        }
       }
     } finally {
       decisionsLog = null;
@@ -227,6 +228,7 @@ class InlineAndCollapseProperties implements CompilerPass {
   private void performAggressiveInliningAndCollapsing(Node externs, Node root) {
     new ConcretizeStaticInheritanceForInlining(compiler).process(externs, root);
     new AggressiveInlineAliases().process(externs, root);
+
     new CollapseProperties().process(externs, root);
   }
 
@@ -265,8 +267,6 @@ class InlineAndCollapseProperties implements CompilerPass {
 
     @Override
     public void process(Node externs, Node root) {
-      new StaticSuperPropReplacer(compiler).replaceAll(root);
-
       NodeTraversal.traverse(compiler, root, new RewriteSimpleDestructuringAliases());
 
       // Building the `GlobalNamespace` dominates the cost of this pass, so it is built once and
@@ -352,18 +352,17 @@ class InlineAndCollapseProperties implements CompilerPass {
     private void inlineAliasesForName(Name name, GlobalNamespace namespace) {
       List<Ref> refs = new ArrayList<>(name.getRefs());
       for (Ref ref : refs) {
-        Scope hoistScope = ref.scope.getClosestHoistScope();
-        if (ref.type == Ref.Type.ALIASING_GET && !mayBeGlobalAlias(ref) && ref.getTwin() == null) {
+        if (ref.isAliasingGet() && !mayBeGlobalAlias(ref) && !ref.isTwin()) {
           // {@code name} meets condition (c). Try to inline it.
           // TODO(johnlenz): consider picking up new aliases at the end
           // of the pass instead of immediately like we do for global
           // inlines.
           inlineAliasIfPossible(name, ref, namespace);
-        } else if (ref.type == Ref.Type.ALIASING_GET
-            && hoistScope.isGlobal()
-            && ref.getTwin() == null) { // ignore aliases in chained assignments
+        } else if (ref.isAliasingGet()
+            && ref.scope.getClosestHoistScope().isGlobal()
+            && !ref.isTwin()) {
           inlineGlobalAliasIfPossible(name, ref, namespace);
-        } else if (name.isClass() && ref.type == Ref.Type.SUBCLASSING_GET && name.props != null) {
+        } else if (name.isClass() && ref.isSubclassingGet() && name.props != null) {
           for (Name prop : name.props) {
             rewriteAllSubclassInheritedAccesses(name, ref, prop, namespace);
           }
@@ -372,8 +371,8 @@ class InlineAndCollapseProperties implements CompilerPass {
     }
 
     /**
-     * If the global name is a class or function with an inner-scope name, inline references to that
-     * name with the global name.
+     * If the global name is a function with an inner-scope name, inline references to that name
+     * with the global name. Class inner name rewrites are handled in {@link Es6NormalizeClasses}.
      *
      * <p>e.g.
      *
@@ -382,12 +381,6 @@ class InlineAndCollapseProperties implements CompilerPass {
      *     // change this to globalFunction.someProp
      *     use(innerName.someProp);
      *   }
-     *   var GlobalClass = class InnerName {
-     *     method() {
-     *       // change this to GlobalClass.someProp
-     *       use(InnerName.someProp);
-     *     }
-     *   };
      * </code></pre>
      */
     private void maybeInlineInnerName(Name globalName) {
@@ -477,7 +470,7 @@ class InlineAndCollapseProperties implements CompilerPass {
       Name subclassNameObj = namespace.getOwnSlot(subclassName);
       if (subclassNameObj != null && subclassNameObj.subclassingGetCount() > 0) {
         for (Ref ref : subclassNameObj.getRefs()) {
-          if (ref.type == Ref.Type.SUBCLASSING_GET) {
+          if (ref.isSubclassingGet()) {
             rewriteAllSubclassInheritedAccesses(superclassNameObj, ref, prop, namespace);
           }
         }
@@ -498,6 +491,63 @@ class InlineAndCollapseProperties implements CompilerPass {
 
         rewriteNestedAliasReference(superclassNameNode, 0, newNodes, subclassPropNameObj);
         namespace.scanNewNodes(newNodes);
+      }
+      return true;
+    }
+
+    /**
+     * Recognizes aliases for the special global variables representing the `exports` values for
+     * goog modules which are safe to inline.
+     *
+     * <p>The compiler will enforce that references to these module objects only occur after they
+     * have been initialized and that they are only ever assigned one time. So, as long as a
+     * variable that aliases one of them is only ever assigned that one module exports value and
+     * only used for getting properties off of it with destructuring or dot-property access, we know
+     * it is safe to inline those aliases.
+     *
+     * <p>This inlining is important to support `await goog.requireDynamic()` when transpiling down
+     * to es5. In that case the compiler generates one of these aliases which risks producing the
+     * PARTIAL_NAMESPACE_WARNING.
+     */
+    private boolean isInlineableModuleExportsAlias(Name name, ReferenceCollection aliasRefs) {
+      final String aliasedNameStr = name.getFullName();
+      if (!aliasedNameStr.startsWith(ClosureRewriteModule.MODULE_EXPORTS_PREFIX)) {
+        return false;
+      }
+      // the first rhs value Node we find assigned to the name
+      Node firstRhs = null;
+      int size = aliasRefs.references.size();
+      for (int i = 0; i < size; i++) {
+        Reference ref = aliasRefs.references.get(i);
+        if (ref.isVarDeclaration() || ref.getParent().isAssign()) {
+          Node rhs;
+          if (ref.getParent().isAssign()) {
+            rhs = ref.getParent().getSecondChild();
+          } else {
+            rhs = ref.getNode().getFirstChild();
+          }
+
+          if (rhs != null) {
+            // Make sure that every time a value is assigned to the alias, it is
+            // the aliased name we expect. If not, we cannot inline this alias.
+            if (firstRhs == null) {
+              // NOTE: comparing with a string is slower, but necessary the first time.
+              if (!rhs.matchesQualifiedName(aliasedNameStr)) {
+                return false;
+              }
+              firstRhs = rhs;
+            } else {
+              // comparing nodes is faster than comparing with the string name
+              if (!rhs.matchesQualifiedName(firstRhs)) {
+                return false;
+              }
+            }
+          }
+          continue;
+        }
+        if (!ref.isDotPropertyAccess() && !ref.isAssignedToObjectDestructuringPattern()) {
+          return false;
+        }
       }
       return true;
     }
@@ -527,7 +577,7 @@ class InlineAndCollapseProperties implements CompilerPass {
         String aliasVarName = aliasLhsNode.getString();
 
         Var aliasVar = alias.scope.getVar(aliasVarName);
-        checkState(aliasVar != null, "Expected variable to be defined in scope", aliasVarName);
+        checkState(aliasVar != null, "Expected variable to be defined in scope (%s)", aliasVarName);
         ReferenceCollector collector =
             new ReferenceCollector(
                 compiler,
@@ -540,18 +590,23 @@ class InlineAndCollapseProperties implements CompilerPass {
         ReferenceCollection aliasRefs = collector.getReferences(aliasVar);
         Set<AstChange> newNodes = new LinkedHashSet<>();
 
-        if (aliasRefs.isWellDefined() && aliasRefs.isAssignedOnceInLifetime()) {
+        if (aliasRefs.isWellDefined()
+            && (aliasRefs.isAssignedOnceInLifetime()
+                || isInlineableModuleExportsAlias(name, aliasRefs))) {
           // The alias is well-formed, so do the inlining now.
+          Set<AstChange> readNodes = new LinkedHashSet<>();
           int size = aliasRefs.references.size();
           // It's initialized on either the first or second reference.
           int firstRead = aliasRefs.references.get(0).isInitializingDeclaration() ? 1 : 2;
           for (int i = firstRead; i < size; i++) {
             Reference aliasRef = aliasRefs.references.get(i);
-            newNodes.add(replaceAliasReference(alias, aliasRef));
+            readNodes.add(replaceAliasReference(alias, aliasRef));
           }
 
-          // just set the original alias to null.
-          tryReplacingAliasingAssignment(alias, aliasLhsNode);
+          // Replace the aliasing assignment before scanning readNodes so that any new reference
+          // at the initialization site is scanned into GlobalNamespace before subsequent reads.
+          replaceAliasingAssignment(alias, name, aliasLhsNode, newNodes);
+          newNodes.addAll(readNodes);
 
           // Inlining the variable may have introduced new references
           // to descendants of {@code name}. So those need to be collected now.
@@ -564,7 +619,7 @@ class InlineAndCollapseProperties implements CompilerPass {
           // generators introduces some constructor aliases that weren't getting inlined.
           // If we find another (safer) way to avoid aliasing in method decomposition, consider
           // removing this.
-          if (!partiallyInlineAlias(alias, namespace, aliasRefs, aliasLhsNode)) {
+          if (!partiallyInlineAlias(alias, name, namespace, aliasRefs, aliasLhsNode)) {
             // If we can't inline all alias references, make sure there are no unsafe property
             // accesses.
             if (referencesCollapsibleProperty(aliasRefs, name, namespace)) {
@@ -587,7 +642,11 @@ class InlineAndCollapseProperties implements CompilerPass {
      * @return Whether all references to the alias were inlined
      */
     private boolean partiallyInlineAlias(
-        Ref alias, GlobalNamespace namespace, ReferenceCollection aliasRefs, Node aliasLhsNode) {
+        Ref alias,
+        Name aliasingName,
+        GlobalNamespace namespace,
+        ReferenceCollection aliasRefs,
+        Node aliasLhsNode) {
       BasicBlock aliasBlock = null;
       // This initial iteration through all the alias references does two things:
       // a) Find the control flow block in which the alias is assigned.
@@ -606,7 +665,7 @@ class InlineAndCollapseProperties implements CompilerPass {
         }
       }
 
-      Set<AstChange> newNodes = new LinkedHashSet<>();
+      Set<AstChange> readNodes = new LinkedHashSet<>();
       boolean alreadySeenInitialAlias = false;
       boolean foundNonReplaceableAlias = false;
       // Do a second iteration through all the alias references, and replace any inlinable
@@ -628,16 +687,18 @@ class InlineAndCollapseProperties implements CompilerPass {
           // the aliasing assignment takes place before the reference, and the alias is
           // never reassigned.
           codeChanged = true;
-          newNodes.add(replaceAliasReference(alias, aliasRef));
+          readNodes.add(replaceAliasReference(alias, aliasRef));
         } else {
           foundNonReplaceableAlias = true;
         }
       }
 
+      Set<AstChange> newNodes = new LinkedHashSet<>();
       // We removed all references to the alias, so remove the original aliasing assignment.
       if (!foundNonReplaceableAlias) {
-        tryReplacingAliasingAssignment(alias, aliasLhsNode);
+        replaceAliasingAssignment(alias, aliasingName, aliasLhsNode, newNodes);
       }
+      newNodes.addAll(readNodes);
 
       if (codeChanged) {
         // Inlining the variable may have introduced new references
@@ -649,23 +710,28 @@ class InlineAndCollapseProperties implements CompilerPass {
 
     /**
      * Replaces the rhs of an aliasing assignment with null, unless the assignment result is used in
-     * a complex expression.
+     * a complex expression, in which case it replaces the entire assignment with the rhs.
      */
-    private boolean tryReplacingAliasingAssignment(Ref alias, Node aliasLhsNode) {
+    private void replaceAliasingAssignment(
+        Ref alias, Name aliasName, Node aliasLhsNode, Set<AstChange> newNodes) {
       // either VAR/CONST/LET or ASSIGN.
       Node assignment = aliasLhsNode.getParent();
       if (!NodeUtil.isNameDeclaration(assignment) && NodeUtil.isExpressionResultUsed(assignment)) {
-        // e.g. don't change "if (alias = someVariable)" to "if (alias = null)"
-        // TODO(lharker): instead replace the entire assignment with the RHS - "alias = x" becomes
-        // "x"
-        return false;
+        // e.g. change "if (alias = someVariable)" to "if (someVariable)", or
+        // "(alias = someVariable).prop" to "someVariable.prop"
+        checkState(assignment.isAssign(), assignment);
+        Node assignmentParent = assignment.getParent();
+        Node rhs = alias.getNode().detach();
+        assignment.replaceWith(rhs);
+        newNodes.add(new RefBasedAstChange(alias, rhs));
+        compiler.reportChangeToEnclosingScope(assignmentParent);
+      } else {
+        Node aliasParent = alias.getNode().getParent();
+        alias.getNode().replaceWith(IR.nullNode());
+        compiler.reportChangeToEnclosingScope(aliasParent);
       }
-      Node aliasParent = alias.getNode().getParent();
-      alias.getNode().replaceWith(IR.nullNode());
-      alias.name.removeRef(alias);
+      aliasName.removeRef(alias);
       codeChanged = true;
-      compiler.reportChangeToEnclosingScope(aliasParent);
-      return true;
     }
 
     /**
@@ -687,7 +753,7 @@ class InlineAndCollapseProperties implements CompilerPass {
       newNode.srcrefTree(nodeToReplace);
       nodeToReplace.replaceWith(newNode);
       compiler.reportChangeToEnclosingScope(newNode);
-      return new AstChange(aliasRef.getScope(), newNode);
+      return new SimpleAstChange(newNode, alias.getChunk(), alias.scope);
     }
 
     /**
@@ -716,7 +782,7 @@ class InlineAndCollapseProperties implements CompilerPass {
           return;
         }
         if (lvalue.isName()
-            && compiler.getCodingConvention().isExported(lvalue.getString(), /* local */ false)) {
+            && compiler.getCodingConvention().isExported(lvalue.getString(), /* local= */ false)) {
           return;
         }
         Name aliasingName = namespace.getSlot(lvalue.getQualifiedName());
@@ -736,17 +802,17 @@ class InlineAndCollapseProperties implements CompilerPass {
           // nothing to do here
           return;
         }
+
+        // Rewrite all references to the aliasing name, except for the initialization & any cross-
+        // chunk references if they exist.
+        Set<AstChange> readNodes = rewriteAliasReferences(aliasingName, alias, aliasInlinability);
+        rewriteAliasProps(aliasingName, alias.getNode(), 0, readNodes);
         Set<AstChange> newNodes = new LinkedHashSet<>();
 
-        // Rewrite all references to the aliasing name, except for the initialization
-        rewriteAliasReferences(aliasingName, alias, newNodes);
-        rewriteAliasProps(aliasingName, alias.getNode(), 0, newNodes);
-
         if (aliasInlinability.shouldRemoveDeclaration()) {
-          // Rewrite the initialization of the alias, unless this is an unsafe alias inline
-          // caused by an @constructor. In that case, we need to leave the initialization around.
-          Ref aliasDeclaration = aliasingName.getDeclaration();
-          if (aliasDeclaration.getTwin() != null) {
+          // Rewrite the initialization of the alias.
+          Ref aliasInitialization = aliasingName.getInitialization();
+          if (aliasInitialization.isTwin()) {
             // This is in a nested assign.
             // Replace
             //   a.b = aliasing.name = aliased.name
@@ -755,12 +821,17 @@ class InlineAndCollapseProperties implements CompilerPass {
             checkState(aliasParent.isAssign(), aliasParent);
             Node aliasGrandparent = aliasParent.getParent();
             aliasParent.replaceWith(alias.getNode().detach());
-            // remove both of the refs
-            aliasingName.removeTwinRefs(aliasDeclaration);
-            newNodes.add(new AstChange(alias.scope, alias.getNode()));
+            // Remove the ref to 'aliasing.name' entirely
+            aliasingName.removeRef(aliasInitialization);
+            // Force GlobalNamespace to revisit the new reference to 'aliased.name' and update its
+            // internal state before scanning subsequent read references.
+            newNodes.add(new RefBasedAstChange(alias, alias.getNode()));
             compiler.reportChangeToEnclosingScope(aliasGrandparent);
           } else {
-            // just set the original alias to null.
+            // Replace
+            //  aliasing.name = aliased.name
+            // with
+            //  aliasing.name = null;
             alias.getNode().replaceWith(IR.nullNode());
             compiler.reportChangeToEnclosingScope(aliasParent);
           }
@@ -769,53 +840,64 @@ class InlineAndCollapseProperties implements CompilerPass {
           name.removeRef(alias);
         }
 
+        newNodes.addAll(readNodes);
         // Inlining the variable may have introduced new references
         // to descendants of {@code name}. So those need to be collected now.
         namespace.scanNewNodes(newNodes);
       }
     }
 
-    /** Replaces all reads of a name with the name it aliases */
-    private void rewriteAliasReferences(
-        Name aliasingName, Ref aliasingRef, Set<AstChange> newNodes) {
+    /**
+     * Replaces reads of a name with the name it aliases
+     *
+     * @param aliasingName the alias - e.g. 'alsoFoo' in 'const alsoFoo = foo;'
+     * @param aliasInlinability indicates whether all references to the alias should be inlined, or
+     *     only those that are in a valid cross-chunk dependency.
+     */
+    private Set<AstChange> rewriteAliasReferences(
+        Name aliasingName, Ref aliasingRef, Inlinability aliasInlinability) {
+      Set<AstChange> newNodes = new LinkedHashSet<>();
       List<Ref> refs = new ArrayList<>(aliasingName.getRefs());
+      JSChunk initializationChunk =
+          aliasingName.getInitialization() != null
+              ? aliasingName.getInitialization().getChunk()
+              : aliasingName.getDeclaration().getChunk();
       for (Ref ref : refs) {
-        switch (ref.type) {
-          case SET_FROM_GLOBAL:
-            continue;
-          case DIRECT_GET:
-          case ALIASING_GET:
-          case PROTOTYPE_GET:
-          case CALL_GET:
-          case SUBCLASSING_GET:
-            if (ref.getTwin() != null) {
-              // The reference is the left-hand side of a nested assignment. This means we store two
-              // separate 'twin' Refs with the same node of types ALIASING_GET and SET_FROM_GLOBAL.
-              // For example, the read of `c.d` has a twin reference in
-              //   a.b = c.d = e.f;
-              // We handle this case later.
-              checkState(ref.type == Ref.Type.ALIASING_GET, ref);
-              break;
-            }
-            if (ref.getNode().isStringKey()) {
-              // e.g. `y` in `const {y} = x;`
-              DestructuringGlobalNameExtractor.reassignDestructringLvalue(
-                  ref.getNode(), aliasingRef.getNode().cloneTree(), newNodes, ref, compiler);
-            } else {
-              // e.g. `x.y`
-              checkState(ref.getNode().isGetProp() || ref.getNode().isName());
-              Node newNode = aliasingRef.getNode().cloneTree();
-              Node node = ref.getNode();
-              node.replaceWith(newNode);
-              compiler.reportChangeToEnclosingScope(newNode);
-              newNodes.add(new AstChange(ref.scope, newNode));
-            }
-            aliasingName.removeRef(ref);
-            break;
-          default:
-            throw new IllegalStateException();
+        if (ref.isSetFromGlobal()) {
+          // Handled elsewhere
+          // This should either be the initialization or an irrelevant uninitialized declaration.
+          checkState(
+              ref.getChunk().equals(initializationChunk) || ref.isUninitializedDeclaration(), ref);
+          continue;
         }
+
+        checkState(ref.isGet(), ref); // names with local sets should not be rewritten
+        // Twin refs that are both gets and sets are handled later, with the other sets.
+        checkState(!ref.isTwin(), ref);
+
+        if (aliasInlinability == Inlinability.INLINE_UNLESS_INVALID_CROSS_CHUNK_DEPENDENCY
+            && ref.getChunk() != initializationChunk
+            && !compiler.getChunkGraph().dependsOn(ref.getChunk(), initializationChunk)) {
+          continue;
+        }
+
+        if (ref.getNode().isStringKey()) {
+          // e.g. `y` in `const {y} = x;`
+          DestructuringGlobalNameExtractor.reassignDestructringLvalue(
+              ref.getNode(), aliasingRef.getNode().cloneTree(), newNodes, ref, compiler);
+        } else {
+          // e.g. `x.y`
+          checkState(ref.getNode().isGetProp() || ref.getNode().isName());
+          Node newNode = aliasingRef.getNode().cloneTree();
+          Node node = ref.getNode();
+          newNode.srcref(node);
+          node.replaceWith(newNode);
+          compiler.reportChangeToEnclosingScope(newNode);
+          newNodes.add(new RefBasedAstChange(ref, newNode));
+        }
+        aliasingName.removeRef(ref);
       }
+      return newNodes;
     }
 
     /**
@@ -891,6 +973,12 @@ class InlineAndCollapseProperties implements CompilerPass {
           continue;
         }
 
+        if (target.isMemberFunctionDef()) {
+          // In the case of a method reference, the reference to the alias is not fully qualified,
+          // so we should not touch it, see b/293184904.
+          continue;
+        }
+
         for (int i = 0; i <= depth; i++) {
           if (target.isGetProp()) {
             target = target.getFirstChild();
@@ -914,7 +1002,7 @@ class InlineAndCollapseProperties implements CompilerPass {
         compiler.reportChangeToEnclosingScope(newValue);
         prop.removeRef(ref);
         // Rescan the expression root.
-        newNodes.add(new AstChange(ref.scope, ref.getNode()));
+        newNodes.add(new RefBasedAstChange(ref, ref.getNode()));
         codeChanged = true;
       }
     }
@@ -928,7 +1016,7 @@ class InlineAndCollapseProperties implements CompilerPass {
    */
   private static class RewriteSimpleDestructuringAliases extends AbstractPostOrderCallback {
 
-    public boolean isSimpleDestructuringAlias(Node n) {
+    static boolean isSimpleDestructuringAlias(Node n) {
       if (!NodeUtil.isStatement(n) || !n.isConst()) {
         return false;
       }
@@ -945,13 +1033,21 @@ class InlineAndCollapseProperties implements CompilerPass {
       if (!rhs.isQualifiedName()) {
         return false;
       }
+      return isSimpleDestructuringPattern(objectPattern);
+    }
+
+    private static boolean isSimpleDestructuringPattern(Node objectPattern) {
+      checkArgument(objectPattern.isObjectPattern());
       for (Node key = objectPattern.getFirstChild(); key != null; key = key.getNext()) {
-        if (!key.isStringKey() || key.isQuotedString()) {
+        if (!key.isStringKey() || key.isQuotedStringKey()) {
           return false;
         }
         checkState(key.hasOneChild());
-        Node identifier = key.getFirstChild();
-        if (!identifier.isName()) {
+        Node rhs = key.getFirstChild();
+        if (!rhs.isObjectPattern() && !rhs.isName()) {
+          return false;
+        }
+        if (rhs.isObjectPattern() && !isSimpleDestructuringPattern(rhs)) {
           return false;
         }
       }
@@ -969,20 +1065,46 @@ class InlineAndCollapseProperties implements CompilerPass {
       Node destructuringLhs = n.getFirstChild();
       Node objectPattern = destructuringLhs.getFirstChild();
       Node rhs = destructuringLhs.getLastChild();
-      for (Node key = objectPattern.getFirstChild(); key != null; key = key.getNext()) {
-        Node identifier = key.getFirstChild();
-        Node newRhs = IR.getprop(rhs.cloneTree(), key.getString()).srcref(identifier);
-        Node newConstNode = IR.constNode(identifier.detach(), newRhs).srcref(n);
-        newConstNode.insertAfter(insertionPoint);
-        insertionPoint = newConstNode;
+      if (!rhs.isName() && objectPattern.hasMoreThanOneChild()) {
+        String uniqueId = t.getCompiler().getUniqueIdSupplier().getUniqueId(t.getInput());
+        Node tempName = IR.name("destructuring$" + uniqueId).srcref(rhs);
+        tempName.putBooleanProp(Node.IS_CONSTANT_NAME, true);
+        Node tempConstNode = IR.constNode(tempName, rhs.detach()).srcref(objectPattern);
+        tempConstNode.insertAfter(insertionPoint);
+        insertionPoint = tempConstNode;
+        rhs = tempName.cloneNode();
       }
+      Node unusedNewInsertionPoint = expandObjectPattern(t, insertionPoint, objectPattern, rhs);
       n.detach();
       t.reportCodeChange();
     }
+
+    private Node expandObjectPattern(
+        NodeTraversal t, Node insertionPoint, Node objectPattern, Node rhs) {
+      for (Node key = objectPattern.getFirstChild(); key != null; key = key.getNext()) {
+        Node keyChild = key.getFirstChild();
+        final Node nameNode;
+        if (keyChild.isName()) {
+          nameNode = keyChild.detach();
+        } else {
+          checkState(keyChild.isObjectPattern());
+          String uniqueId = t.getCompiler().getUniqueIdSupplier().getUniqueId(t.getInput());
+          nameNode = IR.name("destructuring$" + uniqueId).srcref(keyChild);
+          nameNode.putBooleanProp(Node.IS_CONSTANT_NAME, true);
+        }
+        Node newRhs = IR.getprop(rhs.cloneTree(), key.getString()).srcref(keyChild);
+        Node newConstNode = IR.constNode(nameNode, newRhs).srcref(objectPattern);
+        newConstNode.insertAfter(insertionPoint);
+        insertionPoint = newConstNode;
+        if (keyChild.isObjectPattern()) {
+          insertionPoint = expandObjectPattern(t, insertionPoint, keyChild, nameNode.cloneNode());
+        }
+      }
+      return insertionPoint;
+    }
   }
 
-  @Nullable
-  private static Node maybeGetInnerNameNode(Node maybeFunctionOrClassNode) {
+  private static @Nullable Node maybeGetInnerNameNode(Node maybeFunctionOrClassNode) {
     if (NodeUtil.isFunctionExpression(maybeFunctionOrClassNode)) {
       Node nameNode = maybeFunctionOrClassNode.getFirstChild();
       checkState(nameNode.isName(), nameNode);
@@ -1091,9 +1213,13 @@ class InlineAndCollapseProperties implements CompilerPass {
       if (ref.getParent() == null) {
         continue;
       }
-      if (NodeUtil.isNormalOrOptChainGetProp(ref.getParent())) {
+      Node parent = ref.getParent();
+      if (parent.isAssign()) {
+        parent = parent.getParent();
+      }
+      if (NodeUtil.isNormalOrOptChainGetProp(parent)) {
         // e.g. if the reference is "alias.b.someProp", this will be "b".
-        String propertyName = ref.getParent().getString();
+        String propertyName = parent.getString();
         // e.g. if the aliased name is "originalName", this will be "originalName.b".
         String originalPropertyName = aliasedName.getName() + "." + propertyName;
         Name originalProperty = namespace.getOwnSlot(originalPropertyName);
@@ -1109,6 +1235,9 @@ class InlineAndCollapseProperties implements CompilerPass {
 
   /** Check if the name has multiple sets that are not of the form "a = a || {}" */
   private static boolean isUnsafelyReassigned(Name name) {
+    if (name.getTotalSets() <= 1) {
+      return false;
+    }
     boolean foundOriginalDefinition = false;
     for (Ref ref : name.getRefs()) {
       if (!ref.isSet()) {
@@ -1133,8 +1262,7 @@ class InlineAndCollapseProperties implements CompilerPass {
    * <p>Only handles cases where we have either a class declaration or a class expression in an
    * assignment or name declaration. Otherwise returns null.
    */
-  @Nullable
-  private static Node getSubclassForEs6Superclass(Node superclass) {
+  private static @Nullable Node getSubclassForEs6Superclass(Node superclass) {
     Node classNode = superclass.getParent();
     checkArgument(classNode.isClass(), classNode);
     if (NodeUtil.isNameDeclaration(classNode.getGrandparent())) {
@@ -1186,7 +1314,7 @@ class InlineAndCollapseProperties implements CompilerPass {
     /** Maps names (e.g. "a.b.c") to nodes in the global namespace tree */
     private Map<String, Name> nameMap;
 
-    private final HashSet<String> dynamicallyImportedModules = new HashSet<>();
+    private final LinkedHashSet<String> dynamicallyImportedModules = new LinkedHashSet<>();
 
     @Override
     public void process(Node externs, Node root) {
@@ -1200,7 +1328,7 @@ class InlineAndCollapseProperties implements CompilerPass {
 
       nameMap = checkNotNull(namespace, "namespace was not initialized").getNameIndex();
       List<Name> globalNames = namespace.getNameForest();
-      Set<Name> escaped = checkNamespaces();
+      ImmutableSet<Name> escaped = checkNamespaces();
       for (Name name : globalNames) {
         flattenReferencesToCollapsibleDescendantNames(name, name.getBaseName(), escaped);
         // We collapse property definitions after collapsing property references
@@ -1208,11 +1336,6 @@ class InlineAndCollapseProperties implements CompilerPass {
         // invalidating the node ancestry stored with each reference.
         collapseDeclarationOfNameAndDescendants(name, name.getBaseName(), escaped);
       }
-
-      // This shouldn't be necessary, this pass should already be setting new constants as
-      // constant.
-      // TODO(b/64256754): Investigate.
-      new PropagateConstantAnnotationsOverVars(compiler, false).process(externs, root);
     }
 
     private boolean canCollapse(Name name) {
@@ -1237,11 +1360,29 @@ class InlineAndCollapseProperties implements CompilerPass {
       return true;
     }
 
-    private boolean canEliminate(Name name) {
+    /**
+     * Returns true if it is safe to completely remove the rvalue assigned to the name from the AST.
+     */
+    private boolean canEliminate(Name name, Node rvalue) {
       if (!name.canEliminate()) {
         return false;
       }
 
+      if (rvalue.isObjectLit()) {
+        for (Node child = rvalue.getFirstChild(); child != null; child = child.getNext()) {
+          switch (child.getToken()) {
+            case GETTER_DEF, SETTER_DEF, COMPUTED_PROP, OBJECT_SPREAD -> {
+              // We cannot completely eliminate the object literal, because it contains
+              // at least one feature that we cannot extract as a collapsed variable name.
+              return false;
+            }
+            case STRING_KEY, MEMBER_FUNCTION_DEF -> {}
+            default ->
+                throw new IllegalStateException(
+                    "Unexpected child of OBJECTLIT: " + child.toStringTree());
+          }
+        }
+      }
       if (name.props == null
           || name.props.isEmpty()
           || propertyCollapseLevel != PropertyCollapseLevel.MODULE_EXPORT) {
@@ -1255,9 +1396,10 @@ class InlineAndCollapseProperties implements CompilerPass {
      * Runs through all namespaces (prefixes of classes and enums), and checks if any of them have
      * been used in an unsafe way.
      */
-    private Set<Name> checkNamespaces() {
+    private ImmutableSet<Name> checkNamespaces() {
       ImmutableSet.Builder<Name> escaped = ImmutableSet.builder();
-      HashSet<String> dynamicallyImportedModuleRefs = new HashSet<>(dynamicallyImportedModules);
+      LinkedHashSet<String> dynamicallyImportedModuleRefs =
+          new LinkedHashSet<>(dynamicallyImportedModules);
       if (!dynamicallyImportedModules.isEmpty()) {
         // When the output chunk type is ES_MODULES, properties of the module namespace
         // must not be collapsed as they are referenced off the namespace object. The namespace
@@ -1307,7 +1449,8 @@ class InlineAndCollapseProperties implements CompilerPass {
       }
 
       for (Name name : nameMap.values()) {
-        if (dynamicallyImportedModuleRefs.contains(name.getFullName())) {
+        if (!dynamicallyImportedModuleRefs.isEmpty()
+            && dynamicallyImportedModuleRefs.contains(name.getFullName())) {
           escaped.add(name);
         }
         if (!name.isNamespaceObjectLit()) {
@@ -1320,21 +1463,17 @@ class InlineAndCollapseProperties implements CompilerPass {
         }
         boolean initialized = name.getDeclaration() != null;
         for (Ref ref : name.getRefs()) {
-          if (ref == name.getDeclaration()) {
-            continue;
-          }
-
-          if (ref.type == Ref.Type.DELETE_PROP) {
+          if (ref.isDeleteProp()) {
             if (initialized) {
               warnAboutNamespaceRedefinition(name, ref);
             }
-          } else if (ref.type == Ref.Type.SET_FROM_GLOBAL || ref.type == Ref.Type.SET_FROM_LOCAL) {
+          } else if (ref.isSet() && ref != name.getDeclaration()) {
             if (initialized && !isSafeNamespaceReinit(ref)) {
               warnAboutNamespaceRedefinition(name, ref);
             }
 
             initialized = true;
-          } else if (ref.type == Ref.Type.ALIASING_GET) {
+          } else if (ref.isAliasingGet()) {
             warnAboutNamespaceAliasing(name, ref);
             logDecisionForName(name, "escapes");
             escaped.add(name);
@@ -1413,17 +1552,15 @@ class InlineAndCollapseProperties implements CompilerPass {
     }
 
     private void logDecisionForName(Name name, Inlinability inlinability, String message) {
-      logDecisionForName(
-          name, () -> SimpleFormat.format("inlinability %s: %s", inlinability, message));
+      logDecisionForName(name, () -> String.format("inlinability %s: %s", inlinability, message));
     }
 
     private void logDecisionForName(Name name, String message) {
-      decisionsLog.log(() -> SimpleFormat.format("%s: %s", name.getFullName(), message));
+      decisionsLog.log(() -> String.format("%s: %s", name.getFullName(), message));
     }
 
     private void logDecisionForName(Name name, Supplier<String> messageSupplier) {
-      decisionsLog.log(
-          () -> SimpleFormat.format("%s: %s", name.getFullName(), messageSupplier.get()));
+      decisionsLog.log(() -> String.format("%s: %s", name.getFullName(), messageSupplier.get()));
     }
 
     /** Flattens a stub declaration. This is mostly a hack to support legacy users. */
@@ -1439,6 +1576,22 @@ class InlineAndCollapseProperties implements CompilerPass {
     }
 
     /**
+     * Returns whether a NAME node with the given {@code collapsedName}, for a name originally
+     * declared at {@code declarationNode}, should be annotated with {@link Node#IS_CONSTANT_NAME}
+     *
+     * <p>Validity checks in unit tests will otherwise throw an exception.
+     */
+    private boolean shouldAddConstantName(Node declarationNode, String collapsedName) {
+      if (declarationNode == null) {
+        return false;
+      }
+      JSDocInfo info = NodeUtil.getBestJSDocInfo(declarationNode.getParent());
+      return (info != null && info.isConstant())
+          || declarationNode.getBooleanProp(Node.IS_CONSTANT_NAME)
+          || compiler.getCodingConvention().isConstant(collapsedName);
+    }
+
+    /**
      * Flattens all references to a collapsible property of a global name except its initial
      * definition.
      *
@@ -1447,19 +1600,19 @@ class InlineAndCollapseProperties implements CompilerPass {
      */
     private void flattenReferencesTo(Name n, String alias) {
       String originalName = n.getFullName();
+      boolean isConstantName =
+          shouldAddConstantName(
+              n.getDeclaration() != null ? n.getDeclaration().getNode() : null, alias);
       for (Ref r : n.getRefs()) {
         if (r == n.getDeclaration()) {
           // Declarations are handled separately.
           continue;
         }
         Node rParent = r.getNode().getParent();
-        // There are two cases when we shouldn't flatten a reference:
-        // 1) Object literal keys, because duplicate keys show up as refs.
-        // 2) References inside a complex assign. (a = x.y = 0). These are
-        //    called TWIN references, because they show up twice in the
-        //    reference list. Only collapse the set, not the alias.
-        if (!NodeUtil.mayBeObjectLitKey(r.getNode()) && (r.getTwin() == null || r.isSet())) {
-          flattenNameRef(alias, r.getNode(), rParent, originalName);
+        // We shouldn't flatten a reference that's an object literal key, because duplicate keys
+        // show up as refs.
+        if (!NodeUtil.mayBeObjectLitKey(r.getNode())) {
+          flattenNameRef(alias, r.getNode(), rParent, originalName, isConstantName);
         } else if (r.getNode().isStringKey() && r.getNode().getParent().isObjectPattern()) {
           Node newNode = IR.name(alias).srcref(r.getNode());
           NodeUtil.copyNameAnnotations(r.getNode(), newNode);
@@ -1473,7 +1626,7 @@ class InlineAndCollapseProperties implements CompilerPass {
       // replaced with "a$b" in all occurrences of "a.b.c", "a.b.c.d", etc.
       if (n.props != null) {
         for (Name p : n.props) {
-          flattenPrefixes(alias, p, 1);
+          flattenPrefixes(alias, originalName + p.getBaseName(), p, 1, isConstantName);
         }
       }
     }
@@ -1484,15 +1637,17 @@ class InlineAndCollapseProperties implements CompilerPass {
      *
      * @param n A global property name (e.g. "a.b.c.d")
      * @param alias A flattened prefix name (e.g. "a$b")
+     * @param originalName The full original name of the global property (e.g. "a.b.c.d") equivalent
+     *     to n.getFullName(), but pre-computed to save on intermediate string allocation
      * @param depth The difference in depth between the property name and the prefix name (e.g. 2)
      */
-    private void flattenPrefixes(String alias, Name n, int depth) {
+    private void flattenPrefixes(
+        String alias, String originalName, Name n, int depth, boolean isConstantName) {
       // Only flatten the prefix of a name declaration if the name being
       // initialized is fully qualified (i.e. not an object literal key).
-      String originalName = n.getFullName();
       Ref decl = n.getDeclaration();
       if (decl != null && decl.getNode() != null && decl.getNode().isGetProp()) {
-        flattenNameRefAtDepth(alias, decl.getNode(), depth, originalName);
+        flattenNameRefAtDepth(alias, decl.getNode(), depth, originalName, isConstantName);
       }
 
       for (Ref r : n.getRefs()) {
@@ -1501,16 +1656,12 @@ class InlineAndCollapseProperties implements CompilerPass {
           continue;
         }
 
-        // References inside a complex assign (a = x.y = 0)
-        // have twins. We should only flatten one of the twins.
-        if (r.getTwin() == null || r.isSet()) {
-          flattenNameRefAtDepth(alias, r.getNode(), depth, originalName);
-        }
+        flattenNameRefAtDepth(alias, r.getNode(), depth, originalName, isConstantName);
       }
 
       if (n.props != null) {
         for (Name p : n.props) {
-          flattenPrefixes(alias, p, depth + 1);
+          flattenPrefixes(alias, originalName + p.getBaseName(), p, depth + 1, isConstantName);
         }
       }
     }
@@ -1523,7 +1674,8 @@ class InlineAndCollapseProperties implements CompilerPass {
      * @param depth The difference in depth between the property name and the prefix name (e.g. 2)
      * @param originalName String version of the property name.
      */
-    private void flattenNameRefAtDepth(String alias, Node n, int depth, String originalName) {
+    private void flattenNameRefAtDepth(
+        String alias, Node n, int depth, String originalName, boolean isConstantName) {
       // This method has to work for both GETPROP chains and, in rare cases,
       // OBJLIT keys, possibly nested. That's why we check for children before
       // proceeding. In the OBJLIT case, we don't need to do anything.
@@ -1536,7 +1688,7 @@ class InlineAndCollapseProperties implements CompilerPass {
           n = n.getFirstChild();
         }
         if (n.isGetProp() && n.getFirstChild().isGetProp()) {
-          flattenNameRef(alias, n.getFirstChild(), n, originalName);
+          flattenNameRef(alias, n.getFirstChild(), n, originalName, isConstantName);
         }
       }
     }
@@ -1548,8 +1700,10 @@ class InlineAndCollapseProperties implements CompilerPass {
      * @param n The GETPROP node corresponding to the original name (e.g. "a.b")
      * @param parent {@code n}'s parent
      * @param originalName String version of the property name.
+     * @param isConstantName whether to annotate with {@link Node#IS_CONSTANT_NAME}
      */
-    private void flattenNameRef(String alias, Node n, Node parent, String originalName) {
+    private void flattenNameRef(
+        String alias, Node n, Node parent, String originalName, boolean isConstantName) {
       Preconditions.checkArgument(
           n.isGetProp(), "Expected GETPROP, found %s. Node: %s", n.getToken(), n);
 
@@ -1563,6 +1717,9 @@ class InlineAndCollapseProperties implements CompilerPass {
       //   name a$b$c
       Node ref = NodeUtil.newName(compiler, alias, n, originalName).copyTypeFrom(n);
       NodeUtil.copyNameAnnotations(n, ref);
+      if (isConstantName) {
+        ref.putBooleanProp(Node.IS_CONSTANT_NAME, isConstantName);
+      }
       if (NodeUtil.isNormalOrOptChainCall(parent) && n.isFirstChildOf(parent)) {
         // The node was a call target. We are deliberately flattening these as
         // the "this" isn't provided by the namespace. Mark it as such:
@@ -1587,7 +1744,7 @@ class InlineAndCollapseProperties implements CompilerPass {
         logDecisionForName(
             n,
             () ->
-                SimpleFormat.format(
+                String.format(
                     "child name inlinability: %s: will not collapse child names",
                     childNameInlinability));
         canCollapseChildNames = false;
@@ -1625,7 +1782,7 @@ class InlineAndCollapseProperties implements CompilerPass {
      * @param ref An object containing information about the assignment getting updated
      */
     private void updateTwinnedDeclaration(String alias, Name refName, Ref ref) {
-      checkNotNull(ref.getTwin());
+      checkState(ref.isTwin(), ref);
       // Don't handle declarations of an already flat name, just qualified names.
       if (!ref.getNode().isGetProp()) {
         return;
@@ -1690,38 +1847,71 @@ class InlineAndCollapseProperties implements CompilerPass {
         return;
       }
 
+      boolean isSimpleName = n.isSimpleName();
       final Node declNode = decl.getNode();
       switch (declNode.getParent().getToken()) {
-        case ASSIGN:
+        case ASSIGN -> {
           logDeclarationAction(n, declNode, "updating assignment");
           updateGlobalNameDeclarationAtAssignNode(n, alias, canCollapseChildNames);
-          break;
-        case VAR:
-        case LET:
-        case CONST:
+        }
+        case VAR, LET, CONST -> {
           logDeclarationAction(n, declNode, "updating variable declaration");
           updateGlobalNameDeclarationAtVariableNode(n, canCollapseChildNames);
-          break;
-        case FUNCTION:
+        }
+        case FUNCTION -> {
           logDeclarationAction(n, declNode, "updating function declaration");
           updateGlobalNameDeclarationAtFunctionNode(n, canCollapseChildNames);
-          break;
-        case CLASS:
+        }
+        case CLASS -> {
           logDeclarationAction(n, declNode, "updating class declaration");
           updateGlobalNameDeclarationAtClassNode(n, canCollapseChildNames);
-          break;
-        case CLASS_MEMBERS:
+        }
+        case CLASS_MEMBERS -> {
           logDeclarationAction(n, declNode, "updating static member declaration");
           updateGlobalNameDeclarationAtStaticMemberNode(n, alias, canCollapseChildNames);
-          break;
-        default:
-          logDeclarationAction(n, declNode, "not updating an unsupported type of declaration node");
-          break;
+        }
+        default ->
+            logDeclarationAction(
+                n, declNode, "not updating an unsupported type of declaration node");
+      }
+
+      if (!isSimpleName) {
+        JSChunk commonAncestor = n.getDeepestCommonAncestorChunk(compiler.getChunkGraph());
+        if (commonAncestor != decl.getChunk()) {
+          moveDeclarationIntoHigherChunk(decl, commonAncestor);
+        }
       }
     }
 
     private void logDeclarationAction(Name name, Node declarationNode, String message) {
-      logDecisionForName(name, () -> SimpleFormat.format("%s: %s", declarationNode, message));
+      logDecisionForName(name, () -> String.format("%s: %s", declarationNode, message));
+    }
+
+    private void moveDeclarationIntoHigherChunk(Ref decl, JSChunk commonAncestor) {
+      // Var hoisting means that early references are generally ok. E.g. `a$b; var a$b;` is valid.
+      // However, if `var a$b;` were in a different, conditionally loaded chunk, then it might not
+      // be parsed before `a$b;`. So we need to avoid a ReferenceError when referencing `a$b`.
+      Node newNode = decl.getNode();
+      Node varNode = newNode.getParent();
+      Node initializer = newNode.getFirstChild();
+      checkState(varNode.isVar(), "Unexpected declaration %s", varNode);
+
+      Node newRoot = commonAncestor.getInputs().get(0).getAstRoot(compiler);
+      if (initializer == null) {
+        // Already a stub declaration - "var a$b;". Move it to the ancestor chunk.
+        newRoot.addChildToFront(varNode.detach());
+      } else {
+        // Define `var a$b;` in the ancestor chunk.
+        Node newVarNode = IR.var(newNode.cloneNode()).srcref(newNode);
+        newRoot.addChildToFront(newVarNode);
+        // Replace `var a$b = () => {};` with `a$b = () = {};`. Having multiple `var` declarations
+        // of the same name is valid JavaScript but violates Normalize constraints.
+        Node newAssign =
+            IR.exprResult(IR.assign(newNode.detach(), initializer.detach()))
+                .srcrefTreeIfMissing(newNode);
+        varNode.replaceWith(newAssign);
+      }
+      compiler.reportChangeToChangeScope(newRoot);
     }
 
     /**
@@ -1742,8 +1932,8 @@ class InlineAndCollapseProperties implements CompilerPass {
       // we are only collapsing for global names.
       Ref ref = n.getDeclaration();
       Node rvalue = ref.getNode().getNext();
-      if (ref.getTwin() != null) {
-        updateTwinnedDeclaration(alias, ref.name, ref);
+      if (ref.isTwin()) {
+        updateTwinnedDeclaration(alias, n, ref);
         return;
       }
       Node varNode = new Node(Token.VAR);
@@ -1752,7 +1942,7 @@ class InlineAndCollapseProperties implements CompilerPass {
       boolean isObjLit = rvalue.isObjectLit();
       boolean insertedVarNode = false;
 
-      if (isObjLit && canEliminate(n)) {
+      if (isObjLit && canEliminate(n, rvalue)) {
         // Eliminate the object literal altogether.
         grandparent.replaceWith(varNode);
         n.updateRefNode(ref, null);
@@ -1770,13 +1960,9 @@ class InlineAndCollapseProperties implements CompilerPass {
         Node nameNode =
             NodeUtil.newName(compiler, alias, ref.getNode().getAncestor(2), n.getFullName());
 
-        Node constPropNode = ref.getNode();
-        JSDocInfo info = NodeUtil.getBestJSDocInfo(ref.getNode().getParent());
-        nameNode.putBooleanProp(
-            Node.IS_CONSTANT_NAME,
-            (info != null && info.hasConstAnnotation())
-                || constPropNode.getBooleanProp(Node.IS_CONSTANT_NAME));
+        nameNode.putBooleanProp(Node.IS_CONSTANT_NAME, shouldAddConstantName(ref.getNode(), alias));
 
+        JSDocInfo info = NodeUtil.getBestJSDocInfo(ref.getNode().getParent());
         if (info != null) {
           varNode.setJSDocInfo(info);
         }
@@ -1819,7 +2005,7 @@ class InlineAndCollapseProperties implements CompilerPass {
           return; // Ctors and interfaces need to be able to reference `this`
         }
         if (docInfo.hasThisType()) {
-          /**
+          /*
            * Use `@this` as a signal that the reference is intentional.
            *
            * <p>TODO(b/156823102): This signal also silences the check on all transpiled static
@@ -1861,7 +2047,7 @@ class InlineAndCollapseProperties implements CompilerPass {
 
       addStubsForUndeclaredProperties(n, name, grandparent, variableNode);
 
-      if (isObjLit && canEliminate(n)) {
+      if (isObjLit && canEliminate(n, rvalue)) {
         ref.getNode().detach();
         compiler.reportChangeToEnclosingScope(variableNode);
         if (!variableNode.hasChildren()) {
@@ -1910,9 +2096,11 @@ class InlineAndCollapseProperties implements CompilerPass {
 
     /**
      * Updates the first initialization (a.k.a "declaration") of a global name that occurs in a
-     * static MEMBER_FUNCTION_DEF in a class. See comment for {@link #updateGlobalNameDeclaration}.
+     * static MEMBER_FUNCTION_DEF or MEMBER_FIELD_DEF in a class. See comment for {@link
+     * #updateGlobalNameDeclaration}.
      *
-     * @param n A static MEMBER_FUNCTION_DEF in a class assigned to a global name (e.g. `a.b`)
+     * @param n A static MEMBER_FUNCTION_DEF or MEMBER_FIELD_DEF in a class assigned to a global
+     *     name (e.g. `a.b`)
      * @param alias The new flattened name for `n` (e.g. "a$b")
      * @param canCollapseChildNames whether properties of `n` are also collapsible, meaning that any
      *     properties only assigned locally need stub declarations
@@ -1930,13 +2118,24 @@ class InlineAndCollapseProperties implements CompilerPass {
       }
 
       // detach `static m() {}` from `class Foo { static m() {} }`
-      Node memberFn = declaration.getNode().detach();
-      Node fnNode = memberFn.getOnlyChild().detach();
-      checkForReceiverAffectedByCollapse(fnNode, memberFn.getJSDocInfo(), n);
+      Node member = declaration.getNode().detach();
+      Node varDecl;
+      if (member.hasChildren()) {
+        Node memberVal = member.getOnlyChild();
+        checkForReceiverAffectedByCollapse(memberVal, member.getJSDocInfo(), n);
+        memberVal = memberVal.detach();
 
-      // add a var declaration, creating `var Foo$m = function() {}; class Foo {}`
-      Node varDecl = IR.var(NodeUtil.newName(compiler, alias, memberFn), fnNode).srcref(memberFn);
+        // add a var declaration, creating `var Foo$m = function() {}; class Foo {}`
+        varDecl = IR.var(NodeUtil.newName(compiler, alias, member), memberVal).srcref(member);
+      } else {
+        // Member field defs may not have initializers.
+        varDecl = IR.var(NodeUtil.newName(compiler, alias, member)).srcref(member);
+      }
       varDecl.insertBefore(enclosingStatement);
+      // We would lose optimization-relevant jsdoc tags here because they are stored on the class
+      // member node, not the function node. Copy them over to the new declaration statement so
+      // later passes can make use of them.
+      varDecl.setJSDocInfo(member.getJSDocInfo());
       compiler.reportChangeToEnclosingScope(varDecl);
 
       // collapsing this name's properties requires updating this Ref
@@ -1965,16 +2164,13 @@ class InlineAndCollapseProperties implements CompilerPass {
         // A computed property, or a get or a set can not be rewritten as a VAR. We don't know what
         // properties will be generated by a spread.
         switch (key.getToken()) {
-          case GETTER_DEF:
-          case SETTER_DEF:
-          case COMPUTED_PROP:
-          case OBJECT_SPREAD:
+          case GETTER_DEF, SETTER_DEF, COMPUTED_PROP, OBJECT_SPREAD -> {
             continue;
-          case STRING_KEY:
-          case MEMBER_FUNCTION_DEF:
-            break;
-          default:
-            throw new IllegalStateException("Unexpected child of OBJECTLIT: " + key.toStringTree());
+          }
+          case STRING_KEY, MEMBER_FUNCTION_DEF -> {}
+          default ->
+              throw new IllegalStateException(
+                  "Unexpected child of OBJECTLIT: " + key.toStringTree());
         }
 
         // We generate arbitrary names for keys that aren't valid JavaScript
@@ -1994,6 +2190,7 @@ class InlineAndCollapseProperties implements CompilerPass {
 
         String propAlias = appendPropForAlias(alias, propName);
         Node refNode = null;
+        boolean isConstantName = shouldAddConstantName(key, propAlias);
         if (discardKeys) {
           key.detach();
           value.detach();
@@ -2001,7 +2198,7 @@ class InlineAndCollapseProperties implements CompilerPass {
         } else {
           // Substitute a reference for the value.
           refNode = IR.name(propAlias);
-          if (key.getBooleanProp(Node.IS_CONSTANT_NAME)) {
+          if (isConstantName) {
             refNode.putBooleanProp(Node.IS_CONSTANT_NAME, true);
           }
 
@@ -2012,7 +2209,7 @@ class InlineAndCollapseProperties implements CompilerPass {
         // Declare the collapsed name as a variable with the original value.
         Node nameNode = IR.name(propAlias);
         nameNode.addChildToFront(value);
-        if (key.getBooleanProp(Node.IS_CONSTANT_NAME)) {
+        if (isConstantName) {
           nameNode.putBooleanProp(Node.IS_CONSTANT_NAME, true);
         }
         Node newVar = IR.var(nameNode).srcrefTreeIfMissing(key);
@@ -2071,8 +2268,14 @@ class InlineAndCollapseProperties implements CompilerPass {
         // Determine if this is a constant var by checking the first
         // reference to it. Don't check the declaration, as it might be null.
         Node constPropNode = p.getFirstRef().getNode();
-        nameNode.putBooleanProp(
-            Node.IS_CONSTANT_NAME, constPropNode.getBooleanProp(Node.IS_CONSTANT_NAME));
+        boolean isConstantName =
+            // Don't call shouldAddConstantName because it expects to see a declaration node for
+            // a name, and this name is, by definition, undeclared.
+            constPropNode.getBooleanProp(Node.IS_CONSTANT_NAME)
+                || compiler.getCodingConvention().isConstant(propAlias);
+        if (isConstantName) {
+          nameNode.putBooleanProp(Node.IS_CONSTANT_NAME, true);
+        }
 
         compiler.reportChangeToEnclosingScope(newVar);
         addAfter = newVar;
@@ -2197,20 +2400,17 @@ class InlineAndCollapseProperties implements CompilerPass {
       @Override
       public void visit(NodeTraversal t, Node n, Node parent) {
         switch (n.getToken()) {
-          case VAR:
-          case CONST:
-          case LET:
+          case VAR, CONST, LET -> {
             if (n.hasOneChild() && t.inGlobalScope()) {
               visitAliasDefinition(n.getFirstChild(), NodeUtil.getBestJSDocInfo(n.getFirstChild()));
             }
-            break;
-          case ASSIGN:
+          }
+          case ASSIGN -> {
             if (parent != null && parent.isExprResult() && t.inGlobalScope()) {
               visitAliasDefinition(n.getFirstChild(), n.getJSDocInfo());
             }
-            break;
-          default:
-            break;
+          }
+          default -> {}
         }
       }
 
@@ -2249,8 +2449,7 @@ class InlineAndCollapseProperties implements CompilerPass {
       @Override
       public void visit(NodeTraversal t, Node n, Node parent) {
         switch (n.getToken()) {
-          case NAME:
-          case GETPROP:
+          case NAME, GETPROP -> {
             if (n.isQualifiedName() && aliases.containsKey(n.getQualifiedName())) {
               if (isLeftmostNameLocal(t, n)) {
                 // The alias is shadowed by a local variable. Don't rewrite.
@@ -2279,9 +2478,8 @@ class InlineAndCollapseProperties implements CompilerPass {
               n.replaceWith(newNode);
               t.reportCodeChange();
             }
-            break;
-          default:
-            break;
+          }
+          default -> {}
         }
       }
 
@@ -2295,8 +2493,6 @@ class InlineAndCollapseProperties implements CompilerPass {
       /**
        * Use the alias table to look up the resolved name of the given alias. If the result is also
        * an alias repeat until the real name is resolved.
-       *
-       * @param n
        */
       private String resolveAlias(String name, Node n) {
         Set<String> aliasPath = new LinkedHashSet<>();

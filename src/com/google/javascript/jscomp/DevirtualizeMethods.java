@@ -33,13 +33,13 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Rewrites prototype and static methods as global, free functions that take the receiver as their
  * first argument.
  *
- * <p>This transformation simplifies the call graph so smart name removal, cross module code motion
+ * <p>This transformation simplifies the call graph so smart name removal, cross chunk code motion
  * and other passes can do more.
  *
  * <p>To work effectively, this pass depends on {@link
@@ -157,53 +157,63 @@ class DevirtualizeMethods implements OptimizeCalls.CallGraphCompilerPass {
       return false;
     }
 
-    switch (node.getToken()) {
-      case MEMBER_FUNCTION_DEF:
+    return switch (node.getToken()) {
+      case MEMBER_FUNCTION_DEF -> {
         if (NodeUtil.isEs6ConstructorMemberFunctionDef(node)) {
-          return false; // Constructors aren't methods.
+          yield false; // Constructors aren't methods.
         }
 
-        return true;
-
-      case GETPROP:
-        {
-          // Case: `Foo.prototype.bar = function() { };
-          if (!node.isFirstChildOf(parent)
-              || !NodeUtil.isExprAssign(grandparent)
-              || !parent.getLastChild().isFunction()) {
-            return false;
-          }
-
-          if (NodeUtil.isPrototypeProperty(node)) {
-            return true;
-          }
-
-          if (isDefinitelyCtorOrInterface(node.getFirstChild())) {
-            return true;
-          }
-
-          return false;
-        }
-
-      case STRING_KEY:
-        {
+        if (parent.isObjectLit()) {
           // Case: `Foo.prototype = {
-          //          bar: function() { },
+          //          bar() { },
           //        }`
-          checkArgument(parent.isObjectLit(), parent);
-
-          if (!parent.isSecondChildOf(grandparent)
-              || !NodeUtil.isPrototypeAssignment(grandparent.getFirstChild())
-              || !node.getFirstChild().isFunction()) {
-            return false;
-          }
-
-          return true;
+          yield isPrototypeObjectLit(parent);
         }
 
-      default:
-        return false;
-    }
+        yield true; // Case: `class Foo { bar() { } }`
+      }
+      case GETPROP -> {
+        // Case: `Foo.prototype.bar = function() { };
+        if (!node.isFirstChildOf(parent)
+            || !NodeUtil.isExprAssign(grandparent)
+            || !parent.getLastChild().isFunction()) {
+          yield false;
+        }
+
+        if (NodeUtil.isPrototypeProperty(node)) {
+          yield true;
+        }
+
+        if (isDefinitelyCtorOrInterface(node.getFirstChild())) {
+          yield true;
+        }
+
+        yield false;
+      }
+      case STRING_KEY -> {
+        // Case: `Foo.prototype = {
+        //          bar: function() { },
+        //        }`
+        checkArgument(parent.isObjectLit(), parent);
+
+        yield isPrototypeObjectLit(parent) && node.getFirstChild().isFunction();
+      }
+      default -> false;
+    };
+  }
+
+  /**
+   * Returns whether {@code objectLit} is the value assigned in {@code Foo.prototype = {...}}.
+   *
+   * <p>Methods on other object literals are not eligible: plain objects are routinely enumerated,
+   * copied, or mixed in, so removing a method from one is unsafe without the escape analysis that
+   * {@link InlineAndCollapseProperties} performs.
+   */
+  private static boolean isPrototypeObjectLit(Node objectLit) {
+    checkArgument(objectLit.isObjectLit(), objectLit);
+    Node parent = objectLit.getParent();
+    return objectLit.isSecondChildOf(parent)
+        && NodeUtil.isPrototypeAssignment(parent.getFirstChild());
   }
 
   private boolean isDefinitelyCtorOrInterface(Node receiver) {
@@ -245,20 +255,15 @@ class DevirtualizeMethods implements OptimizeCalls.CallGraphCompilerPass {
    */
   private boolean isEligibleDefinitionSite(String name, Node definitionSite) {
     switch (definitionSite.getToken()) {
-      case GETPROP:
-      case MEMBER_FUNCTION_DEF:
-      case STRING_KEY:
-      case MEMBER_FIELD_DEF:
-        break;
-
-      default:
-        // No other node types are supported.
-        throw new IllegalArgumentException(definitionSite.toString());
+      case GETPROP, MEMBER_FUNCTION_DEF, STRING_KEY, MEMBER_FIELD_DEF -> {}
+      default ->
+          // No other node types are supported.
+          throw new IllegalArgumentException(definitionSite.toString());
     }
 
     // Exporting a method prevents rewrite.
     CodingConvention codingConvention = compiler.getCodingConvention();
-    if (codingConvention.isExported(name, /* local */ false)) {
+    if (codingConvention.isExported(name, /* local= */ false)) {
       return false;
     }
 
@@ -344,30 +349,30 @@ class DevirtualizeMethods implements OptimizeCalls.CallGraphCompilerPass {
       return false;
     }
 
-    // We can't rewrite functions called in modules that do not depend on the defining module.
+    // We can't rewrite functions called in chunks that do not depend on the defining chunk.
     // This is due to a subtle execution order change introduced by rewriting. Example:
     //
     //     `x.foo().bar()` => `JSCompiler_StaticMethods_bar(x.foo())`
     //
     // Note how `JSCompiler_StaticMethods_bar` will be resolved before `x.foo()` is executed. In
     // the case that `x.foo()` defines `JSCompiler_StaticMethods_bar` (e.g. by dynamically loading
-    // the defining module) this change in ordering will cause a `ReferenceError`. No error would
+    // the defining chunk) this change in ordering will cause a `ReferenceError`. No error would
     // be thrown by the original code because `bar` would be resolved later.
     //
-    // We choose to use module ordering to avoid this issue because:
+    // We choose to use chunk ordering to avoid this issue because:
     //   - The other eligibility checks for devirtualization prevent any other dangerous cases
     //     that JSCompiler supports.
     //   - Rewriting all call-sites in a way that preserves exact ordering (e.g. using
     //     `ExpressionDecomposer`) has a significant code-size impact (circa 2018-11-19).
 
-    JSChunkGraph moduleGraph = compiler.getModuleGraph();
-    @Nullable JSChunk definitionModule = moduleForNode(definitionSite);
-    @Nullable JSChunk callModule = moduleForNode(access);
-    if (definitionModule == callModule) {
+    JSChunkGraph chunkGraph = compiler.getChunkGraph();
+    @Nullable JSChunk definitionChunk = chunkForNode(definitionSite);
+    @Nullable JSChunk callChunk = chunkForNode(access);
+    if (definitionChunk == callChunk) {
       // Do nothing.
-    } else if (callModule == null) {
+    } else if (callChunk == null) {
       return false;
-    } else if (!moduleGraph.dependsOn(callModule, definitionModule)) {
+    } else if (!chunkGraph.dependsOn(callChunk, definitionChunk)) {
       return false;
     }
 
@@ -439,21 +444,17 @@ class DevirtualizeMethods implements OptimizeCalls.CallGraphCompilerPass {
     final Node nameSource;
 
     switch (definitionSite.getToken()) {
-      case GETPROP:
+      case GETPROP -> {
         function = definitionSite.getParent().getLastChild();
         nameSource = definitionSite;
         subtreeToRemove = NodeUtil.getEnclosingStatement(definitionSite);
-        break;
-
-      case STRING_KEY:
-      case MEMBER_FUNCTION_DEF:
+      }
+      case STRING_KEY, MEMBER_FUNCTION_DEF -> {
         function = definitionSite.getLastChild();
         nameSource = definitionSite;
         subtreeToRemove = definitionSite;
-        break;
-
-      default:
-        throw new IllegalArgumentException(definitionSite.toString());
+      }
+      default -> throw new IllegalArgumentException(definitionSite.toString());
     }
 
     // Define a new variable after the original declaration.
@@ -490,8 +491,27 @@ class DevirtualizeMethods implements OptimizeCalls.CallGraphCompilerPass {
 
   /** Replaces references to "this" with references to name. Do not traverse function boundaries. */
   private void replaceReferencesToThis(Node node, String name) {
-    if (node.isFunction() && !node.isArrowFunction()) {
-      // Functions (besides arrows) create a new binding for `this`.
+    if ((node.isFunction() && !node.isArrowFunction())
+        || node.isMemberFieldDef()
+        || NodeUtil.isClassStaticBlock(node)) {
+      // Functions (besides arrows), member field defs, and static blocks create a new binding for
+      // `this`.
+      return;
+    }
+
+    if (node.isComputedFieldDef()) {
+      // Computed field keys are evaluated in the enclosing scope, but field initializers create a
+      // new binding for `this`.
+      Node key = node.getFirstChild();
+      if (key != null) {
+        if (key.isThis()) {
+          Node newName = IR.name(name).srcref(key).copyTypeFrom(key);
+          key.replaceWith(newName);
+          compiler.reportChangeToEnclosingScope(newName);
+        } else {
+          replaceReferencesToThis(key, name);
+        }
+      }
       return;
     }
 
@@ -508,8 +528,7 @@ class DevirtualizeMethods implements OptimizeCalls.CallGraphCompilerPass {
     }
   }
 
-  @Nullable
-  private JSChunk moduleForNode(Node node) {
+  private @Nullable JSChunk chunkForNode(Node node) {
     Node script = NodeUtil.getEnclosingScript(node);
     CompilerInput input = compiler.getInput(script.getInputId());
     return input.getChunk();

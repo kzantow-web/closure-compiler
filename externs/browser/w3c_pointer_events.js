@@ -27,7 +27,7 @@
  * @type {string}
  * @see http://www.w3.org/TR/pointerevents/#the-touch-action-css-property
  */
-CSSProperties.prototype.touchAction;
+CSSStyleProperties.prototype.touchAction;
 
 /**
  * @type {boolean}
@@ -93,6 +93,25 @@ PointerEventInit.prototype.pointerType;
 /** @type {undefined|boolean} */
 PointerEventInit.prototype.isPrimary;
 
+/** @type {undefined|number} */
+PointerEventInit.prototype.altitudeAngle;
+
+/** @type {undefined|number} */
+PointerEventInit.prototype.azimuthAngle;
+
+/** @type {undefined|number} */
+PointerEventInit.prototype.tangentialPressure;
+
+/** @type {undefined|number} */
+PointerEventInit.prototype.twist;
+
+/** @type {undefined|!Array<!PointerEvent>} */
+PointerEventInit.prototype.coalescedEvents;
+
+/** @type {undefined|!Array<!PointerEvent>} */
+PointerEventInit.prototype.predictedEvents;
+
+
 /**
  * @constructor
  * @extends {MouseEvent}
@@ -120,6 +139,9 @@ PointerEvent.prototype.tiltX;
 /** @type {number} */
 PointerEvent.prototype.tiltY;
 
+/** @type {number} */
+PointerEvent.prototype.persistentDeviceId;
+
 /** @type {string} */
 PointerEvent.prototype.pointerType;
 
@@ -142,3 +164,5 @@ PointerEvent.prototype.MSPOINTER_TYPE_MOUSE;
  */
 PointerEvent.prototype.getCoalescedEvents = function() {};
 
+/** @return {!Array<!PointerEvent>} */
+PointerEvent.prototype.getPredictedEvents = function() {};

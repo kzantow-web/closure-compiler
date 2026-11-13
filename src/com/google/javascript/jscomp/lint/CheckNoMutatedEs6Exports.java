@@ -30,8 +30,7 @@ import com.google.javascript.jscomp.NodeUtil;
 import com.google.javascript.jscomp.Scope;
 import com.google.javascript.jscomp.Var;
 import com.google.javascript.rhino.Node;
-import java.util.HashSet;
-import java.util.List;
+import java.util.LinkedHashSet;
 import java.util.Set;
 
 /** Checks that exports of ES6 modules are not mutated outside of module initialization. */
@@ -48,7 +47,7 @@ public final class CheckNoMutatedEs6Exports implements NodeTraversal.Callback, C
   private final AbstractCompiler compiler;
   private final Multimap<String, Node> mutatedNames =
       MultimapBuilder.hashKeys().hashSetValues().build();
-  private final Set<String> exportedLocalNames = new HashSet<>();
+  private final Set<String> exportedLocalNames = new LinkedHashSet<>();
 
   public CheckNoMutatedEs6Exports(AbstractCompiler compiler) {
     this.compiler = compiler;
@@ -76,18 +75,18 @@ public final class CheckNoMutatedEs6Exports implements NodeTraversal.Callback, C
 
   @Override
   public boolean shouldTraverse(NodeTraversal t, Node n, Node parent) {
-    switch (n.getToken()) {
-      case SCRIPT:
-        return n.getBooleanProp(Node.ES6_MODULE);
-      case EXPORT:
+    return switch (n.getToken()) {
+      case SCRIPT -> n.getBooleanProp(Node.ES6_MODULE);
+      case EXPORT -> {
         visitExport(n);
-        return true;
-      case NAME:
+        yield true;
+      }
+      case NAME -> {
         visitName(t, n);
-        return true;
-      default:
-        return true;
-    }
+        yield true;
+      }
+      default -> true;
+    };
   }
 
   private void visitExport(Node export) {
@@ -105,12 +104,12 @@ public final class CheckNoMutatedEs6Exports implements NodeTraversal.Callback, C
       if (NodeUtil.isNameDeclaration(declaration)) {
         // export const x = 0;
         // export let a, b, c;
-        List<Node> lhsNodes = NodeUtil.findLhsNodesInNode(declaration);
-
-        for (Node lhs : lhsNodes) {
-          checkState(lhs.isName());
-          exportedLocalNames.add(lhs.getString());
-        }
+        NodeUtil.visitLhsNodesInNode(
+            declaration,
+            (lhs) -> {
+              checkState(lhs.isName());
+              exportedLocalNames.add(lhs.getString());
+            });
       } else if (export.getBooleanProp(Node.EXPORT_DEFAULT)) {
         // export default function() {}
         // export default function foo() {}

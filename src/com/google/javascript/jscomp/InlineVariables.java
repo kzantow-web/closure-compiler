@@ -17,19 +17,22 @@
 package com.google.javascript.jscomp;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 
 import com.google.common.base.Predicate;
 import com.google.common.base.Predicates;
 import com.google.common.collect.LinkedHashMultimap;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.javascript.jscomp.CodingConvention.SubclassRelationship;
 import com.google.javascript.jscomp.ReferenceCollector.Behavior;
 import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.Node;
-import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
-import javax.annotation.Nullable;
+import java.util.Objects;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Using the infrastructure provided by {@link ReferenceCollector}, identify variables that are used
@@ -150,7 +153,7 @@ class InlineVariables implements CompilerPass {
      *
      * <p>Mutually exclusive with `shouldWaitForAliasedVar()`.
      */
-    public boolean shouldInline() {
+    boolean shouldInline() {
       return false;
     }
 
@@ -162,7 +165,7 @@ class InlineVariables implements CompilerPass {
      *
      * <p>Mutually exclusive with `shouldInline()`
      */
-    public boolean shouldWaitForAliasedVar() {
+    boolean shouldWaitForAliasedVar() {
       return false;
     }
 
@@ -172,17 +175,17 @@ class InlineVariables implements CompilerPass {
      * @return The `Var` for which this one is an alias
      * @throws `UnsupportedOperationException` if `shouldWaitForAliasedVar()` is `false`.
      */
-    public Var getAliasedVar() {
+    Var getAliasedVar() {
       throw new UnsupportedOperationException("no aliased Var");
     }
 
     /** True if it is safe for aliases of this variable to inline this variable's name. */
-    public boolean isSafeToInlineAliases() {
+    boolean isSafeToInlineAliases() {
       return false;
     }
 
     /** Performs the inline operation. */
-    public void performInline() {
+    void performInline() {
       throw new UnsupportedOperationException("cannot inline");
     }
   }
@@ -211,7 +214,8 @@ class InlineVariables implements CompilerPass {
      * <p>This is necessary in order for aliases of those variables to determine whether they may be
      * inlined.
      */
-    final HashMap<Var, InlineVarAnalysis> currentScopeHandledVarAnalysesMap = new HashMap<>();
+    final LinkedHashMap<Var, InlineVarAnalysis> currentScopeHandledVarAnalysesMap =
+        new LinkedHashMap<>();
 
     /**
      * Records alias variables that are waiting for the original variables to be handled.
@@ -374,6 +378,16 @@ class InlineVariables implements CompilerPass {
         }
       }
 
+      private final InitiallyUnknown<Boolean> isReferencedWeakly = new InitiallyUnknown<>();
+
+      private boolean isReferencedWeakly() {
+        if (isReferencedWeakly.isKnown()) {
+          return isReferencedWeakly.getKnownValue();
+        } else {
+          return isReferencedWeakly.setKnownValueOnce(referenceInfo.isReferencedWeakly());
+        }
+      }
+
       private final InitiallyUnknown<Boolean> isWellDefinedAssignedOnce = new InitiallyUnknown<>();
 
       /**
@@ -440,7 +454,7 @@ class InlineVariables implements CompilerPass {
 
       @Override
       public InlineVarAnalysis analyze() {
-        if (hasNoInlineAnnotation(v)) {
+        if (hasNoInlineAnnotation(v) || isReferencedWeakly()) {
           return getNegativeInlineVarAnalysis();
         }
         final Reference initialization = getInitialization();
@@ -490,7 +504,7 @@ class InlineVariables implements CompilerPass {
           }
           if (isWellDefined()
               && (initialValueAnalysis.isImmutableValue()
-                  || (initValue.isThis() && !referenceInfo.isEscaped()))) {
+                  || (initValue.isThis() && !referenceInfo.isThisRebound()))) {
             // if the variable is referenced more than once, we can only
             // inline it if it's immutable and never defined before referenced.
             return createInlineWellDefinedVarAnalysis(initValue);
@@ -561,6 +575,7 @@ class InlineVariables implements CompilerPass {
         }
 
         if (initialValueAnalysis.isAlias()
+            && Objects.equals(aliasedVar, initialValueAnalysis.getAliasedVar())
             && aliasedVarAnalysis.isSafeToInlineAliases()
             && isWellDefinedAssignedOnce()) {
           // The variable we aliased couldn't be inlined itself, or it was an alias for another
@@ -613,7 +628,7 @@ class InlineVariables implements CompilerPass {
     }
 
     /** Indicates that the analyzed variable may be inlined. */
-    private class PositiveInlineVarAnalysis extends InlineVarAnalysis {
+    private static class PositiveInlineVarAnalysis extends InlineVarAnalysis {
       private final Runnable inliner;
 
       private PositiveInlineVarAnalysis(Runnable inliner) {
@@ -645,7 +660,7 @@ class InlineVariables implements CompilerPass {
      * Indicates that the analyzed variable is an alias and the decision about whether to inline it
      * must wait until inlining has been done (or not) for the original value it aliases.
      */
-    private class VarIsAliasAnalysis extends InlineVarAnalysis {
+    private static class VarIsAliasAnalysis extends InlineVarAnalysis {
       private final Var aliasedVar;
 
       private VarIsAliasAnalysis(Var aliasedVar) {
@@ -688,7 +703,7 @@ class InlineVariables implements CompilerPass {
         return NO_INLINE_SELF_OR_ALIASES_EXPERT;
       }
 
-      if (compiler.getCodingConvention().isExported(v.getName(), /* local */ v.isLocal())) {
+      if (compiler.getCodingConvention().isExported(v.getName(), /* local= */ v.isLocal())) {
         // If the variable is exported, it might be assigned a new value by code we cannot see,
         // so aliases to it are creating snapshots of its state.
         // We cannot inline this variable or its aliases.
@@ -711,7 +726,7 @@ class InlineVariables implements CompilerPass {
     }
 
     /** Used to initialize fields in a `StandardVarExpert` object. */
-    private class VarExpertInitData {
+    private static class VarExpertInitData {
 
       Var v;
       ReferenceCollection referenceInfo;
@@ -772,6 +787,14 @@ class InlineVariables implements CompilerPass {
       // Check for function declarations before the value is moved in the AST.
       boolean isFunctionDeclaration = NodeUtil.isFunctionDeclaration(value);
       if (isFunctionDeclaration) {
+        // We're inlining this function declaration because there was only one reference to it,
+        // probably the rhs of an assignment statement. Since we're eliminating the only
+        // reference, we can get rid of it. See b/277538101.
+        Node funcName = value.getFirstChild();
+        checkNotNull(funcName);
+        checkState(funcName.isName());
+        funcName.setString("");
+
         // In addition to changing the containing scope, inlining function declarations also changes
         // the function name scope from the containing scope to the inner scope.
         compiler.reportChangeToChangeScope(value);
@@ -795,7 +818,7 @@ class InlineVariables implements CompilerPass {
         if (r.getNode() == v.getNameNode()) {
           removeDeclaration(r);
         } else if (r.isSimpleAssignmentToName()) {
-          /**
+          /*
            * This is the initialization.
            *
            * <p>Replace the entire assignment with just the value, and use the original value node
@@ -906,6 +929,16 @@ class InlineVariables implements CompilerPass {
     }
 
     /**
+     * Maximum number of AST steps LocalVarMotion will traverse before giving up. Prevents quadratic
+     * traversal in large monolithic scopes with many definitions (b/545160233).
+     *
+     * <p>5000 steps is large enough to span massive side-effect-free AST structures like protobuf
+     * descriptor arrays without regressing code size, while bounding worst-case traversal time in
+     * huge monolithic scopes to fractions of a second.
+     */
+    private static final int MAX_MODERATE_MOTION_STEPS = 5000;
+
+    /**
      * If the value of a variable is not constant, then it may read or modify state. Therefore it
      * cannot be moved past anything else that may modify the value being read or read values that
      * are modified.
@@ -935,10 +968,14 @@ class InlineVariables implements CompilerPass {
             "Unexpected initialization parent\n" + initialization.getParent().toStringTree());
       }
       Node targetName = reference.getNode();
+      int steps = 0;
       while (it.hasNext()) {
         Node curNode = it.next();
         if (curNode == targetName) {
           return true;
+        }
+        if (++steps > MAX_MODERATE_MOTION_STEPS) {
+          return false;
         }
       }
 
@@ -972,11 +1009,6 @@ class InlineVariables implements CompilerPass {
         checkState(parent.isAssign() && parent.getFirstChild() == initialization.getNode());
       }
 
-      Node n = initialization.getAssignedValue();
-      if (n.isFunction()) {
-        return compiler.getCodingConvention().isInlinableFunction(n);
-      }
-
       return true;
     }
 
@@ -994,8 +1026,8 @@ class InlineVariables implements CompilerPass {
   }
 
   private static class InitiallyUnknown<T> {
-    protected boolean isKnown = false;
-    @Nullable protected T value = null;
+    boolean isKnown = false;
+    @Nullable T value = null;
 
     boolean isKnown() {
       return isKnown;
@@ -1013,6 +1045,7 @@ class InlineVariables implements CompilerPass {
       return isKnown && value != other;
     }
 
+    @CanIgnoreReturnValue
     T setKnownValueOnce(T value) {
       checkState(!isKnown, "already known");
       this.value = value;

@@ -18,8 +18,8 @@ package com.google.javascript.jscomp;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.javascript.jscomp.AstFactory.type;
+import static java.util.Objects.requireNonNull;
 
-import com.google.auto.value.AutoValue;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Iterables;
 import com.google.javascript.jscomp.modules.Binding;
@@ -31,7 +31,7 @@ import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.QualifiedName;
 import com.google.javascript.rhino.jstype.JSType;
 import java.util.List;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** Centralized location for determining how to rename modules. */
 final class ModuleRenaming {
@@ -87,7 +87,8 @@ final class ModuleRenaming {
     return getGlobalName(binding.originatingExport());
   }
 
-  private static JSType getNameRootType(String qname, @Nullable TypedScope globalTypedScope) {
+  private static @Nullable JSType getNameRootType(
+      String qname, @Nullable TypedScope globalTypedScope) {
     if (globalTypedScope == null) {
       return null;
     }
@@ -162,13 +163,14 @@ final class ModuleRenaming {
    * <p>Used because in some cases, the root of the qualified name will not be present in any scopes
    * until a subsequent run of {@link ClosureRewriteModule}. It's useful to store the type of
    * Closure module exports `module$exports$my$goog$module` separately.
+   *
+   * @param rootNameType the type of the root of `aliasName`, as it may not always exist in the
+   *     scope yet.
    */
-  @AutoValue
-  abstract static class GlobalizedModuleName {
-    abstract QualifiedName aliasName();
-    // The type of the root of `aliasName`, as it may not always exist in the scope yet.
-    @Nullable
-    abstract JSType rootNameType();
+  record GlobalizedModuleName(QualifiedName aliasName, @Nullable JSType rootNameType) {
+    GlobalizedModuleName {
+      requireNonNull(aliasName, "aliasName");
+    }
 
     /** Creates a GETPROP chain with type information representing this name */
     Node toQname(AstFactory astFactory) {
@@ -190,7 +192,7 @@ final class ModuleRenaming {
     }
 
     static GlobalizedModuleName create(QualifiedName aliasName, JSType rootNameType) {
-      return new AutoValue_ModuleRenaming_GlobalizedModuleName(aliasName, rootNameType);
+      return new GlobalizedModuleName(aliasName, rootNameType);
     }
 
     /**
@@ -208,23 +210,23 @@ final class ModuleRenaming {
         @Nullable TypedScope globalTypedScope) {
       checkState(googNamespace == null || moduleMetadata.googNamespaces().contains(googNamespace));
       switch (moduleMetadata.moduleType()) {
-        case GOOG_MODULE:
+        case GOOG_MODULE -> {
           // The exported type is stored on the MODULE_BODY node.
           Node moduleBody = moduleMetadata.rootNode().getFirstChild();
-          return new AutoValue_ModuleRenaming_GlobalizedModuleName(
+          return new GlobalizedModuleName(
               QualifiedName.of(ClosureRewriteModule.getBinaryModuleNamespace(googNamespace)),
               moduleBody.getJSType());
-        case GOOG_PROVIDE:
-        case LEGACY_GOOG_MODULE:
-          return new AutoValue_ModuleRenaming_GlobalizedModuleName(
+        }
+        case GOOG_PROVIDE, LEGACY_GOOG_MODULE -> {
+          return new GlobalizedModuleName(
               QualifiedName.of(googNamespace), getNameRootType(googNamespace, globalTypedScope));
-        case ES6_MODULE:
-        case COMMON_JS:
-          return new AutoValue_ModuleRenaming_GlobalizedModuleName(
+        }
+        case ES6_MODULE, COMMON_JS -> {
+          return new GlobalizedModuleName(
               QualifiedName.of(moduleMetadata.path().toModuleName()),
               getNameRootType(moduleMetadata.path().toModuleName(), globalTypedScope));
-        case SCRIPT:
-          // fall through, throw an error
+        }
+        case SCRIPT -> {}
       }
       throw new IllegalStateException("Unexpected module type: " + moduleMetadata.moduleType());
     }

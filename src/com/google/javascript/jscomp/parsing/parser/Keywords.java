@@ -19,7 +19,7 @@ package com.google.javascript.jscomp.parsing.parser;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Maps;
 import java.util.EnumMap;
-import java.util.Map;
+import java.util.EnumSet;
 
 /**
  * The JavaScript keywords.
@@ -79,13 +79,13 @@ public enum Keywords {
     TRUE("true", TokenType.TRUE),
   FALSE("false", TokenType.FALSE);
 
-  private static final Map<String, Keywords> KEYWORDS_BY_NAME;
-  private static final Map<TokenType, Keywords> KEYWORDS_BY_TYPE;
+  private static final ImmutableMap<String, Keywords> KEYWORDS_BY_NAME;
+  private static final ImmutableMap<TokenType, Keywords> KEYWORDS_BY_TYPE;
 
   static {
     ImmutableMap.Builder<String, Keywords> keywordsByName = ImmutableMap.builder();
     EnumMap<TokenType, Keywords> keywordsByType = new EnumMap<>(TokenType.class);
-    for (Keywords kw : Keywords.values()) {
+    for (Keywords kw : EnumSet.allOf(Keywords.class)) {
       keywordsByName.put(kw.value, kw);
       keywordsByType.put(kw.type, kw);
     }
@@ -119,20 +119,10 @@ public enum Keywords {
    * be used as a variable identifier, but only in non-strict mode.
    */
   public static boolean isStrictKeyword(TokenType token) {
-    switch(token) {
-      case IMPLEMENTS:
-      case INTERFACE:
-      case LET:
-      case PACKAGE:
-      case PRIVATE:
-      case PROTECTED:
-      case PUBLIC:
-      case STATIC:
-      case YIELD:
-        return true;
-      default:
-        return false;
-    }
+    return switch (token) {
+      case IMPLEMENTS, INTERFACE, LET, PACKAGE, PRIVATE, PROTECTED, PUBLIC, STATIC, YIELD -> true;
+      default -> false;
+    };
   }
 
   public static TokenType getTokenType(String value) {

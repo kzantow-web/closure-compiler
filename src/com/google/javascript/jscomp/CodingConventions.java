@@ -16,8 +16,6 @@
 
 package com.google.javascript.jscomp;
 
-import static com.google.common.base.Preconditions.checkState;
-
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.Immutable;
@@ -27,11 +25,10 @@ import com.google.javascript.rhino.NominalTypeBuilder;
 import com.google.javascript.rhino.QualifiedName;
 import com.google.javascript.rhino.StaticSourceFile;
 import com.google.javascript.rhino.jstype.FunctionType;
-import com.google.javascript.rhino.jstype.JSTypeRegistry;
-import com.google.javascript.rhino.jstype.ObjectType;
+import com.google.javascript.rhino.jstype.JSType;
 import java.util.Collection;
 import java.util.List;
-import java.util.Map;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Helper classes for dealing with coding conventions.
@@ -199,62 +196,13 @@ public final class CodingConventions {
     }
 
     @Override
-    public boolean isInlinableFunction(Node n) {
-      return nextConvention.isInlinableFunction(n);
-    }
-
-    @Override
-    public DelegateRelationship getDelegateRelationship(Node callNode) {
-      return nextConvention.getDelegateRelationship(callNode);
-    }
-
-    @Override
-    public void applyDelegateRelationship(
-        NominalTypeBuilder delegateSuperclass,
-        NominalTypeBuilder delegateBase,
-        NominalTypeBuilder delegator,
-        ObjectType delegateProxy,
-        FunctionType findDelegate) {
-      nextConvention.applyDelegateRelationship(
-          delegateSuperclass, delegateBase, delegator, delegateProxy, findDelegate);
-    }
-
-    @Override
-    public String getDelegateSuperclassName() {
-      return nextConvention.getDelegateSuperclassName();
-    }
-
-    @Override
-    public void checkForCallingConventionDefinitions(
-        Node n, Map<String, String> delegateCallingConventions) {
-      nextConvention.checkForCallingConventionDefinitions(
-          n, delegateCallingConventions);
-    }
-
-    @Override
-    public void defineDelegateProxyPrototypeProperties(
-        JSTypeRegistry registry,
-        List<NominalTypeBuilder> delegateProxies,
-        Map<String, String> delegateCallingConventions) {
-      nextConvention.defineDelegateProxyPrototypeProperties(
-          registry, delegateProxies, delegateCallingConventions);
-    }
-
-    @Override
     public Collection<AssertionFunctionSpec> getAssertionFunctions() {
       return nextConvention.getAssertionFunctions();
     }
 
     @Override
-    public Bind describeFunctionBind(Node n) {
-      return describeFunctionBind(n, false, false);
-    }
-
-    @Override
-    public Bind describeFunctionBind(
-        Node n, boolean callerChecksTypes, boolean iCheckTypes) {
-      return nextConvention
-          .describeFunctionBind(n, callerChecksTypes, iCheckTypes);
+    public Bind describeFunctionBind(Node n, boolean checkTypes) {
+      return nextConvention.describeFunctionBind(n, checkTypes);
     }
 
     @Override
@@ -281,11 +229,6 @@ public final class CodingConventions {
     public ObjectLiteralCast getObjectLiteralCast(Node callNode) {
       return nextConvention.getObjectLiteralCast(callNode);
     }
-
-    @Override
-    public Collection<String> getIndirectlyDeclaredProperties() {
-      return nextConvention.getIndirectlyDeclaredProperties();
-    }
   }
 
 
@@ -295,9 +238,6 @@ public final class CodingConventions {
    */
   @Immutable
   private static class DefaultCodingConvention implements CodingConvention {
-
-    private static final QualifiedName JSCOMP_REFLECT_PROPERTY =
-        QualifiedName.of("$jscomp.reflectProperty");
 
     private static final long serialVersionUID = 1L;
 
@@ -357,7 +297,7 @@ public final class CodingConventions {
     private static final QualifiedName JSCOMP_INHERITS = QualifiedName.of("$jscomp.inherits");
 
     @Override
-    public SubclassRelationship getClassesDefinedByCall(Node callNode) {
+    public @Nullable SubclassRelationship getClassesDefinedByCall(Node callNode) {
       Node callName = callNode.getFirstChild();
       if ((JSCOMP_INHERITS.matches(callName) || callName.matchesName("$jscomp$inherits"))
           && callNode.hasXChildren(3)) {
@@ -411,7 +351,7 @@ public final class CodingConventions {
 
     @Override
     public List<String> identifyTypeDeclarationCall(Node n) {
-      return null;
+      return ImmutableList.of();
     }
 
     @Override
@@ -437,46 +377,6 @@ public final class CodingConventions {
     }
 
     @Override
-    public boolean isInlinableFunction(Node n) {
-      checkState(n.isFunction(), n);
-      return true;
-    }
-
-    @Override
-    public DelegateRelationship getDelegateRelationship(Node callNode) {
-      return null;
-    }
-
-    @Override
-    public void applyDelegateRelationship(
-        NominalTypeBuilder delegateSuperclass,
-        NominalTypeBuilder delegateBase,
-        NominalTypeBuilder delegator,
-        ObjectType delegateProxy,
-        FunctionType findDelegate) {
-      // do nothing.
-    }
-
-    @Override
-    public String getDelegateSuperclassName() {
-      return null;
-    }
-
-    @Override
-    public void checkForCallingConventionDefinitions(Node n,
-        Map<String, String> delegateCallingConventions) {
-      // do nothing.
-    }
-
-    @Override
-    public void defineDelegateProxyPrototypeProperties(
-        JSTypeRegistry registry,
-        List<NominalTypeBuilder> delegateProxies,
-        Map<String, String> delegateCallingConventions) {
-      // do nothing.
-    }
-
-    @Override
     public boolean isPropertyTestFunction(Node call) {
       // Avoid building the qualified name and check for
       // "goog.isArray"
@@ -493,9 +393,7 @@ public final class CodingConventions {
 
     @Override
     public boolean isPropertyRenameFunction(Node nameNode) {
-      return nameNode.matchesName(NodeUtil.JSC_PROPERTY_NAME_FN)
-          || JSCOMP_REFLECT_PROPERTY.matches(nameNode)
-          || nameNode.matchesName("$jscomp$reflectProperty");
+      return nameNode.matchesName(NodeUtil.JSC_PROPERTY_NAME_FN);
     }
 
     @Override
@@ -519,17 +417,11 @@ public final class CodingConventions {
               .build());
     }
 
-    @Override
-    public Bind describeFunctionBind(Node n) {
-      return describeFunctionBind(n, false, false);
-    }
-
     private static final QualifiedName FUNCTION_PROTOTYPE_BIND_CALL =
         QualifiedName.of("Function.prototype.bind.call");
 
     @Override
-    public Bind describeFunctionBind(
-        Node n, boolean callerChecksTypes, boolean iCheckTypes) {
+    public @Nullable Bind describeFunctionBind(Node n, boolean checkTypes) {
       if (!n.isCall()) {
         return null;
       }
@@ -550,15 +442,14 @@ public final class CodingConventions {
 
       if (callTarget.isGetProp() && callTarget.getString().equals("bind")) {
         Node maybeFn = callTarget.getFirstChild();
-        com.google.javascript.rhino.jstype.JSType maybeFnType =
-            maybeFn.getJSType();
+        JSType maybeFnType = maybeFn.getJSType();
         FunctionType fnType = null;
-        if (iCheckTypes && maybeFnType != null) {
+        if (checkTypes && maybeFnType != null) {
           fnType = maybeFnType.restrictByNotNullOrUndefined()
               .toMaybeFunctionType();
         }
 
-        if (fnType != null || callerChecksTypes || maybeFn.isFunction()) {
+        if (fnType != null || maybeFn.isFunction()) {
           // (function(){}).bind(self, args...);
           Node thisValue = callTarget.getNext();
           Node parameters = safeNext(thisValue);
@@ -574,12 +465,7 @@ public final class CodingConventions {
       return null;
     }
 
-    @Override
-    public Collection<String> getIndirectlyDeclaredProperties() {
-      return ImmutableList.of();
-    }
-
-    private static Node safeNext(Node n) {
+    private static @Nullable Node safeNext(Node n) {
       if (n != null) {
         return n.getNext();
       }

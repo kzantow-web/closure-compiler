@@ -28,6 +28,7 @@ import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.jstype.JSType;
 import java.util.LinkedHashMap;
 import java.util.function.Function;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Traverses the AST, collecting connections between {@link JSType}s, property accesses, and their
@@ -56,7 +57,7 @@ final class ColorFindPropertyReferences extends AbstractPostOrderCallback {
     boolean test(Node nameNode);
   }
 
-  private LinkedHashMap<String, PropertyClustering> propIndex = new LinkedHashMap<>();
+  private @Nullable LinkedHashMap<String, PropertyClustering> propIndex = new LinkedHashMap<>();
 
   private final ColorGraphNodeFactory colorGraphNodeFactory;
   private final IsPropertyReflector isPropertyReflector;
@@ -76,57 +77,45 @@ final class ColorFindPropertyReferences extends AbstractPostOrderCallback {
   @Override
   public void visit(NodeTraversal t, Node n, Node parent) {
     switch (n.getToken()) {
-      case GETPROP:
-      case OPTCHAIN_GETPROP:
-        this.registerPropertyUse(n, n.getFirstChild().getColor());
-        break;
-      case OBJECTLIT:
-        this.handleObjectLit(n);
-        break;
-      case CALL:
-        this.handleCall(n);
-        break;
-      case CLASS:
-        this.handleClass(n);
-        break;
-      case OBJECT_PATTERN:
-        this.handleObjectPattern(n);
-        break;
-      case FUNCTION:
-        this.handleFunction(n);
-        break;
-      default:
-        break;
+      case GETPROP, OPTCHAIN_GETPROP ->
+          this.registerPropertyUse(t, n, n.getFirstChild().getColor());
+      case OBJECTLIT -> this.handleObjectLit(t, n);
+      case CALL -> this.handleCall(t, n);
+      case CLASS -> this.handleClass(t, n);
+      case OBJECT_PATTERN -> this.handleObjectPattern(t, n);
+      case FUNCTION -> this.handleFunction(n);
+      default -> {}
     }
   }
 
-  private void handleObjectLit(Node n) {
+  private void handleObjectLit(NodeTraversal t, Node n) {
     // Object.defineProperties literals are handled at the CALL node.
     if (n.getParent().isCall() && NodeUtil.isObjectDefinePropertiesDefinition(n.getParent())) {
       return;
     }
 
     Color owner = n.getColor();
-    this.traverseObjectlitLike(n, (m) -> owner);
+    this.traverseObjectlitLike(t, n, (m) -> owner);
   }
 
   /** Examines calls in case they are Object.defineProperties calls */
-  private void handleCall(Node call) {
+  private void handleCall(NodeTraversal t, Node call) {
     Node target = call.getFirstChild();
     if (!target.isQualifiedName()) {
       return;
     }
 
     if (this.isPropertyReflector.test(target)) {
-      this.handlePropertyReflectorCall(call);
+      this.handlePropertyReflectorCall(t, call);
     } else if (NodeUtil.isObjectDefinePropertiesDefinition(call)) {
-      this.handleObjectDefineProperties(call);
+      this.handleObjectDefineProperties(t, call);
     }
   }
 
-  private void handleClass(Node classNode) {
+  private void handleClass(NodeTraversal t, Node classNode) {
     Color classType = classNode.getColor();
     this.traverseObjectlitLike(
+        t,
         NodeUtil.getClassMembers(classNode),
         (m) -> {
           if (m.isStaticMember()) {
@@ -158,12 +147,12 @@ final class ColorFindPropertyReferences extends AbstractPostOrderCallback {
     }
   }
 
-  private void handleObjectPattern(Node pattern) {
+  private void handleObjectPattern(NodeTraversal t, Node pattern) {
     Color owner = pattern.getColor();
-    this.traverseObjectlitLike(pattern, (m) -> owner);
+    this.traverseObjectlitLike(t, pattern, (m) -> owner);
   }
 
-  private void handlePropertyReflectorCall(Node call) {
+  private void handlePropertyReflectorCall(NodeTraversal t, Node call) {
     Node name = call.getSecondChild();
     if (name == null || !name.isStringLit()) {
       return;
@@ -171,10 +160,10 @@ final class ColorFindPropertyReferences extends AbstractPostOrderCallback {
 
     Node obj = name.getNext();
     Color objColor = (obj == null) ? null : obj.getColor();
-    this.registerPropertyUse(name, objColor);
+    this.registerPropertyUse(t, name, objColor);
   }
 
-  private void handleObjectDefineProperties(Node call) {
+  private void handleObjectDefineProperties(NodeTraversal t, Node call) {
     Node typeObj = call.getSecondChild();
     Node objectLiteral = typeObj.getNext();
     if (!objectLiteral.isObjectLit()) {
@@ -182,36 +171,28 @@ final class ColorFindPropertyReferences extends AbstractPostOrderCallback {
     }
 
     Color type = typeObj.getColor();
-    this.traverseObjectlitLike(objectLiteral, (m) -> type);
+    this.traverseObjectlitLike(t, objectLiteral, (m) -> type);
   }
 
-  private void traverseObjectlitLike(Node n, Function<Node, Color> memberOwnerFn) {
+  private void traverseObjectlitLike(NodeTraversal t, Node n, Function<Node, Color> memberOwnerFn) {
     // The keys in an object pattern are r-values, not l-values, but they are still accesses.
     checkState(n.isObjectLit() || n.isObjectPattern() || n.isClassMembers());
 
     for (Node child = n.getFirstChild(); child != null; child = child.getNext()) {
       switch (child.getToken()) {
-        case COMPUTED_PROP:
-        case COMPUTED_FIELD_DEF:
-        case OBJECT_REST:
-        case OBJECT_SPREAD:
+        case BLOCK, COMPUTED_PROP, COMPUTED_FIELD_DEF, OBJECT_REST, OBJECT_SPREAD -> {
           continue;
-
-        case STRING_KEY:
-        case MEMBER_FUNCTION_DEF:
-        case MEMBER_FIELD_DEF:
-        case GETTER_DEF:
-        case SETTER_DEF:
-          if (child.isQuotedString()) {
+        }
+        case STRING_KEY, MEMBER_FUNCTION_DEF, MEMBER_FIELD_DEF, GETTER_DEF, SETTER_DEF -> {
+          if (child.isQuotedStringKey()) {
             continue; // These won't be renamed due to our assumptions. Ignore them.
           }
 
-          this.registerPropertyUse(child, memberOwnerFn.apply(child));
-          break;
-
-        default:
-          throw new IllegalStateException(
-              "Unexpected child of " + n.getToken() + ": " + child.toStringTree());
+          this.registerPropertyUse(t, child, memberOwnerFn.apply(child));
+        }
+        default ->
+            throw new IllegalStateException(
+                "Unexpected child of " + n.getToken() + ": " + child.toStringTree());
       }
     }
   }
@@ -220,7 +201,7 @@ final class ColorFindPropertyReferences extends AbstractPostOrderCallback {
    * Update all datastructures as necessary to consider property use {@code site} from type {@code
    * owner}.
    */
-  private void registerPropertyUse(Node site, Color owner) {
+  private void registerPropertyUse(NodeTraversal t, Node site, Color owner) {
     PropertyClustering prop =
         this.propIndex.computeIfAbsent(site.getString(), PropertyClustering::new);
     ColorGraphNode flatOwner = this.colorGraphNodeFactory.createNode(owner);
@@ -234,7 +215,11 @@ final class ColorFindPropertyReferences extends AbstractPostOrderCallback {
 
     // Track the cluster of types whose properties must keep their original name after
     // disambiguation. Note: an "enum type" is the type of an enum object like "{STOP: 0, GO: 1}".
-    if (site.isFromExterns() || (owner != null && owner.getPropertiesKeepOriginalName())) {
+    // NOTE: we can't use site.isFromExterns() because sometimes nodes have source file information
+    // that doesn't match the containing script. This could lead to renaming properties that are
+    // in externs if the property node didn't have an externs source file. Related: b/186056977.
+    if (t.getCurrentScript().isFromExterns()
+        || (owner != null && owner.getPropertiesKeepOriginalName())) {
       prop.registerOriginalNameType(flatOwner);
     }
   }

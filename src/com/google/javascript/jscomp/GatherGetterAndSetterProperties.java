@@ -48,7 +48,13 @@ public final class GatherGetterAndSetterProperties implements CompilerPass {
     // For now we traverse both trees every time because there's no reason we have to treat them
     // differently.
     checkState(externs.getParent() == root.getParent());
-    compiler.setAccessorSummary(AccessorSummary.create(gather(compiler, externs.getParent())));
+    final AccessorSummary accessorSummary;
+    if (compiler.getOptions().getAssumePropertiesAreStaticallyAnalyzable()) {
+      accessorSummary = AccessorSummary.create(gather(compiler, externs.getParent()));
+    } else {
+      accessorSummary = AccessorSummary.createAssumingAlwaysGetterAndSetter();
+    }
+    compiler.setAccessorSummary(accessorSummary);
   }
 
   static ImmutableMap<String, PropertyAccessKind> gather(AbstractCompiler compiler, Node root) {
@@ -67,21 +73,17 @@ public final class GatherGetterAndSetterProperties implements CompilerPass {
     @Override
     public void visit(NodeTraversal t, Node n, Node parent) {
       switch (n.getToken()) {
-        case GETTER_DEF:
-          recordGetterDef(n);
-          break;
-        case SETTER_DEF:
-          recordSetterDef(n);
-          break;
-        case CALL:
+        case GETTER_DEF -> recordGetterDef(n);
+        case SETTER_DEF -> recordSetterDef(n);
+        case CALL -> {
           if (NodeUtil.isObjectDefinePropertyDefinition(n)) {
             visitDefineProperty(n);
-          } else if (NodeUtil.isObjectDefinePropertiesDefinition(n)) {
+          } else if (NodeUtil.isObjectDefinePropertiesDefinition(n)
+              || NodeUtil.isObjectCreateWithPropertiesDefinition(n)) {
             visitDefineProperties(n);
           }
-          break;
-        default:
-          break;
+        }
+        default -> {}
       }
     }
 

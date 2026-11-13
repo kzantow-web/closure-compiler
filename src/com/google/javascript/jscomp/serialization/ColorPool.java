@@ -31,7 +31,8 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
-import com.google.javascript.jscomp.base.IdentityRef;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import com.google.javascript.jscomp.base.LinkedIdentityHashMap;
 import com.google.javascript.jscomp.base.Tri;
 import com.google.javascript.jscomp.colors.Color;
 import com.google.javascript.jscomp.colors.ColorId;
@@ -41,6 +42,7 @@ import java.util.ArrayDeque;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.function.Consumer;
 
 /**
  * A set of {@link Color}s reconstructed from possibly many {@link TypePool} protos.
@@ -52,14 +54,21 @@ import java.util.Map;
  * different ColorPools, but mixing multiple ColorPools is likely a design error.
  */
 public final class ColorPool {
-  private final ImmutableMap<ColorId, Color> idToColor;
-  private final ImmutableList<ShardView> shardViews;
+  // This could be an ImmutableMap, but because it's very large, creating an ImmutableMap copy has
+  // caused OOMs in large projects. So we just use a LinkedHashMap and hide the mutability behind
+  // accessor methods.
+  private final LinkedHashMap<ColorId, Color> idToColor;
   private final ColorRegistry colorRegistry;
+  // Non-empty for testing only. Normally empty to save on memory.
+  private final ImmutableList<ShardView> shardViews;
 
-  private ColorPool(Builder builder) {
-    this.idToColor = ImmutableMap.copyOf(builder.idToColor);
-    this.shardViews = ImmutableList.copyOf(builder.protoToShard.values());
-    this.colorRegistry = builder.registry.build();
+  private ColorPool(
+      LinkedHashMap<ColorId, Color> idToColor,
+      ColorRegistry colorRegistry,
+      ImmutableList<ShardView> shardViews) {
+    this.idToColor = idToColor;
+    this.colorRegistry = colorRegistry;
+    this.shardViews = shardViews;
   }
 
   public Color getColor(ColorId id) {
@@ -70,17 +79,20 @@ public final class ColorPool {
     return this.colorRegistry;
   }
 
-  public ShardView getOnlyShard() {
+  ShardView getOnlyShardForTesting() {
     return Iterables.getOnlyElement(this.shardViews);
   }
 
   /** A view of the pool based on one of the input shards. */
   public static final class ShardView {
-    private final TypePool typePool;
-    private final StringPool stringPool;
     private final ImmutableList<ColorId> trimmedOffsetToId;
 
-    private ColorPool colorPool; // Set once the complete pool is built.
+    // Fields only present before/while the ColorPool is being built. Null afterwards.
+    private TypePool typePool;
+    private StringPool stringPool;
+
+    // Set once the complete pool is built.
+    private ColorPool colorPool;
 
     private ShardView(
         TypePool typePool, StringPool stringPool, ImmutableList<ColorId> trimmedOffsetToId) {
@@ -101,14 +113,20 @@ public final class ColorPool {
         return this.trimmedOffsetToId.get(trimOffset(untrimmedOffset));
       }
     }
+
+    private void updateStateAfterColorPoolIsBuilt(ColorPool colorPool) {
+      this.colorPool = colorPool;
+      this.typePool = null;
+      this.stringPool = null;
+    }
   }
 
   public static Builder builder() {
     return new Builder();
   }
 
-  public static ColorPool fromOnlyShard(TypePool typePool, StringPool stringPool) {
-    return ColorPool.builder().addShardAnd(typePool, stringPool).build();
+  static ColorPool fromOnlyShardForTesting(TypePool typePool, StringPool stringPool) {
+    return ColorPool.builder().addShardAnd(typePool, stringPool).forTesting().build();
   }
 
   /**
@@ -116,11 +134,12 @@ public final class ColorPool {
    * a single {@link ColorPool}.
    */
   public static final class Builder {
-    private final LinkedHashMap<IdentityRef<TypePool>, ShardView> protoToShard =
-        new LinkedHashMap<>();
+    private final LinkedIdentityHashMap<TypePool, ShardView> protoToShard =
+        new LinkedIdentityHashMap<>();
     private final LinkedHashMap<ColorId, Color> idToColor = new LinkedHashMap<>();
     private final ColorRegistry.Builder registry = ColorRegistry.builder();
     private final HashBasedTable<ColorId, ShardView, TypeProto> idToProto = HashBasedTable.create();
+    private boolean forTesting = false;
 
     private final ArrayDeque<ColorId> reconcilationDebugStack = new ArrayDeque<>();
 
@@ -128,16 +147,22 @@ public final class ColorPool {
       this.idToColor.putAll(StandardColors.AXIOMATIC_COLORS);
     }
 
+    @CanIgnoreReturnValue
     public Builder addShardAnd(TypePool typePool, StringPool stringPool) {
       this.addShard(typePool, stringPool);
       return this;
     }
 
+    @CanIgnoreReturnValue
+    private Builder forTesting() {
+      this.forTesting = true;
+      return this;
+    }
+
     public ShardView addShard(TypePool typePool, StringPool stringPool) {
       checkState(this.idToProto.isEmpty(), "build has already been called");
-      IdentityRef<TypePool> typePoolRef = IdentityRef.of(typePool);
 
-      ShardView existing = this.protoToShard.get(typePoolRef);
+      ShardView existing = this.protoToShard.get(typePool);
       if (existing != null) {
         checkState(identical(typePool, TypePool.getDefaultInstance()), typePool);
         return existing;
@@ -145,7 +170,7 @@ public final class ColorPool {
 
       ImmutableList<ColorId> trimmedOffsetToId = createTrimmedOffsetToId(typePool);
       ShardView shard = new ShardView(typePool, stringPool, trimmedOffsetToId);
-      this.protoToShard.put(typePoolRef, shard);
+      this.protoToShard.put(typePool, shard);
 
       if (typePool.hasDebugInfo()) {
         for (TypePool.DebugInfo.Mismatch m : typePool.getDebugInfo().getMismatchList()) {
@@ -161,12 +186,13 @@ public final class ColorPool {
     public ColorPool build() {
       checkState(this.idToProto.isEmpty(), "build has already been called");
 
-      for (ShardView shard : this.protoToShard.values()) {
-        for (int i = 0; i < shard.typePool.getTypeCount(); i++) {
-          ColorId id = shard.trimmedOffsetToId.get(i);
-          this.idToProto.put(id, shard, shard.typePool.getType(i));
-        }
-      }
+      this.forEachShard(
+          shard -> {
+            for (int i = 0; i < shard.typePool.getTypeCount(); i++) {
+              ColorId id = shard.trimmedOffsetToId.get(i);
+              this.idToProto.put(id, shard, shard.typePool.getType(i));
+            }
+          });
 
       for (ColorId id : StandardColors.AXIOMATIC_COLORS.keySet()) {
         checkWellFormed(
@@ -183,19 +209,29 @@ public final class ColorPool {
                 colorId, (unused) -> Color.singleBuilder().setId(colorId).build()));
       }
 
-      for (ShardView shard : this.protoToShard.values()) {
-        for (SubtypingEdge edge : shard.typePool.getDisambiguationEdgesList()) {
-          this.registry.addDisambiguationEdge(
-              this.idToColor.get(shard.getId(validatePointer(edge.getSubtype(), shard))), //
-              this.idToColor.get(shard.getId(validatePointer(edge.getSupertype(), shard))));
-        }
+      this.forEachShard(
+          shard -> {
+            for (SubtypingEdge edge : shard.typePool.getDisambiguationEdgesList()) {
+              this.registry.addDisambiguationEdge(
+                  this.idToColor.get(shard.getId(validatePointer(edge.getSubtype(), shard))), //
+                  this.idToColor.get(shard.getId(validatePointer(edge.getSupertype(), shard))));
+            }
+          });
+
+      ImmutableList.Builder<ShardView> shardViewsForTesting = ImmutableList.builder();
+      if (this.forTesting) {
+        this.forEachShard(shardViewsForTesting::add);
       }
 
-      ColorPool colorPool = new ColorPool(this);
-      for (ShardView shard : this.protoToShard.values()) {
-        shard.colorPool = colorPool;
-      }
+      ColorPool colorPool =
+          new ColorPool(this.idToColor, this.registry.build(), shardViewsForTesting.build());
+
+      this.forEachShard(shard -> shard.updateStateAfterColorPoolIsBuilt(colorPool));
       return colorPool;
+    }
+
+    private void forEachShard(Consumer<ShardView> fn) {
+      this.protoToShard.forEach((unused, shard) -> fn.accept(shard));
     }
 
     private Color lookupOrReconcileColor(ColorId id) {
@@ -218,19 +254,12 @@ public final class ColorPool {
         TypeProto sample = Iterables.getFirst(viewToProto.values(), null);
         checkNotNull(sample, id);
 
-        final Color result;
-        switch (sample.getKindCase()) {
-          case OBJECT:
-            result = this.reconcileObjectProtos(id, viewToProto);
-            break;
-
-          case UNION:
-            result = this.reconcileUnionProtos(id, viewToProto);
-            break;
-
-          default:
-            throw new AssertionError(sample);
-        }
+        final Color result =
+            switch (sample.getKindCase()) {
+              case OBJECT -> this.reconcileObjectProtos(id, viewToProto);
+              case UNION -> this.reconcileUnionProtos(id, viewToProto);
+              default -> throw new AssertionError(sample);
+            };
 
         checkState(result != null, id);
         this.idToColor.put(id, result);
@@ -256,8 +285,10 @@ public final class ColorPool {
         checkState(proto.hasObject());
         ObjectTypeProto objProto = proto.getObject();
 
-        for (Integer p : objProto.getInstanceTypeList()) {
-          instanceColors.add(this.lookupOrReconcileColor(shard.getId(p)));
+        var instanceTypeIds = objProto.getInstanceTypeList();
+        for (int i = 0; i < instanceTypeIds.size(); i++) {
+          Integer instanceTypePointer = instanceTypeIds.get(i);
+          instanceColors.add(this.lookupOrReconcileColor(shard.getId(instanceTypePointer)));
         }
 
         boolean isClosureAssertBool = objProto.getClosureAssert();
@@ -270,8 +301,11 @@ public final class ColorPool {
         isConstructor |= objProto.getMarkedConstructor();
         isInvalidating |= objProto.getIsInvalidating();
         propertiesKeepOriginalName |= objProto.getPropertiesKeepOriginalName();
-        for (Integer p : objProto.getPrototypeList()) {
-          prototypes.add(this.lookupOrReconcileColor(shard.getId(p)));
+
+        var prototypeIds = objProto.getPrototypeList();
+        for (int i = 0; i < prototypeIds.size(); i++) {
+          Integer prototypePointer = prototypeIds.get(i);
+          prototypes.add(this.lookupOrReconcileColor(shard.getId(prototypePointer)));
         }
         for (int i = 0; i < objProto.getOwnPropertyCount(); i++) {
           ownProperties.add(shard.stringPool.get(objProto.getOwnProperty(i)));
@@ -295,7 +329,9 @@ public final class ColorPool {
       viewToProto.forEach(
           (shard, proto) -> {
             checkState(proto.hasUnion(), proto);
-            for (Integer memberPointer : proto.getUnion().getUnionMemberList()) {
+            var unionMemberList = proto.getUnion().getUnionMemberList();
+            for (int i = 0; i < unionMemberList.size(); i++) {
+              Integer memberPointer = unionMemberList.get(i);
               ColorId memberId = shard.getId(memberPointer);
               Color member = this.lookupOrReconcileColor(memberId);
               checkWellFormed(!member.isUnion(), "Reconciling union with non-union", proto);
@@ -315,40 +351,20 @@ public final class ColorPool {
     for (int i = 0; i < ids.length; i++) {
       TypeProto proto = typePool.getType(i);
       switch (proto.getKindCase()) {
-        case OBJECT:
-          ids[i] = ColorId.fromBytes(proto.getObject().getUuid());
-          break;
-        case UNION:
+        case OBJECT -> ids[i] = ColorId.fromBytes(proto.getObject().getUuid());
+        case UNION -> {
           // Defer generating union IDs until we have the IDs of all the element types.
-          break;
-        default:
-          throw new MalformedTypedAstException(proto);
+        }
+        default -> throw new MalformedTypedAstException(proto);
       }
     }
 
     for (int i = 0; i < ids.length; i++) {
       TypeProto proto = typePool.getType(i);
       switch (proto.getKindCase()) {
-        case OBJECT:
-          break;
-        case UNION:
-          {
-            checkWellFormed(
-                proto.getUnion().getUnionMemberCount() > 1, "Union has too few members", proto);
-            LinkedHashSet<ColorId> members = new LinkedHashSet<>();
-            for (Integer memberPointer : proto.getUnion().getUnionMemberList()) {
-              ColorId memberId =
-                  isAxiomatic(memberPointer)
-                      ? OFFSET_TO_AXIOMATIC_COLOR.get(memberPointer).getId()
-                      : ids[trimOffset(memberPointer)];
-              checkWellFormed(memberId != null, "Union member not found", proto);
-              members.add(memberId);
-            }
-            ids[i] = ColorId.union(members);
-          }
-          break;
-        default:
-          throw new AssertionError(proto);
+        case OBJECT -> {}
+        case UNION -> ids[i] = createUnionColorId(proto, ids);
+        default -> throw new AssertionError(proto);
       }
     }
 
@@ -359,6 +375,22 @@ public final class ColorPool {
     }
 
     return ImmutableList.copyOf(ids);
+  }
+
+  private static ColorId createUnionColorId(TypeProto proto, ColorId[] allObjectIds) {
+    checkWellFormed(proto.getUnion().getUnionMemberCount() > 1, "Union has too few members", proto);
+    LinkedHashSet<ColorId> members = new LinkedHashSet<>();
+    var unionMemberList = proto.getUnion().getUnionMemberList();
+    for (int i = 0; i < unionMemberList.size(); i++) {
+      Integer memberPointer = unionMemberList.get(i);
+      ColorId memberId =
+          isAxiomatic(memberPointer)
+              ? OFFSET_TO_AXIOMATIC_COLOR.get(memberPointer).getId()
+              : allObjectIds[trimOffset(memberPointer)];
+      checkWellFormed(memberId != null, "Union member not found", proto);
+      members.add(memberId);
+    }
+    return ColorId.union(members);
   }
 
   private static int validatePointer(int offset, ShardView shard) {

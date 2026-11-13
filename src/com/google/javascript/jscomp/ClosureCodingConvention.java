@@ -19,7 +19,6 @@ package com.google.javascript.jscomp;
 import static com.google.common.base.Preconditions.checkArgument;
 
 import com.google.common.base.Preconditions;
-import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.Immutable;
@@ -29,6 +28,7 @@ import com.google.javascript.rhino.NominalTypeBuilder;
 import com.google.javascript.rhino.QualifiedName;
 import com.google.javascript.rhino.jstype.FunctionType;
 import java.util.List;
+import org.jspecify.annotations.Nullable;
 
 /**
  * This describes the Closure-specific JavaScript coding conventions.
@@ -42,22 +42,12 @@ public final class ClosureCodingConvention extends CodingConventions.Proxy {
       "JSC_REFLECT_OBJECTLIT_EXPECTED",
       "Object literal expected as second argument");
 
-  private final ImmutableSet<String> indirectlyDeclaredProperties;
-
   public ClosureCodingConvention() {
     this(CodingConventions.getDefault());
   }
 
   public ClosureCodingConvention(CodingConvention wrapped) {
     super(wrapped);
-
-    ImmutableSet.Builder<String> props = ImmutableSet.builder();
-    props.add(
-        "superClass_",
-        "instance_",
-        "getInstance");
-    props.addAll(wrapped.getIndirectlyDeclaredProperties());
-    indirectlyDeclaredProperties = props.build();
   }
 
   /**
@@ -85,11 +75,11 @@ public final class ClosureCodingConvention extends CodingConventions.Proxy {
   /**
    * {@inheritDoc}
    *
-   * <p>Understands several different inheritance patterns that occur in
-   * Google code (various uses of {@code inherits} and {@code mixin}).
+   * <p>Understands several different inheritance patterns that occur in Google code (various uses
+   * of {@code inherits} and {@code mixin}).
    */
   @Override
-  public SubclassRelationship getClassesDefinedByCall(Node callNode) {
+  public @Nullable SubclassRelationship getClassesDefinedByCall(Node callNode) {
     SubclassRelationship relationship =
         super.getClassesDefinedByCall(callNode);
     if (relationship != null) {
@@ -136,19 +126,12 @@ public final class ClosureCodingConvention extends CodingConventions.Proxy {
     return null;
   }
 
-  private static final QualifiedName GOOG_DEFINECLASS = QualifiedName.of("goog.defineClass");
-
-  @Override
-  public boolean isClassFactoryCall(Node callNode) {
-    return GOOG_DEFINECLASS.matches(callNode.getFirstChild());
-  }
-
   /**
-   * Determines whether the given node is a class-defining name, like
-   * "inherits" or "mixin."
+   * Determines whether the given node is a class-defining name, like "inherits" or "mixin."
+   *
    * @return The type of class-defining name, or null.
    */
-  private static SubclassType typeofClassDefiningName(Node callName) {
+  private static @Nullable SubclassType typeofClassDefiningName(Node callName) {
     // Check if the method name matches one of the class-defining methods.
     String methodName = null;
     if (callName.isGetProp()) {
@@ -343,7 +326,7 @@ public final class ClosureCodingConvention extends CodingConventions.Proxy {
       QualifiedName.of("$jscomp.reflectObject");
 
   @Override
-  public ObjectLiteralCast getObjectLiteralCast(Node callNode) {
+  public @Nullable ObjectLiteralCast getObjectLiteralCast(Node callNode) {
     Preconditions.checkArgument(callNode.isCall(), "Expected call node but found %s", callNode);
     ObjectLiteralCast proxyCast = super.getObjectLiteralCast(callNode);
     if (proxyCast != null) {
@@ -370,7 +353,7 @@ public final class ClosureCodingConvention extends CodingConventions.Proxy {
   }
 
   @Override
-  public ImmutableCollection<AssertionFunctionSpec> getAssertionFunctions() {
+  public ImmutableSet<AssertionFunctionSpec> getAssertionFunctions() {
     return ImmutableSet.<AssertionFunctionSpec>builder()
         .addAll(super.getAssertionFunctions())
         .add(
@@ -397,8 +380,7 @@ public final class ClosureCodingConvention extends CodingConventions.Proxy {
   private static final QualifiedName GOOG_PARTIAL = QualifiedName.of("goog.partial");
 
   @Override
-  public Bind describeFunctionBind(
-      Node n, boolean callerChecksTypes, boolean iCheckTypes) {
+  public @Nullable Bind describeFunctionBind(Node n, boolean checkTypes) {
     if (!n.isCall()) {
       return null;
     }
@@ -426,11 +408,11 @@ public final class ClosureCodingConvention extends CodingConventions.Proxy {
         return new Bind(fn, thisValue, parameters);
       }
     }
-    return super.describeFunctionBind(n, callerChecksTypes, iCheckTypes);
+    return super.describeFunctionBind(n, checkTypes);
   }
 
   @Override
-  public Cache describeCachingCall(Node node) {
+  public @Nullable Cache describeCachingCall(Node node) {
     if (!node.isCall()) {
       return null;
     }
@@ -462,12 +444,7 @@ public final class ClosureCodingConvention extends CodingConventions.Proxy {
     return false;
   }
 
-  @Override
-  public ImmutableCollection<String> getIndirectlyDeclaredProperties() {
-    return indirectlyDeclaredProperties;
-  }
-
-  private static Node safeNext(Node n) {
+  private static @Nullable Node safeNext(Node n) {
     if (n != null) {
       return n.getNext();
     }

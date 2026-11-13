@@ -16,6 +16,13 @@
 
 package com.google.javascript.jscomp;
 
+import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
+
+import com.google.common.collect.ImmutableList;
+import com.google.javascript.jscomp.testing.CodeSubTree;
+import com.google.javascript.rhino.Node;
+import com.google.javascript.rhino.Node.SideEffectFlags;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -29,7 +36,7 @@ import org.junit.runners.JUnit4;
 public final class OptimizeParametersTest extends CompilerTestCase {
 
   public OptimizeParametersTest() {
-    super(lines(DEFAULT_EXTERNS, "var alert;"));
+    super(DEFAULT_EXTERNS + "var alert;");
   }
 
   @Override
@@ -42,34 +49,36 @@ public final class OptimizeParametersTest extends CompilerTestCase {
   public void setUp() throws Exception {
     super.setUp();
     enableNormalize();
+    disableMultistageCompilation();
+    // TODO(bradfordcsmith): Stop normalizing the expected output or document why it is necessary.
+    enableNormalizeExpectedOutput();
     enableGatherExternProperties();
   }
 
   @Test
   public void testAliasingAssignment() {
     testSame(
-        lines(
-            "", //
-            "/** @constructor */",
-            "function MyClass() {",
-            "  this.myField = null;",
-            "}",
-            "",
-            // This assignment creates an alias, so we can't know all of the callers and cannot
-            // safely optimize away `myArgument`.
-            "MyClass.prototype[\"myMethod\"] =",
-            "    MyClass.prototype.myMethod = function (myArgument) {",
-            "  if (undefined === myArgument) {",
-            "      myArgument = this.myField;",
-            "  }",
-            "  return \"myMethod with argument: \" + myArgument;",
-            "};",
-            "",
-            "function globalMyMethod(oMyClass) {",
-            // One call to `myMethod` exists, and it doesn't use the optional argument.
-            "  return oMyClass.myMethod();",
-            "}",
-            ""));
+        """
+        /** @constructor */
+        function MyClass() {
+          this.myField = null;
+        }
+
+        // This assignment creates an alias, so we can't know all of the callers and cannot
+        // safely optimize away `myArgument`.
+        MyClass.prototype["myMethod"] =
+            MyClass.prototype.myMethod = function (myArgument) {
+          if (undefined === myArgument) {
+              myArgument = this.myField;
+          }
+          return "myMethod with argument: " + myArgument;
+        };
+
+        function globalMyMethod(oMyClass) {
+        // One call to `myMethod` exists, and it doesn't use the optional argument.
+          return oMyClass.myMethod();
+        }
+        """);
   }
 
   @Test
@@ -127,13 +136,17 @@ public final class OptimizeParametersTest extends CompilerTestCase {
         "function f(p2) {var p1 = 1;} f?.(...x); f?.(2);");
 
     testSame("function f(p1, p2) {} f(1, ...x); f(2, ...y);");
+    testSame("function f(p1, p2) {} f(p1, ...args);");
+    testSame("function f(p1, p2) {} f.call(thisArg, p1, ...args);");
+    testSame("function f(p1, p2) {} f?.call(thisArg, p1, ...args);");
     // Test spread argument with side effects
     testSame(
-        lines(
-            "function foo(x) {sideEffect(); return x;}",
-            "function f(p1, p2) {}",
-            "f(foo(0), ...[foo(1)]);",
-            "f(foo(0), 1);"));
+        """
+        function foo(x) {sideEffect(); return x;}
+        function f(p1, p2) {}
+        f(foo(0), ...[foo(1)]);
+        f(foo(0), 1);
+        """);
     // Test should not remove arguments following spread
     test(
         "function f(p1, p2, p3) {} f(1, ...[2], 3); f(1, 2, 3);",
@@ -191,13 +204,21 @@ public final class OptimizeParametersTest extends CompilerTestCase {
   }
 
   @Test
+  public void testRemovalRest_rollbackPreservesTrailingArgs() {
+    testSame("function f(...p) { use(p); } function g(x) { f(1, x, 2); f(1, x, 2); }");
+    test(
+        "function f(a, ...p) { use(a, p); } function g(x) { f(1, 2, x, 3); f(1, 2, x, 3); }",
+        "function f(...p) { var a = 1; use(a, p); } function g(x) { f(2, x, 3); f(2, x, 3); }");
+  }
+
+  @Test
   public void testRemovalRestWithDestructuring1() {
     test(
         "function f(...[a]){          } f();", //
-        "function f(      ){var [a]=[];} f()");
+        "function f(      ){var a; [a]=[];} f()");
     test(
         "function f(...[a]){          } f(1);", //
-        "function f(      ){var [a]=[1];} f()");
+        "function f(      ){var a; [a]=[1];} f()");
     test(
         "function f(...{a}){          } f();", //
         "function f(      ){var {a}=[];} f()");
@@ -207,7 +228,7 @@ public final class OptimizeParametersTest extends CompilerTestCase {
 
     test(
         "function f(...{a}){            } f(1);", //
-        "function f(      ){var {a}=[1];} f( )");
+        "function f(      ){var a; ({a}=[1]);} f( )");
   }
 
   @Test
@@ -223,19 +244,19 @@ public final class OptimizeParametersTest extends CompilerTestCase {
         "function f(           ){var a = alert();} f()");
     test(
         "function f([a] = []){             } f();", //
-        "function f(        ){var [a] = [];} f()");
+        "function f(        ){var a; [a] = [];} f()");
     test(
         "function f([a] = []){             } f?.();", //
-        "function f(        ){var [a] = [];} f?.()");
+        "function f(        ){var a; [a] = [];} f?.()");
     test(
         "function f([a = 1] = []){                 } f();",
-        "function f(            ){var [a = 1] = [];} f()");
+        "function f(            ){var a; [a = 1] = [];} f()");
     test(
         "function f([a = 1]){                 } f([]);",
-        "function f(       ){var [a = 1] = [];} f(  );");
+        "function f(       ){var a; [a = 1] = [];} f(  );");
     test(
         "function f([a = 1]){                 } f?.([]);",
-        "function f(       ){var [a = 1] = [];} f?.(  );");
+        "function f(       ){var a; [a = 1] = [];} f?.(  );");
   }
 
   @Test
@@ -245,19 +266,27 @@ public final class OptimizeParametersTest extends CompilerTestCase {
         "function f(     ){var a = 1;} f( )");
     test(
         "function f({a} = 0){           } f([]);", //
-        "function f(       ){var {a}=[];} f(  )");
+        "function f(       ){var a; ({a}=[]);} f(  )");
     test(
         "function f({a = 1} = 0){               } f([]);",
-        "function f(           ){var {a = 1}=[];} f(  )");
+        "function f(           ){var a; ({a = 1}=[]);} f(  )");
     test(
         "function f({a = 1} = 0){               } f?.([]);",
-        "function f(           ){var {a = 1}=[];} f?.(  )");
+        "function f(           ){var a; ({a = 1}=[]);} f?.(  )");
     test(
         "function f({a = 1}){               } f({});",
-        "function f(       ){var {a = 1}={};} f(  )");
+        "function f(       ){var a; ({a = 1}={});} f(  )");
     test(
         "function f({a: a = 1}){               } f({});",
-        "function f(          ){var {a = 1}={};} f(  )");
+        "function f(          ){var a; ({a = 1}={});} f(  )");
+  }
+
+  @Test
+  public void testRemoveMultipleParams_withDestructuring_withDefaultValue() {
+    // test removing multiple parameters
+    test(
+        "var x = 0; function f(a, {b} = {b: 1}) {} f(1, {b:4});", //
+        "var x = 0; function f() { var a = 1; var b; ({b} = {b: 4});} f();");
   }
 
   @Test
@@ -321,45 +350,41 @@ public final class OptimizeParametersTest extends CompilerTestCase {
   @Test
   public void testNoInlineYieldExpression() {
     testSame(
-        lines(
-            "", //
-            "function f(a) { return a; }",
-            "function *g() { f(yield 1); }",
-            "use(g().next());",
-            ""));
+        """
+        function f(a) { return a; }
+        function *g() { f(yield 1); }
+        use(g().next());
+        """);
   }
 
   @Test
   public void testNoRemoveYieldExpression() {
     testSame(
-        lines(
-            "", //
-            "function f(a) { }",
-            "function *g() { f(yield 1); }",
-            "use(g().next());",
-            ""));
+        """
+        function f(a) { }
+        function *g() { f(yield 1); }
+        use(g().next());
+        """);
   }
 
   @Test
   public void testNoInlineAwaitExpression() {
     testSame(
-        lines(
-            "", //
-            "function f(a) { return a; }",
-            "async function g() { f(await 1); }",
-            "use(g().next());",
-            ""));
+        """
+        function f(a) { return a; }
+        async function g() { f(await 1); }
+        use(g().next());
+        """);
   }
 
   @Test
   public void testNoRemoveAwaitExpression() {
     testSame(
-        lines(
-            "", //
-            "function f(a) { }",
-            "async function g() { f(await 1); }",
-            "use(g().next());",
-            ""));
+        """
+        function f(a) { }
+        async function g() { f(await 1); }
+        use(g().next());
+        """);
   }
 
   @Test
@@ -393,6 +418,7 @@ public final class OptimizeParametersTest extends CompilerTestCase {
     test(
         "const foo = (p1)=>{       }; foo(); foo()", //
         "const foo = (  )=>{var p1;}; foo(); foo()");
+    testSame("class foo { /** @usedViaDotConstructor */ constructor(p1) {}} new foo(); new foo()");
 
     // constant parameter
     test(
@@ -404,6 +430,8 @@ public final class OptimizeParametersTest extends CompilerTestCase {
     test(
         "const foo = (p1)=>{           }; foo(1); foo(1)",
         "const foo = (  )=>{var p1 = 1;}; foo( ); foo( )");
+    testSame(
+        "class foo { /** @usedViaDotConstructor */ constructor(p1) {}} new foo(1); new foo(1)");
   }
 
   @Test
@@ -423,6 +451,7 @@ public final class OptimizeParametersTest extends CompilerTestCase {
     test(
         "function f(p1) {           } new f(1,x()); new f(1,y())",
         "function f(  ) {var p1 = 1;} new f(  x()); new f(  y())");
+    testSame("/** @usedViaDotConstructor */ function f(p1) {} new f(); new f()");
   }
 
   @Test
@@ -450,15 +479,22 @@ public final class OptimizeParametersTest extends CompilerTestCase {
     test(
         "function f(p1) {       } f.prop = 1; new f(); new f()",
         "function f(  ) {var p1;} f.prop = 1; new f(); new f()");
+    testSame("/** @usedViaDotConstructor */ function f(p1) {} f.prop = 1; new f(); new f()");
+
     test(
         "function f(p1) {           } f.prop = 1; new f(1); new f(1)",
         "function f(  ) {var p1 = 1;} f.prop = 1; new f( ); new f( )");
+    testSame("/** @usedViaDotConstructor */ function f(p1) {} f.prop = 1; new f(1); new f(1)");
+
     test(
         "function f(p1) {       } f['prop'] = 1; new f(); new f()",
         "function f(  ) {var p1;} f['prop'] = 1; new f(); new f()");
+    testSame("/** @usedViaDotConstructor */ function f(p1) {} f['prop'] = 1; new f(); new f()");
+
     test(
         "function f(p1) {           } f['prop'] = 1; new f(1); new f(1)",
         "function f(  ) {var p1 = 1;} f['prop'] = 1; new f( ); new f( )");
+    testSame("/** @usedViaDotConstructor */ function f(p1) {} f['prop'] = 1; new f(1); new f(1)");
   }
 
   @Test
@@ -524,12 +560,14 @@ public final class OptimizeParametersTest extends CompilerTestCase {
   @Test
   public void testDifferentScopes() {
     test(
-        lines(
-            "function f(a, b) {} f(1, 2); f(1, 3); ",
-            "function h() {function g(a) {} g(4); g(5);} f(1, 2);"),
-        lines(
-            "function f(b) {var a = 1} f(2); f(3); ",
-            "function h() {function g(a) {} g(4); g(5);} f(2);"));
+        """
+        function f(a, b) {} f(1, 2); f(1, 3);
+        function h() {function g(a) {} g(4); g(5);} f(1, 2);
+        """,
+        """
+        function f(b) {var a = 1} f(2); f(3);
+        function h() {function g(a) {} g(4); g(5);} f(2);
+        """);
   }
 
   @Test
@@ -569,52 +607,58 @@ public final class OptimizeParametersTest extends CompilerTestCase {
   public void testOptimizeOnlyImmutableValues3() {
     // "var a = null;" gets inserted after the declaration of 'goo' so the tree stays normalized.
     test(
-        lines(
-            "function foo(a) {", //
-            "  function goo() {}",
-            "  goo(a);",
-            "};",
-            "foo(null);"),
-        lines(
-            "function foo() {",
-            "  function goo() {}",
-            "  var a = null;",
-            "  goo(a);",
-            "};",
-            "foo();"));
+        """
+        function foo(a) {
+          function goo() {}
+          goo(a);
+        };
+        foo(null);
+        """,
+        """
+        function foo() {
+          function goo() {}
+          var a = null;
+          goo(a);
+        };
+        foo();
+        """);
 
     test(
-        lines(
-            "function foo(a) {",
-            "  function goo() {}",
-            "  function boo() {}",
-            "  goo(a);",
-            "};",
-            "foo(null);"),
-        lines(
-            "function foo() {",
-            "  function goo() {}",
-            "  function boo() {}",
-            "  var a = null;",
-            "  goo(a);",
-            "};",
-            "foo();"));
+        """
+        function foo(a) {
+          function goo() {}
+          function boo() {}
+          goo(a);
+        };
+        foo(null);
+        """,
+        """
+        function foo() {
+          function goo() {}
+          function boo() {}
+          var a = null;
+          goo(a);
+        };
+        foo();
+        """);
   }
 
   @Test
   public void testOptimizeOnlyImmutableValues4() {
     test(
-        lines(
-            "function foo(a) {", //
-            "  function goo() { return a; }",
-            "};",
-            "foo(null);"),
-        lines(
-            "function foo() {",
-            "  function goo() { return a; }",
-            "  var a = null;",
-            "};",
-            "foo();"));
+        """
+        function foo(a) {
+          function goo() { return a; }
+        };
+        foo(null);
+        """,
+        """
+        function foo() {
+          function goo() { return a; }
+          var a = null;
+        };
+        foo();
+        """);
   }
 
   @Test
@@ -660,6 +704,12 @@ public final class OptimizeParametersTest extends CompilerTestCase {
     test(
         "var foo = function (a) {}; foo?.call(null, 1);",
         "var foo = function () {var a = 1;}; foo?.call(null);");
+    testSame("var foo = function (a, b) {}; foo.call(...arr);");
+    testSame("var foo = function (a, b, c) {}; foo.call(...arr, 1, 2);");
+    testSame("var foo = function (a, b) {}; foo?.call(...arr);");
+    testSame("var foo = function (p1, p2) {}; foo(p1, ...args);");
+    testSame("var foo = function (p1, p2) {}; foo.call(this, p1, ...args);");
+    testSame("var foo = function (p1, p2) {}; foo?.call(this, p1, ...args);");
   }
 
   @Test
@@ -717,102 +767,113 @@ public final class OptimizeParametersTest extends CompilerTestCase {
   @Test
   public void testRemoveOneOptionalMultiplePossibleDefinition() {
     String src =
-        lines(
-            "var goog = {};",
-            "goog.foo = function (p1, p2) { };",
-            "goog.foo = function (q1, q2) { };",
-            "goog.foo = function (r1, r2) { };",
-            "goog.foo(1); goog.foo(2); goog.foo()");
+        """
+        var goog = {};
+        goog.foo = function (p1, p2) { };
+        goog.foo = function (q1, q2) { };
+        goog.foo = function (r1, r2) { };
+        goog.foo(1); goog.foo(2); goog.foo()
+        """;
     String result =
-        lines(
-            "var goog = {};",
-            "goog.foo = function (p1) { var p2; };",
-            "goog.foo = function (q1) { var q2; };",
-            "goog.foo = function (r1) { var r2; };",
-            "goog.foo(1); goog.foo(2); goog.foo()");
+        """
+        var goog = {};
+        goog.foo = function (p1) { var p2; };
+        goog.foo = function (q1) { var q2; };
+        goog.foo = function (r1) { var r2; };
+        goog.foo(1); goog.foo(2); goog.foo()
+        """;
     test(src, result);
   }
 
   @Test
   public void testRemoveTwoOptionalMultiplePossibleDefinition() {
     String src =
-        lines(
-            "var goog = {};",
-            "goog.foo = function (p1, p2, p3, p4) { };",
-            "goog.foo = function (q1, q2, q3, q4) { };",
-            "goog.foo = function (r1, r2, r3, r4) { };",
-            "goog.foo(1,0); goog.foo(2,1); goog.foo()");
+        """
+        var goog = {};
+        goog.foo = function (p1, p2, p3, p4) { };
+        goog.foo = function (q1, q2, q3, q4) { };
+        goog.foo = function (r1, r2, r3, r4) { };
+        goog.foo(1,0); goog.foo(2,1); goog.foo()
+        """;
     String result =
-        lines(
-            "var goog = {};",
-            "goog.foo = function (p1, p2) { var p3; var p4 };",
-            "goog.foo = function (q1, q2) { var q3; var q4 };",
-            "goog.foo = function (r1, r2) { var r3; var r4 };",
-            "goog.foo(1,0); goog.foo(2,1); goog.foo()");
+        """
+        var goog = {};
+        goog.foo = function (p1, p2) { var p3; var p4 };
+        goog.foo = function (q1, q2) { var q3; var q4 };
+        goog.foo = function (r1, r2) { var r3; var r4 };
+        goog.foo(1,0); goog.foo(2,1); goog.foo()
+        """;
     test(src, result);
   }
 
   @Test
   public void testMultipleCalls() {
     String src =
-        lines(
-            "function f(p1, p2, p3, p4) { };", //
-            "f(1,0); f(2,1); f()");
+        """
+        function f(p1, p2, p3, p4) { };
+        f(1,0); f(2,1); f()
+        """;
     String result =
-        lines(
-            "function f(p1, p2) { var p3; var p4 };", //
-            "f(1,0); f(2,1); f()");
+        """
+        function f(p1, p2) { var p3; var p4 };
+        f(1,0); f(2,1); f()
+        """;
     test(src, result);
   }
 
   @Test
   public void testConstructorOptArgsNotRemoved() {
     String src =
-        lines(
-            "/** @constructor */",
-            "var goog = function(){};",
-            "goog.prototype.foo = function(a,b) {};",
-            "goog.prototype.bar = function(a) {};",
-            "goog.bar.inherits(goog.foo);",
-            "new goog.foo(2,3);",
-            "new goog.foo(1,2);");
+        """
+        /** @constructor */
+        var goog = function(){};
+        goog.prototype.foo = function(a,b) {};
+        goog.prototype.bar = function(a) {};
+        goog.bar.inherits(goog.foo);
+        new goog.foo(2,3);
+        new goog.foo(1,2);
+        """;
     testSame(src);
   }
 
   @Test
   public void testMultipleUnknown() {
     String src =
-        lines(
-            "var goog1 = {};",
-            "goog1.foo = function () { };",
-            "var goog2 = {};",
-            "goog2.foo = function (p1) { };",
-            "var x = getGoog();",
-            "x.foo()");
+        """
+        var goog1 = {};
+        goog1.foo = function () { };
+        var goog2 = {};
+        goog2.foo = function (p1) { };
+        var x = getGoog();
+        x.foo()
+        """;
     String result =
-        lines(
-            "var goog1 = {};",
-            "goog1.foo = function () { };",
-            "var goog2 = {};",
-            "goog2.foo = function () { var p1; };",
-            "var x = getGoog();",
-            "x.foo()");
+        """
+        var goog1 = {};
+        goog1.foo = function () { };
+        var goog2 = {};
+        goog2.foo = function () { var p1; };
+        var x = getGoog();
+        x.foo()
+        """;
     test(src, result);
   }
 
   @Test
   public void testSingleUnknown() {
     String src =
-        lines(
-            "var goog2 = {};", //
-            "goog2.foo = function (p1) { };",
-            "var x = getGoog();" + "x.foo()");
+        """
+        var goog2 = {};
+        goog2.foo = function (p1) { };
+        var x = getGoog();x.foo()
+        """;
 
     String expected =
-        lines(
-            "var goog2 = {};", //
-            "goog2.foo = function () { var p1 };",
-            "var x = getGoog();" + "x.foo()");
+        """
+        var goog2 = {};
+        goog2.foo = function () { var p1 };
+        var x = getGoog();x.foo()
+        """;
     test(src, expected);
   }
 
@@ -826,41 +887,45 @@ public final class OptimizeParametersTest extends CompilerTestCase {
   @Test
   public void testAliasMethodsDontGetOptimize() {
     String src =
-        lines(
-            "var foo = function(a, b) {};",
-            "var goog = {};",
-            "goog.foo = foo;",
-            "goog.prototype.bar = goog.foo;",
-            "new goog().bar(1,2);",
-            "foo(2);");
+        """
+        var foo = function(a, b) {};
+        var goog = {};
+        goog.foo = foo;
+        goog.prototype.bar = goog.foo;
+        new goog().bar(1,2);
+        foo(2);
+        """;
     testSame(src);
   }
 
   @Test
   public void testAliasMethodsDontGetOptimize2() {
     String src =
-        lines(
-            "var foo = function(a, b) {};", //
-            "var bar = foo;" + "foo(1);" + "bar(2,3);");
+        """
+        var foo = function(a, b) {};
+        var bar = foo;foo(1);bar(2,3);
+        """;
     testSame(src);
   }
 
   @Test
   public void testAliasMethodsDontGetOptimize3() {
     String src =
-        lines(
-            "var array = {};", //
-            "array[0] = function(a, b) {};",
-            "var foo = array[0];", // foo should be marked as aliased.
-            "foo(1);");
+        """
+        var array = {};
+        array[0] = function(a, b) {};
+        var foo = array[0]; // foo should be marked as aliased.
+        foo(1);
+        """;
     testSame(src);
 
     String srcOptChain =
-        lines(
-            "var array = {};",
-            "array[0] = function(a, b) {};",
-            "var foo = array[0];", // foo should be marked as aliased.
-            "foo?.(1);");
+        """
+        var array = {};
+        array[0] = function(a, b) {};
+        var foo = array[0]; // foo should be marked as aliased.
+        foo?.(1);
+        """;
     testSame(srcOptChain);
   }
 
@@ -869,49 +934,56 @@ public final class OptimizeParametersTest extends CompilerTestCase {
     // Don't change the call to baz as it has been aliased.
 
     test(
-        lines(
-            "function foo(bar) {};", //
-            "var baz = function(a) {};",
-            "baz(1);",
-            "foo(baz);"),
-        lines(
-            "function foo() {var bar = baz};", //
-            "var baz = function(a) {};",
-            "baz(1);",
-            "foo();"));
+        """
+        function foo(bar) {};
+        var baz = function(a) {};
+        baz(1);
+        foo(baz);
+        """,
+        """
+        function foo() {var bar = baz};
+        var baz = function(a) {};
+        baz(1);
+        foo();
+        """);
   }
 
   @Test
   public void testMethodsDefinedInArraysDontGetOptimized() {
     String src =
-        lines(
-            "var array = [true, function (a) {}];", //
-            "array[1](1)");
+        """
+        var array = [true, function (a) {}];
+        array[1](1)
+        """;
     testSame(src);
 
     String srcOptChain =
-        lines(
-            "var array = [true, function (a) {}];", //
-            "array[1]?.(1)");
+        """
+        var array = [true, function (a) {}];
+        array[1]?.(1)
+        """;
     testSame(srcOptChain);
   }
 
   @Test
   public void testMethodsDefinedInObjectDontGetOptimized() {
     String src =
-        lines(
-            "var object = { foo: function bar() {} };", //
-            "object.foo(1)");
+        """
+        var object = { foo: function bar() {} };
+        object.foo(1)
+        """;
     testSame(src);
     src =
-        lines(
-            "var object = { foo: function bar() {} };", //
-            "object['foo'](1)");
+        """
+        var object = { foo: function bar() {} };
+        object['foo'](1)
+        """;
     testSame(src);
     src =
-        lines(
-            "var object = { foo: function bar() {} };", //
-            "object['foo']?.(1)");
+        """
+        var object = { foo: function bar() {} };
+        object['foo']?.(1)
+        """;
     testSame(src);
   }
 
@@ -938,29 +1010,33 @@ public final class OptimizeParametersTest extends CompilerTestCase {
 
     // A more OO test
     test(
-        lines(
-            "/** @constructor */",
-            "function Person() {}; Person.prototype.run = function(a, b) {};",
-            "Person.run(1, 'a'); Person.run(2, 'a');"),
-        lines(
-            "/** @constructor */",
-            "function Person() {}; Person.prototype.run = function(a) {var b = 'a'};",
-            "Person.run(1); Person.run(2);"));
+        """
+        /** @constructor */
+        function Person() {}; Person.prototype.run = function(a, b) {};
+        Person.run(1, 'a'); Person.run(2, 'a');
+        """,
+        """
+        /** @constructor */
+        function Person() {}; Person.prototype.run = function(a) {var b = 'a'};
+        Person.run(1); Person.run(2);
+        """);
   }
 
   @Test
   public void testCanDeleteArgumentsAtAnyPosition() {
     // Argument removed in middle and end
     String src =
-        lines(
-            "function foo(a,b,c,d,e) {};", //
-            "foo(1,2,3,4,5);",
-            "foo(2,2,4,4,5);");
+        """
+        function foo(a,b,c,d,e) {};
+        foo(1,2,3,4,5);
+        foo(2,2,4,4,5);
+        """;
     String expected =
-        lines(
-            "function foo(a,c) {var b=2; var d=4; var e=5;};", //
-            "foo(1,3);",
-            "foo(2,4);");
+        """
+        function foo(a,c) {var b=2; var d=4; var e=5;};
+        foo(1,3);
+        foo(2,4);
+        """;
     test(src, expected);
   }
 
@@ -972,9 +1048,10 @@ public final class OptimizeParametersTest extends CompilerTestCase {
   @Test
   public void testNoOptimizationForGoogExportSymbol() {
     testSame(
-        lines(
-            "goog.exportSymbol('foo', foo);", //
-            "function foo(x, y, z){}; foo(1);"));
+        """
+        goog.exportSymbol('foo', foo);
+        function foo(x, y, z){}; foo(1);
+        """);
   }
 
   @Test
@@ -989,79 +1066,79 @@ public final class OptimizeParametersTest extends CompilerTestCase {
   @Test
   public void testFunctionPassedAsParam() {
     test(
-        lines(
-            "/** @constructor */ function person() {};",
-            "person.prototype.run = function(a, b) {};",
-            "person.prototype.walk = function() {};",
-            "person.prototype.foo = function() { this.run(this.walk, 0.1); };",
-            "person.foo();"),
-        lines(
-            "/** @constructor */ function person() {};",
-            "person.prototype.run = function(a) { var b = 0.1; };",
-            "person.prototype.walk = function() {};",
-            "person.prototype.foo = function() { this.run(this.walk); };",
-            "person.foo();"));
+        """
+        /** @constructor */ function person() {};
+        person.prototype.run = function(a, b) {};
+        person.prototype.walk = function() {};
+        person.prototype.foo = function() { this.run(this.walk, 0.1); };
+        person.foo();
+        """,
+        """
+        /** @constructor */ function person() {};
+        person.prototype.run = function(a) { var b = 0.1; };
+        person.prototype.walk = function() {};
+        person.prototype.foo = function() { this.run(this.walk); };
+        person.foo();
+        """);
   }
 
   @Test
   public void testCallIsIgnore() {
     test(
-        lines(
-            "var goog;",
-            "goog.foo = function(a, opt) {};",
-            "var bar = function(){goog.foo.call(this, 1)};",
-            "goog.foo(1);"),
-        lines(
-            "var goog;",
-            "goog.foo = function() {var a = 1;var opt;};",
-            "var bar = function(){goog.foo.call(this)};",
-            "goog.foo();"));
+        """
+        var goog;
+        goog.foo = function(a, opt) {};
+        var bar = function(){goog.foo.call(this, 1)};
+        goog.foo(1);
+        """,
+        """
+        var goog;
+        goog.foo = function() {var a = 1;var opt;};
+        var bar = function(){goog.foo.call(this)};
+        goog.foo();
+        """);
   }
 
   @Test
   public void testApplyIsIgnore() {
     testSame(
-        lines(
-            "var goog;",
-            "goog.foo = function(a, opt) {};"
-                + "var bar = function(){goog.foo.apply(this, 1)};"
-                + "goog.foo(1);"));
+        """
+        var goog;
+        goog.foo = function(a, opt) {};var bar = function(){goog.foo.apply(this, 1)};goog.foo(1);
+        """);
   }
 
   @Test
   public void testFunctionWithReferenceToArgumentsShouldNotBeOptimized() {
     testSame("function foo(a,b,c) { return arguments.size; }; foo(1);");
     testSame("var foo = function(a,b,c) { return arguments.size }; foo(1);");
-    testSame("var foo = function bar(a,b,c) { return arguments.size }; foo(2); bar(2);");
+    testSame("var foo = function bar(a,b,c) { return arguments.size }; foo(2);");
   }
 
   @Test
   public void testClassMemberWithReferenceToArgumentsShouldNotBeOptimize() {
     testSame(
-        lines(
-            "class C {", //
-            "  constructor() {",
-            "  }",
-            "  setValue(value) {",
-            "    if (!arguments.length) {",
-            "      return 0;",
-            "    }",
-            "    return value;",
-            "  }",
-            "}",
-            "var c = new C();",
-            "alert(c.setValue(42));"));
+        """
+        class C {
+          constructor() {
+          }
+          setValue(value) {
+            if (!arguments.length) {
+              return 0;
+            }
+            return value;
+          }
+        }
+        var c = new C();
+        alert(c.setValue(42));
+        """);
   }
 
   @Test
   public void testFunctionWithTwoNames() {
     testSame("var foo = function bar(a,b) {};");
     testSame("var foo = function bar(a,b) {}; foo(1)");
-    testSame("var foo = function bar(a,b) {}; bar(1);");
     testSame("var foo = function bar(a,b) {}; foo(1); foo(2)");
-    testSame("var foo = function bar(a,b) {}; foo(1); bar(1)");
-    testSame("var foo = function bar(a,b) {}; foo(1); bar(2)");
-    testSame("var foo = function bar(a,b) {}; foo(1,2); bar(2,1)");
   }
 
   @Test
@@ -1074,26 +1151,30 @@ public final class OptimizeParametersTest extends CompilerTestCase {
   @Test
   public void testConstantArgumentsToConstructorCanBeOptimized() {
     String src =
-        lines(
-            "function foo(a) {};", //
-            "var bar = new foo(1);");
+        """
+        function foo(a) {};
+        var bar = new foo(1);
+        """;
     String expected =
-        lines(
-            "function foo() {var a=1;};", //
-            "var bar = new foo();");
+        """
+        function foo() {var a=1;};
+        var bar = new foo();
+        """;
     test(src, expected);
   }
 
   @Test
   public void testOptionalArgumentsToConstructorCanBeOptimized() {
     String src =
-        lines(
-            "function foo(a) {};", //
-            "var bar = new foo();");
+        """
+        function foo(a) {};
+        var bar = new foo();
+        """;
     String expected =
-        lines(
-            "function foo() {var a;};", //
-            "var bar = new foo();");
+        """
+        function foo() {var a;};
+        var bar = new foo();
+        """;
     test(src, expected);
   }
 
@@ -1105,25 +1186,28 @@ public final class OptimizeParametersTest extends CompilerTestCase {
   @Test
   public void testConstructorUsedAsFunctionCanBeOptimized() {
     String src =
-        lines(
-            "function foo(a) {};", //
-            "var bar = new foo(1);",
-            "foo(1);");
+        """
+        function foo(a) {};
+        var bar = new foo(1);
+        foo(1);
+        """;
     String expected =
-        lines(
-            "function foo() {var a=1;};", //
-            "var bar = new foo();",
-            "foo();");
+        """
+        function foo() {var a=1;};
+        var bar = new foo();
+        foo();
+        """;
     test(src, expected);
   }
 
   @Test
   public void testDoNotOptimizeConstructorWhenArgumentsAreNotEqual() {
     testSame(
-        lines(
-            "function Foo(a) {};", //
-            "var bar = new Foo(1);",
-            "var baz = new Foo(2);"));
+        """
+        function Foo(a) {};
+        var bar = new Foo(1);
+        var baz = new Foo(2);
+        """);
   }
 
   @Test
@@ -1132,57 +1216,63 @@ public final class OptimizeParametersTest extends CompilerTestCase {
     testSame("var array = [function f(a, b) {}]");
 
     testSame(
-        lines(
-            "var array = [function (a, b) {}];", //
-            "array[0](1, 2);",
-            "array[0](1);"));
+        """
+        var array = [function (a, b) {}];
+        array[0](1, 2);
+        array[0](1);
+        """);
 
     testSame(
-        lines(
-            "var array = [];", //
-            "function foo(a, b) {};",
-            "array[0] = foo;"));
+        """
+        var array = [];
+        function foo(a, b) {};
+        array[0] = foo;
+        """);
   }
 
   @Test
   public void testOptimizeThis1() {
     String src =
-        lines(
-            "var bar = function (a, b) {};",
-            "function foo() {",
-            "  this.bar = function (a, b) {};",
-            "  this.bar(3);",
-            "  bar(2);",
-            "}");
+        """
+        var bar = function (a, b) {};
+        function foo() {
+          this.bar = function (a, b) {};
+          this.bar(3);
+          bar(2);
+        }
+        """;
     String expected =
-        lines(
-            "var bar = function () {var a = 2;var b;};",
-            "function foo() {",
-            "  this.bar = function () {var a = 3;var b;};",
-            "  this.bar();",
-            "  bar();",
-            "}");
+        """
+        var bar = function () {var a = 2;var b;};
+        function foo() {
+          this.bar = function () {var a = 3;var b;};
+          this.bar();
+          bar();
+        }
+        """;
     test(src, expected);
   }
 
   @Test
   public void testOptimizeThis2() {
     String src =
-        lines(
-            "function foo() {",
-            "  var bar = function (a, b) {};",
-            "  this.bar = function (a, b) {};",
-            "  this.bar(3);",
-            "  bar(2);",
-            "}");
+        """
+        function foo() {
+          var bar = function (a, b) {};
+          this.bar = function (a, b) {};
+          this.bar(3);
+          bar(2);
+        }
+        """;
     String expected =
-        lines(
-            "function foo() {",
-            "  var bar = function (a, b) {};",
-            "  this.bar = function () {var a = 3;var b;};",
-            "  this.bar();",
-            "  bar(2);",
-            "}");
+        """
+        function foo() {
+          var bar = function (a, b) {};
+          this.bar = function () {var a = 3;var b;};
+          this.bar();
+          bar(2);
+        }
+        """;
     test(src, expected);
   }
 
@@ -1204,9 +1294,10 @@ public final class OptimizeParametersTest extends CompilerTestCase {
   @Test
   public void testDoNotOptimizeJSCompiler_renameProperty() {
     testSame(
-        lines(
-            "function JSCompiler_renameProperty(a) {return a};",
-            "JSCompiler_renameProperty('a');"));
+        """
+        function JSCompiler_renameProperty(a) {return a};
+        JSCompiler_renameProperty('a');
+        """);
   }
 
   @Test
@@ -1237,14 +1328,16 @@ public final class OptimizeParametersTest extends CompilerTestCase {
   @Test
   public void testMutableValues3() {
     test(
-        lines(
-            "var x; var y; var z;", //
-            "function foo(p1, p2) {}",
-            "foo(x(), y()); foo(x(),y())"),
-        lines(
-            "var x; var y; var z;", //
-            "function foo() {var p1=x(); var p2=y()}",
-            "foo(); foo()"));
+        """
+        var x; var y; var z;
+        function foo(p1, p2) {}
+        foo(x(), y()); foo(x(),y())
+        """,
+        """
+        var x; var y; var z;
+        function foo() {var p1=x(); var p2=y()}
+        foo(); foo()
+        """);
   }
 
   @Test
@@ -1253,112 +1346,173 @@ public final class OptimizeParametersTest extends CompilerTestCase {
     // If z(), can't be moved into the function then z() may change the value
     // of x and y.
     testSame(
-        lines(
-            "var x; var y; var z;",
-            "function foo(p1, p2, p3) {}",
-            "foo(x(), y(), z()); foo(x(),y(),3)"));
+        """
+        var x; var y; var z;
+        function foo(p1, p2, p3) {}
+        foo(x(), y(), z()); foo(x(),y(),3)
+        """);
 
     // If z(), can't be moved into the function then z() may change the value
     // of x and y.
     testSame(
-        lines(
-            "var x; var y; var z;",
-            "function foo(p1, p2, p3) {}",
-            "foo(x, y(), z()); foo(x,y(),3)"));
+        """
+        var x; var y; var z;
+        function foo(p1, p2, p3) {}
+        foo(x, y(), z()); foo(x,y(),3)
+        """);
 
     // Mutable object that can not be effect by side-effects are movable,
     // however.
     test(
-        lines(
-            "var x; var y; var z;",
-            "function foo(p1, p2, p3) {}",
-            "foo([], y(), z()); foo([],y(),3)"),
-        lines(
-            "var x; var y; var z;",
-            "function foo(p2, p3) {var p1=[]}",
-            "foo(y(), z()); foo(y(),3)"));
+        """
+        var x; var y; var z;
+        function foo(p1, p2, p3) {}
+        foo([], y(), z()); foo([],y(),3)
+        """,
+        """
+        var x; var y; var z;
+        function foo(p2, p3) {var p1=[]}
+        foo(y(), z()); foo(y(),3)
+        """);
+    // Pure literal at the first call site and side-effectful call at the second call site.
+    testSame(
+        """
+        var x; var y; var z;
+        function foo(p1, p2, p3) { alert(p1); }
+        foo(x, y(), 3);
+        foo(x, y(), z());
+        """);
+
+    // Mutable variable passed along with an argument that mutates it at the second call site.
+    testSame(
+        """
+        var out = [];
+        var policy = 'STRICT';
+        function mutateAndReturn() { policy = 'LENIENT'; return {}; }
+        function render(p, opts) { out.push(p); }
+        render(policy, {});
+        render(policy, mutateAndReturn());
+        """);
   }
 
   @Test
   public void testMutableValues5() {
     test(
-        lines(
-            "var x; var y; var z;",
-            "function foo(p1, p2) {}",
-            "new foo(new x(), y()); new foo(new x(),y())"),
-        lines(
-            "var x; var y; var z;",
-            "function foo() {var p1=new x(); var p2=y()}",
-            "new foo(); new foo()"));
+        """
+        var x; var y; var z;
+        function foo(p1, p2) {}
+        new foo(new x(), y()); new foo(new x(),y())
+        """,
+        """
+        var x; var y; var z;
+        function foo() {var p1=new x(); var p2=y()}
+        new foo(); new foo()
+        """);
 
     test(
-        lines(
-            "var x; var y; var z;",
-            "function foo(p1, p2) {}",
-            "new foo(x(), y()); new foo(x(),y())"),
-        lines(
-            "var x; var y; var z;",
-            "function foo() {var p1=x(); var p2=y()}",
-            "new foo(); new foo()"));
+        """
+        var x; var y; var z;
+        function foo(p1, p2) {}
+        new foo(x(), y()); new foo(x(),y())
+        """,
+        """
+        var x; var y; var z;
+        function foo() {var p1=x(); var p2=y()}
+        new foo(); new foo()
+        """);
 
     testSame(
-        lines(
-            "var x; var y; var z;",
-            "function foo(p1, p2, p3) {}",
-            "new foo(x(), y(), z()); new foo(x(),y(),3)"));
+        """
+        var x; var y; var z;
+        function foo(p1, p2, p3) {}
+        new foo(x(), y(), z()); new foo(x(),y(),3)
+        """);
 
     testSame(
-        lines(
-            "var x; var y; var z;",
-            "function foo(p1, p2, p3) {}",
-            "new foo(x, y(), z()); new foo(x,y(),3)"));
+        """
+        var x; var y; var z;
+        function foo(p1, p2, p3) {}
+        new foo(x, y(), z()); new foo(x,y(),3)
+        """);
 
     test(
-        lines(
-            "var x; var y; var z;",
-            "function foo(p1, p2, p3) {}",
-            "new foo([], y(), z()); new foo([],y(),3)"),
-        lines(
-            "var x; var y; var z;",
-            "function foo(p2, p3) {var p1=[]}",
-            "new foo(y(), z()); new foo(y(),3)"));
+        """
+        var x; var y; var z;
+        function foo(p1, p2, p3) {}
+        new foo([], y(), z()); new foo([],y(),3)
+        """,
+        """
+        var x; var y; var z;
+        function foo(p2, p3) {var p1=[]}
+        new foo(y(), z()); new foo(y(),3)
+        """);
   }
 
   @Test
   public void testMutableValuesDoNotMoveSuper() {
     testSame(
-        lines(
-            "var A;",
-            "function fn(p1) {}",
-            "class B extends A { constructor() { fn(super.x); } }"));
+        """
+        var A;
+        function fn(p1) {}
+        class B extends A { constructor() { fn(super.x); } }
+        """);
+  }
+
+  @Test
+  public void testPrivateNameArgumentIsNotMoved_knownBug() {
+    // Expected behavior: `OptimizeParameters` leaves this code unchanged. `C.#n` is valid only
+    // inside the body of `C`, so it can't be moved into `fn`, which is outside `C`.
+    String js =
+        """
+        function fn(p1) { return p1; }
+        class C {
+          static #n = 1;
+          // Expected: `fn(C.#n)` stays, although every call passes the same `C.#n`.
+          static a() { return fn(C.#n); }
+          static b() { return fn(C.#n); }
+        }
+        """;
+    // TODO(b/236744850): `C.#n` is moved out of `C`.
+    // Current behavior: `fn` becomes `function fn() { var p1 = C.#n; return p1; }` and both
+    //   calls become `fn()`, so `testSame(js)` fails.
+    // Why it's a bug: `C.#n` outside the body of `C` is a SyntaxError, so the whole script
+    //   fails to load.
+    // In a full build: with property collapsing, as in ADVANCED builds, `CollapseProperties`
+    //   crashes on `static #n` before this pass runs; without that crash, this pass makes the
+    //   output a SyntaxError.
+    var ex = assertThrows(AssertionError.class, () -> testSame(js));
+    assertThat(ex).hasMessageThat().contains("var p1 = C.#n;");
   }
 
   @Test
   public void testShadows() {
     testSame(
-        lines(
-            "function foo(a) {}",
-            "var x;",
-            "function f() {",
-            "  var x;",
-            "  function g() {",
-            "    foo(x());",
-            "  }",
-            "};",
-            "foo(x())"));
+        """
+        function foo(a) {}
+        var x;
+        function f() {
+          var x;
+          function g() {
+            foo(x());
+          }
+        };
+        foo(x())
+        """);
   }
 
   @Test
   public void testNoCrash() {
     test(
-        lines(
-            "function foo(a) {}", //
-            "foo({o:1});",
-            "foo({o:1})"),
-        lines(
-            "function foo() {var a = {o:1}}", //
-            "foo();",
-            "foo()"));
+        """
+        function foo(a) {}
+        foo({o:1});
+        foo({o:1})
+        """,
+        """
+        function foo() {var a = {o:1}}
+        foo();
+        foo()
+        """);
   }
 
   @Test
@@ -1382,258 +1536,419 @@ public final class OptimizeParametersTest extends CompilerTestCase {
   @Test
   public void testRewriteUsedClassConstructor1() {
     test(
-        lines(
-            "class C {", //
-            "  constructor(a) {",
-            "    use(a);",
-            "  }",
-            "}",
-            "var c = new C();"),
-        lines(
-            "class C {", //
-            "  constructor( ) {",
-            "    var a;", // moved from parameter list
-            "    use(a);",
-            "  }",
-            "}",
-            "var c = new C();"));
+        """
+        class C {
+          constructor(a) {
+            use(a);
+          }
+        }
+        var c = new C();
+        """,
+        """
+        class C {
+          constructor( ) {
+            var a; // moved from parameter list
+            use(a);
+          }
+        }
+        var c = new C();
+        """);
   }
 
   @Test
   public void testConstructorEscapesThroughThis() {
     // Demonstrate b/174875103
     test(
-        lines(
-            "class C {", //
-            "  constructor(a) {",
-            "    use(a);",
-            "  }",
-            "  static create() { return new this(2); };",
-            "}",
-            "class D extends C {", //
-            "  constructor(b) { super(1); }",
-            "",
-            "}",
-            "var c = new C(1);",
-            "var d = new D(1)",
-            "var e = D.create();"),
-        lines(
-            "class C {", //
-            "  constructor() {",
-            "    var a = 1;", // <-- bad optimization
-            "    use(a);",
-            "  }",
-            "  static create() { return new this(2); };", // <-- also a call here
-            "}",
-            "class D extends C {", //
-            "  constructor(b) { super(); }",
-            "",
-            "}",
-            "var c = new C();",
-            "var d = new D(1)",
-            "var e = D.create();"));
+        """
+        class C {
+          constructor(a) {
+            use(a);
+          }
+          static create() { return new this(2); };
+        }
+        class D extends C {
+          constructor(b) { super(1); }
+
+        }
+        var c = new C(1);
+        var d = new D(1)
+        var e = D.create();
+        """,
+        """
+        class C {
+          constructor() {
+            var a = 1; // <-- bad optimization
+            use(a);
+          }
+          static create() { return new this(2); }; // <-- also a call here
+        }
+        class D extends C {
+          constructor(b) { super(); }
+
+        }
+        var c = new C();
+        var d = new D(1)
+        var e = D.create();
+        """);
   }
 
   @Test
   public void testRewriteUsedES5Constructor1() {
     test(
-        lines(
-            "/** @constructor */", //
-            "function C(a) {",
-            "  use(a);",
-            "}",
-            "var c = new C();"),
-        lines(
-            "/** @constructor */", //
-            "function C( ) {",
-            "  var a;", // moved from parameter list
-            "  use(a);",
-            "}",
-            "var c = new C();"));
+        """
+        /** @constructor */
+        function C(a) {
+          use(a);
+        }
+        var c = new C();
+        """,
+        """
+        /** @constructor */
+        function C( ) {
+          var a; // moved from parameter list
+          use(a);
+        }
+        var c = new C();
+        """);
   }
 
   @Test
   public void testRewriteUsedClassConstructor2() {
     // `constructor` aliases the class constructor
     test(
-        lines(
-            "class C {", //
-            "  constructor(a) {",
-            "    use(a);",
-            "  }",
-            "}",
-            "var c = new C();",
-            "new c.constructor(1);"),
-        lines(
-            "class C {", //
-            "  constructor( ) {",
-            "    var a;", // moved from parameter list
-            "    use(a);",
-            "  }",
-            "}",
-            "var c = new C();",
-            // TODO(bradfordcsmith): This call is now broken, since the parameter is ignored.
-            //     For now we consider the code size savings worth the risk of breaking this
-            //     coding pattern that we consider bad practice anyway.
-            "new c.constructor(1);"));
+        """
+        class C {
+          constructor(a) {
+            use(a);
+          }
+        }
+        var c = new C();
+        new c.constructor(1);
+        """,
+        """
+        class C {
+          constructor( ) {
+            var a; // moved from parameter list
+            use(a);
+          }
+        }
+        var c = new C();
+        // TODO(bradfordcsmith): This call is now broken, since the parameter is ignored.
+        //     For now we consider the code size savings worth the risk of breaking this
+        //     coding pattern that we consider bad practice anyway.
+        new c.constructor(1);
+        """);
   }
 
   @Test
   public void testRewriteUsedES5Constructor2() {
     // `constructor` aliases the class constructor
     test(
-        lines(
-            "/** @constructor */", //
-            " function C(a) {",
-            "  use(a);",
-            "}",
-            "var c = new C();",
-            "new c.constructor(1);"),
-        lines(
-            "/** @constructor */", //
-            " function C( ) {",
-            "  var a;", // moved from parameter list
-            "  use(a);",
-            "}",
-            "var c = new C();",
-            // TODO(bradfordcsmith): This call is now broken, since the parameter is ignored.
-            //     For now we consider the code size savings worth the risk of breaking this
-            //     coding pattern that we consider bad practice anyway.
-            "new c.constructor(1);"));
+        """
+        /** @constructor */
+         function C(a) {
+          use(a);
+        }
+        var c = new C();
+        new c.constructor(1);
+        """,
+        """
+        /** @constructor */
+         function C( ) {
+          var a; // moved from parameter list
+          use(a);
+        }
+        var c = new C();
+        // TODO(bradfordcsmith): This call is now broken, since the parameter is ignored.
+        //     For now we consider the code size savings worth the risk of breaking this
+        //     coding pattern that we consider bad practice anyway.
+        new c.constructor(1);
+        """);
   }
 
   @Test
   public void testNoRewriteUsedClassConstructor3() {
     // `super` aliases the super type constructor
     testSame(
-        lines(
-            "class C { constructor(a) { use(a); } }",
-            "class D extends C { constructor() { super(1); } }",
-            "var d = new D(); new C();"));
+        """
+        class C { constructor(a) { use(a); } }
+        class D extends C { constructor() { super(1); } }
+        var d = new D(); new C();
+        """);
   }
 
   @Test
   public void testRewriteUsedClassConstructor4() {
     // `new.target` aliases self and subtype constructors
     test(
-        lines(
-            "class C {", //
-            "  constructor() {",
-            "    var x = new new.target(1);",
-            "  }",
-            "}",
-            "class D extends C {",
-            "  constructor(a) {",
-            "    super();",
-            "  }",
-            "}",
-            "var d = new D(); new C();"),
-        lines(
-            "class C {", //
-            "  constructor() {",
-            // TODO(bradfordcsmith): This call is now broken, since the parameter is ignored.
-            //     For now we consider the code size savings worth the risk of breaking this
-            //     coding pattern that we consider bad practice anyway.
-            "    var x = new new.target(1);",
-            "  }",
-            "}",
-            "class D extends C {",
-            "  constructor( ) {",
-            "    var a;", // moved from parameter list
-            "    super();",
-            "  }",
-            "}",
-            "var d = new D(); new C();"));
+        """
+        class C {
+          constructor() {
+            var x = new new.target(1);
+          }
+        }
+        class D extends C {
+          constructor(a) {
+            super();
+          }
+        }
+        var d = new D(); new C();
+        """,
+        """
+        class C {
+          constructor() {
+        // TODO(bradfordcsmith): This call is now broken, since the parameter is ignored.
+        //     For now we consider the code size savings worth the risk of breaking this
+        //     coding pattern that we consider bad practice anyway.
+            var x = new new.target(1);
+          }
+        }
+        class D extends C {
+          constructor( ) {
+            var a; // moved from parameter list
+            super();
+          }
+        }
+        var d = new D(); new C();
+        """);
   }
 
   @Test
   public void testNoRewriteUsedClassConstructor5() {
     // Static class methods "this" values can alias constructors.
     testSame(
-        lines(
-            "class C { constructor(a) { use(a); }; static create(a) { new this(1); } }",
-            "var c = new C();",
-            "C.create();"));
+        """
+        class C { constructor(a) { use(a); }; static create(a) { new this(1); } }
+        var c = new C();
+        C.create();
+        """);
   }
 
   @Test
   public void testRewriteUsedClassConstructorWithClassStaticField() {
     test(
-        lines(
-            "class C {", //
-            "  static field2 = alert();",
-            "  constructor(a) {",
-            "    use(a);",
-            "  }",
-            "}",
-            "var c = new C(1);"),
-        lines(
-            "class C {", //
-            "  static field2 = alert();",
-            "  constructor( ) {",
-            "    var a = 1;", // moved from parameter list
-            "    use(a);",
-            "  }",
-            "}",
-            "var c = new C();"));
+        """
+        class C {
+          static field2 = alert();
+          constructor(a) {
+            use(a);
+          }
+        }
+        var c = new C(1);
+        """,
+        """
+        class C {
+          static field2 = alert();
+          constructor( ) {
+            var a = 1; // moved from parameter list
+            use(a);
+          }
+        }
+        var c = new C();
+        """);
 
     test(
-        lines(
-            "class C {", //
-            "  static field2 = alert();",
-            "  constructor(a) {",
-            "    use(a);",
-            "  }",
-            "}",
-            "var c = new C(alert());"),
-        lines(
-            "class C {", //
-            "  static field2 = alert();",
-            "  constructor() {",
-            "    var a = alert();",
-            "    use(a);",
-            "  }",
-            "}",
-            "var c = new C();"));
+        """
+        class C {
+          static field2 = alert();
+          constructor(a) {
+            use(a);
+          }
+        }
+        var c = new C(alert());
+        """,
+        """
+        class C {
+          static field2 = alert();
+          constructor() {
+            var a = alert();
+            use(a);
+          }
+        }
+        var c = new C();
+        """);
   }
 
   @Test
-  public void testNoRewriteUsedClassConstructorWithClassNonstaticField() {
+  public void testRewriteClassStaticBlock_removeOptional() {
+    test(
+        """
+        function foo(a,b=1){
+          return a * b;
+        }
+        class C {
+          static {
+            use(foo(1));
+            use(foo(2));
+          }
+        }
+        """,
+        """
+        function foo(a){
+          var b = 1;
+          return a * b;
+        }
+        class C {
+          static {
+            use(foo(1));
+            use(foo(2));
+          }
+        }
+        """);
+    // TODO(b/240443227): Function parameters inside class static blocks not optimized
     testSame(
-        lines(
-            "class C {", //
-            "  field2 = alert();",
-            "  constructor(a) {",
-            "    use(a);",
-            "  }",
-            "}",
-            "var c = new C(1);"));
+        """
+        class C {
+          static {
+            function foo(a,b=1){
+              return(a * b);
+            }
+            use(foo(1));
+            use(foo(2));
+          }
+        }
+        """);
+  }
+
+  @Test
+  public void testRewriteClassStaticBlock_trailingUndefinedLiterals() {
+    test(
+        """
+        function foo(a,b){
+          return a;
+        }
+        class C {
+          static {
+            use(foo(1, undefined, 2));
+            use(foo(2));
+          }
+        }
+        """,
+        """
+        function foo(a,b){
+          return a;
+        }
+        class C {
+          static {
+            use(foo(1));
+            use(foo(2));
+          }
+        }
+        """);
+    // TODO(b/240443227): Function parameters inside class static blocks not optimized
+    testSame(
+        """
+        class C {
+          static {
+            function foo(a,b){
+              return a;
+            }
+            use(foo(1, undefined, 2));
+            use(foo(2));
+          }
+        }
+        """);
+  }
+
+  @Test
+  public void testRewriteClassStaticBlock_inlineParameter() {
+    test(
+        """
+        function foo(a){
+          return a;
+        }
+        class C {
+          static {
+            use(foo(1));
+            use(foo(1));
+            use(foo(1));
+          }
+        }
+        """,
+        """
+        function foo(){
+          var a = 1;
+          return a;
+        }
+        class C {
+          static {
+            use(foo());
+            use(foo());
+            use(foo());
+          }
+        }
+        """);
+    // TODO(b/240443227): Function parameters inside class static blocks not optimized
+    testSame(
+        """
+        class C {
+          static {
+            function foo(a){
+              return(a);
+            }
+            use(foo(1));
+            use(foo(1));
+            use(foo(1));
+          }
+        }
+        """);
+  }
+
+  @Test
+  public void testNoRewriteUsedClassConstructorWithClassNonstaticField_sideEffect() {
+    testSame(
+        """
+        class C {
+          field2 = alert();
+          constructor(a) {
+            use(a);
+          }
+        }
+        var c = new C(1);
+        """);
 
     testSame(
-        lines(
-            "class C {", //
-            "  field2 = alert();",
-            "  constructor(a) {",
-            "    use(a);",
-            "  }",
-            "}",
-            "var c = new C(alert());"));
+        """
+        class C {
+          field2 = alert();
+          constructor(a) {
+            use(a);
+          }
+        }
+        var c = new C(alert());
+        """);
+  }
+
+  @Test
+  public void testNoRewriteUsedClassConstructorWithClassNonstaticComputedField_sideEffect() {
+    testSame(
+        """
+        class C {
+          ['field2'] = alert(2);
+          constructor(a) {
+            use(a);
+          }
+        }
+        var c = new C(alert(1)); // alerts in order 1, 2
+        """);
   }
 
   @Test
   public void testNoRewriteUsedClassMethodParam1() {
     testSame(
-        lines(
-            "class C { method(a) { use(a); } }", //
-            "var c = new C(); c.method(1); c.method(2)"));
+        """
+        class C { method(a) { use(a); } }
+        var c = new C(); c.method(1); c.method(2)
+        """);
   }
 
   @Test
   public void testNoRewriteUnusedClassComputedMethodParam1() {
     testSame(
-        lines(
-            "class C { [method](a) { } }", //
-            "var c = new C(); c[method](1); c[method](2)"));
+        """
+        class C { [method](a) { } }
+        var c = new C(); c[method](1); c[method](2)
+        """);
   }
 
   @Test
@@ -1651,63 +1966,72 @@ public final class OptimizeParametersTest extends CompilerTestCase {
   @Test
   public void testNoRewriteDestructured1() {
     testSame(
-        lines(
-            "class C { m(a) {}};", //
-            "var c = new C();",
-            "({m} = c);",
-            "c.m(1)"));
+        """
+        class C { m(a) {}};
+        var c = new C();
+        ({m} = c);
+        c.m(1)
+        """);
     testSame(
-        lines(
-            "class C { m(a) {}};", //
-            "var c = new C();",
-            "({m:x} = c);",
-            "c.m(1)"));
+        """
+        class C { m(a) {}};
+        var c = new C();
+        ({m:x} = c);
+        c.m(1)
+        """);
     testSame(
-        lines(
-            "class C { m(a) {}};",
-            "var c = new C();",
-            "({xx:C.prototype.m} = {xx:function(a) {}});",
-            "c.m(1)"));
+        """
+        class C { m(a) {}};
+        var c = new C();
+        ({xx:C.prototype.m} = {xx:function(a) {}});
+        c.m(1)
+        """);
   }
 
   @Test
   public void testNoRewriteDestructured2() {
     testSame(
-        lines(
-            "var x = function(a) {};", //
-            "({x} = {})",
-            "x(1)"));
+        """
+        var x = function(a) {};
+        ({x} = {})
+        x(1)
+        """);
     testSame(
-        lines(
-            "var x = function(a) {};", //
-            "({x:x} = {})",
-            "x(1)"));
+        """
+        var x = function(a) {};
+        ({x:x} = {})
+        x(1)
+        """);
     testSame(
-        lines(
-            "var x = function(a) {};", //
-            "({x:x = function(a) {}} = {})",
-            "x(1)"));
+        """
+        var x = function(a) {};
+        ({x:x = function(a) {}} = {})
+        x(1)
+        """);
   }
 
   @Test
   public void testNoRewriteDestructured3() {
     testSame(
-        lines(
-            "var x = function(a) {};", //
-            "[x = function() {}] = []",
-            "x(1)"));
+        """
+        var x = function(a) {};
+        [x = function() {}] = []
+        x(1)
+        """);
     testSame(
-        lines(
-            "class C { method() { return 1 }}",
-            "var c = new C();",
-            "var y = C.prototype;",
-            "[y.method] = []",
-            "c.method()"));
+        """
+        class C { method() { return 1 }}
+        var c = new C();
+        var y = C.prototype;
+        [y.method] = []
+        c.method()
+        """);
     testSame(
-        lines(
-            "class C { method() { return 1 }}", //
-            "[x.method] = []",
-            "y.method()"));
+        """
+        class C { method() { return 1 }}
+        [x.method] = []
+        y.method()
+        """);
   }
 
   @Test
@@ -1715,15 +2039,17 @@ public final class OptimizeParametersTest extends CompilerTestCase {
     // Optimizing methods called though tagged template literal requires
     // specific knowledge of how tagged templated is supplied to the method.
     testSame(
-        lines(
-            "var f = function(a, b, c) {};", //
-            "f`tagged`"));
+        """
+        var f = function(a, b, c) {};
+        f`tagged`
+        """);
 
     testSame(
-        lines(
-            "var f = function(a, b, c) {};", //
-            "f`tagged`",
-            "f()"));
+        """
+        var f = function(a, b, c) {};
+        f`tagged`
+        f()
+        """);
   }
 
   @Test
@@ -1731,106 +2057,251 @@ public final class OptimizeParametersTest extends CompilerTestCase {
     // Optimizing methods called though tagged template literal requires
     // specific knowledge of how tagged templated is supplied to the method.
     testSame(
-        lines(
-            "var f = (a)=>{};", //
-            "f`tagged`"));
+        """
+        var f = (a)=>{};
+        f`tagged`
+        """);
 
     testSame(
-        lines(
-            "var f = function(a, b, c) {};", //
-            "f`tagged`",
-            "f()"));
+        """
+        var f = function(a, b, c) {};
+        f`tagged`
+        f()
+        """);
+  }
+
+  @Test
+  public void testNoRewriteTagged_methodCall() {
+    testSame(
+        """
+        var obj = {
+          f: function(a, b, c) {}
+        };
+        obj.f`tagged`;
+        """);
+  }
+
+  @Test
+  public void testNoRewriteTagged_computedMethodCall() {
+    testSame(
+        """
+        class K {
+          m() {
+            return this;
+          }
+        }
+        const k = new K();
+        alert((0, k['m'])`x` === void 0);
+        alert(k['m']`x` === k);
+        """);
+  }
+
+  @Test
+  public void testRewriteTagged_preservesFreeCallOnMethod() {
+    test(
+        """
+        class K {
+          m() {
+            return this;
+          }
+        }
+        const k = new K();
+        alert((0, k.m)`x` === void 0);
+        """,
+        """
+        class K {
+          m() {
+            [];
+            return this;
+          }
+        }
+        const k = new K();
+        alert((0, k.m)() === void 0);
+        """);
+
+    test(
+        """
+        class K {
+          m() {
+            return this;
+          }
+        }
+        const k = new K();
+        (0, k.m)`x${1}${alert()}`;
+        k.m();
+        """,
+        """
+        class K {
+          m() {
+            return this;
+          }
+        }
+        const k = new K();
+        (0, k.m)(alert());
+        k.m();
+        """);
+
+    test(
+        """
+        class K {
+          m() {
+            return this;
+          }
+        }
+        const k = new K();
+        alert((0, k?.m)`x` === void 0);
+        """,
+        """
+        class K {
+          m() {
+            [];
+            return this;
+          }
+        }
+        const k = new K();
+        alert((0, k?.m)() === void 0);
+        """);
+  }
+
+  @Test
+  public void testRewriteTagged_preservesBoundThisOnMethod() {
+    test(
+        """
+        class K {
+          m() {
+            return this;
+          }
+        }
+        const k = new K();
+        alert(k.m`x` === k);
+        """,
+        """
+        class K {
+          m() {
+            [];
+            return this;
+          }
+        }
+        const k = new K();
+        alert(k.m() === k);
+        """);
+
+    test(
+        """
+        class K {
+          m() {
+            return this;
+          }
+        }
+        const k = new K();
+        alert((k?.m)`x` === k);
+        """,
+        """
+        class K {
+          m() {
+            [];
+            return this;
+          }
+        }
+        const k = new K();
+        alert((k?.m)() === k);
+        """);
   }
 
   @Test
   public void testSuperInvocation_preventsParamInlining_whenImplicit() {
     testSame(
-        lines(
-            "class Foo {",
-            "  constructor(x) {",
-            "    this.x = x;",
-            "  }",
-            "}",
-            "",
-            // lack of explicit constructor prevents optimizing calls to both classes.
-            "class Bar extends Foo { }",
-            "",
-            "new Foo(4);",
-            "new Bar(4);"));
+        """
+        class Foo {
+          constructor(x) {
+            this.x = x;
+          }
+        }
+
+        // lack of explicit constructor prevents optimizing calls to both classes.
+        class Bar extends Foo { }
+
+        new Foo(4);
+        new Bar(4);
+        """);
   }
 
   @Test
   public void testSuperInvocationCanBeInlined() {
     test(
-        lines(
-            "class Foo {",
-            "  constructor(x) {",
-            "    this.x = x;",
-            "  }",
-            "}",
-            "",
-            "class Bar extends Foo {",
-            "  constructor() {",
-            "    super(4);",
-            "  }",
-            "}",
-            "",
-            "new Foo(4);",
-            "new Bar();"),
-        lines(
-            "class Foo {",
-            "  constructor( ) {",
-            "    var x = 4;", // moved from the parameter list
-            "    this.x = x;",
-            "  }",
-            "}",
-            "",
-            "class Bar extends Foo {",
-            "  constructor() {",
-            "    super( );",
-            "  }",
-            "}",
-            "",
-            "new Foo( );",
-            "new Bar();"));
+        """
+        class Foo {
+          constructor(x) {
+            this.x = x;
+          }
+        }
+
+        class Bar extends Foo {
+          constructor() {
+            super(4);
+          }
+        }
+
+        new Foo(4);
+        new Bar();
+        """,
+        """
+        class Foo {
+          constructor( ) {
+            var x = 4; // moved from the parameter list
+            this.x = x;
+          }
+        }
+
+        class Bar extends Foo {
+          constructor() {
+            super( );
+          }
+        }
+
+        new Foo( );
+        new Bar();
+        """);
   }
 
   @Test
   public void testSuperInvocationCannotBeInlinedWhenExtendingExpression() {
     testSame(
-        lines(
-            "class Foo {",
-            "  constructor(x) {",
-            "    this.x = x;",
-            "  }",
-            "}",
-            "",
-            // This bit of indirection prevents us from recognizing what
-            // is being extended, so `new Foo()` cannot be optimized.
-            "class Bar extends (() => Foo)() {",
-            "  constructor() {",
-            "    super(4);",
-            "  }",
-            "}",
-            "",
-            "new Foo(4);",
-            "new Bar();"));
+        """
+        class Foo {
+          constructor(x) {
+            this.x = x;
+          }
+        }
+
+        // This bit of indirection prevents us from recognizing what
+        // is being extended, so `new Foo()` cannot be optimized.
+        class Bar extends (() => Foo)() {
+          constructor() {
+            super(4);
+          }
+        }
+
+        new Foo(4);
+        new Bar();
+        """);
   }
 
   @Test
   public void testRemoveOptionalDestructuringParam() {
-    test("function f({x}) {} f();", "function f() { var {x} = void 0; } f();");
-    test("function f({x} = {}) {} f();", "function f() { var {x} = {}; } f();");
+    test("function f({x}) {} f();", "function f() { var x; ({x} = void 0); } f();");
+    test("function f({x} = {}) {} f();", "function f() { var x; ({x} = {}); } f();");
   }
 
   @Test
   public void testClassField() {
     testSame(
-        lines(
-            "class C {", //
-            "  x = function(a,b) { return a + b };",
-            "}",
-            "new C().x(1,2)"));
+        """
+        class C {
+          x = function(a,b) { return a + b };
+        }
+        new C().x(1,2)
+        """);
   }
 
   @Test
@@ -1843,22 +2314,20 @@ public final class OptimizeParametersTest extends CompilerTestCase {
   @Test
   public void testTrailingUndefinedLiterals_multiple() {
     test(
-        lines(
-            "", //
-            "function foo(a, b, c) { use(a, b, c); }",
-            "foo(undefined);",
-            "foo(undefined, void 0);",
-            "foo(undefined, void 0, undefined);",
-            "foo(2);",
-            ""),
-        lines(
-            "", //
-            "function foo(a, b, c) { use(a, b, c); }",
-            "foo();",
-            "foo();",
-            "foo();",
-            "foo(2);",
-            ""));
+        """
+        function foo(a, b, c) { use(a, b, c); }
+        foo(undefined);
+        foo(undefined, void 0);
+        foo(undefined, void 0, undefined);
+        foo(2);
+        """,
+        """
+        function foo(a, b, c) { use(a, b, c); }
+        foo();
+        foo();
+        foo();
+        foo(2);
+        """);
   }
 
   @Test
@@ -1882,5 +2351,331 @@ public final class OptimizeParametersTest extends CompilerTestCase {
   @Test
   public void testTrailingUndefinedLiterals_afterAllFormalParameters_sideEffects() {
     testSame("function foo(a, b) { use(a)}; foo('used', undefined, sideEffects()); foo(2);");
+  }
+
+  @Test
+  public void testInliningSideEffectfulArg_updatesInvocationSideEffects() {
+    enableComputeSideEffects();
+    test(
+        externs("function sideEffects() {}"),
+        srcs("function foo() {} foo(sideEffects()); foo(sideEffects());"),
+        expected("function foo() { sideEffects(); } foo(); foo();"));
+
+    // Inspect the AST to verify both calls to `foo()` are marked as mutating global state
+    Node jsRoot = getLastCompiler().getJsRoot();
+    ImmutableList<Node> calls =
+        CodeSubTree.findNodesNonEmpty(
+            jsRoot, n -> (n.isCall() && n.getFirstChild().matchesName("foo")));
+    for (Node call : calls) {
+      assertThat(call.getSideEffectFlags())
+          .isEqualTo(
+              new SideEffectFlags(SideEffectFlags.NO_SIDE_EFFECTS)
+                  .setMutatesGlobalState()
+                  .valueOf());
+    }
+  }
+
+  @Test
+  public void testNoHoistNewTarget() {
+    testSame(
+        """
+        function check(x) { if (x) throw 1; }
+        class C { constructor() { check(!new.target); } }
+        new C();
+        """);
+  }
+
+  @Test
+  public void testNoHoistImportMeta() {
+    testSame(
+        """
+        function check(x) { if (x) throw 1; }
+        function f() { check(import.meta.url); }
+        f();
+        """);
+    testSame(
+        """
+        function check(x) { if (x) throw 1; }
+        function f() { check(import.meta); }
+        f();
+        """);
+  }
+
+  @Test
+  public void testPublicClassFields_propertyReadInInitializerCanBeSideEffected() {
+    // TODO(b/572053067): side-effectful constructor argument moved into constructor body after
+    // non-static field initializer that reads modified state
+    setLanguageOut(CompilerOptions.LanguageMode.ECMASCRIPT_2022);
+    test(
+        """
+        function use(val) {}
+        const obj = {p: 1};
+        class C {
+          x = obj.p;
+          constructor(a) {
+            use(this.x + a);
+          }
+        }
+        new C(obj.p = 2);
+        """,
+        """
+        function use(val) {}
+        const obj = {p: 1};
+        class C {
+          x = obj.p;
+          constructor() {
+            var a = obj.p = 2; // <----- this is wrong, obj.p = 2 *should* execute before x = obj.p
+            use(this.x + a);
+          }
+        }
+        new C();
+        """);
+  }
+
+  @Test
+  public void testAsyncGenerator_doNotMoveSideEffectfulCallArgIntoBody() {
+    // TODO(b/573183650): side-effectful call argument moved into async generator body
+    test(
+        """
+        async function* g(p) {
+          yield await p;
+        }
+        g(alert(1));
+        """,
+        """
+        async function* g() {
+          var p = alert(1);
+          yield await p;
+        }
+        g();
+        """);
+  }
+
+  @Test
+  public void testAsyncGeneratorMethod_doNotMoveSideEffectfulCallArgIntoBody() {
+    // TODO(b/573183650): side-effectful call argument moved into async generator method body
+    test(
+        """
+        class C {
+          async *g(p) {
+            yield await p;
+          }
+        }
+        new C().g(alert(1));
+        """,
+        """
+        class C {
+          async *g() {
+            var p = alert(1);
+            yield await p;
+          }
+        }
+        (new C()).g();
+        """);
+  }
+
+  @Test
+  public void testAsyncGenerator_doNotMoveMutableCallArgAcrossAwait() {
+    // TODO(b/573183650): mutable call argument moved into async generator body across suspension
+    // point
+    test(
+        """
+        var x = 1;
+        async function* g(a) {
+          yield a;
+        }
+        async function run() {
+          const it = g(x);
+          await alert();
+          x = 2;
+          return (await it.next()).value;
+        }
+        run();
+        """,
+        """
+        var x = 1;
+        async function* g() {
+          var a = x;
+          yield a;
+        }
+        async function run() {
+          const it = g();
+          await alert();
+          x = 2;
+          return (await it.next()).value;
+        }
+        run();
+        """);
+  }
+
+  @Test
+  public void testAsyncGenerator_doNotMoveDefaultOrDestructuringParamIntoBody() {
+    // TODO(b/573183650): default or destructuring parameter moved into async generator body
+    test(
+        """
+        async function* g(a = alert(1)) {
+          yield a;
+        }
+        g();
+        """,
+        """
+        async function* g() {
+          var a = alert(1);
+          yield a;
+        }
+        g();
+        """);
+    test(
+        """
+        async function* g({a} = {a: alert(1)}) {
+          yield a;
+        }
+        g();
+        """,
+        """
+        async function* g() {
+          ({a} = {a: alert(1)});
+          var a;
+          yield a;
+        }
+        g();
+        """);
+    test(
+        """
+        async function* g({a}) {
+          yield a;
+        }
+        g();
+        """,
+        """
+        async function* g() {
+          ({a} = void 0);
+          var a;
+          yield a;
+        }
+        g();
+        """);
+  }
+
+  @Test
+  public void testGenerator_doNotMoveSideEffectfulCallArgIntoBody() {
+    // TODO(b/573183650): side-effectful call argument moved into generator body
+    test(
+        """
+        function* g(p) {
+          yield p;
+        }
+        g(alert(1));
+        """,
+        """
+        function* g() {
+          var p = alert(1);
+          yield p;
+        }
+        g();
+        """);
+  }
+
+  @Test
+  public void testGeneratorMethod_doNotMoveSideEffectfulCallArgIntoBody() {
+    // TODO(b/573183650): side-effectful call argument moved into generator method body
+    test(
+        """
+        class C {
+          *g(p) {
+            yield p;
+          }
+        }
+        new C().g(alert(1));
+        """,
+        """
+        class C {
+          *g() {
+            var p = alert(1);
+            yield p;
+          }
+        }
+        (new C()).g();
+        """);
+  }
+
+  @Test
+  public void testGenerator_doNotMoveMutableCallArgAcrossNext() {
+    // TODO(b/573183650): mutable call argument moved into generator body across suspension point
+    test(
+        """
+        var x = 1;
+        function* g(a) {
+          yield a;
+        }
+        function run() {
+          const it = g(x);
+          x = 2;
+          return it.next().value;
+        }
+        run();
+        """,
+        """
+        var x = 1;
+        function* g() {
+          var a = x;
+          yield a;
+        }
+        function run() {
+          const it = g();
+          x = 2;
+          return it.next().value;
+        }
+        run();
+        """);
+  }
+
+  @Test
+  public void testGenerator_doNotMoveDefaultOrDestructuringParamIntoBody() {
+    // TODO(b/573183650): default or destructuring parameter moved into generator body
+    test(
+        """
+        function* g(a = alert(1)) {
+          yield a;
+        }
+        g();
+        """,
+        """
+        function* g() {
+          var a = alert(1);
+          yield a;
+        }
+        g();
+        """);
+    test(
+        """
+        function* g({a} = {a: alert(1)}) {
+          yield a;
+        }
+        g();
+        """,
+        """
+        function* g() {
+          ({a} = {a: alert(1)});
+          var a;
+          yield a;
+        }
+        g();
+        """);
+    test(
+        """
+        function* g({a}) {
+          yield a;
+        }
+        g();
+        """,
+        """
+        function* g() {
+          ({a} = void 0);
+          var a;
+          yield a;
+        }
+        g();
+        """);
   }
 }

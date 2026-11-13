@@ -18,8 +18,8 @@ package com.google.javascript.jscomp.lint;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static java.util.Objects.requireNonNull;
 
-import com.google.auto.value.AutoValue;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ComparisonChain;
@@ -32,11 +32,12 @@ import com.google.javascript.jscomp.NodeTraversal;
 import com.google.javascript.jscomp.NodeUtil;
 import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.Node;
+import com.google.javascript.rhino.QualifiedName;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Checks that Closure import statements (goog.require, goog.requireType, and goog.forwardDeclare)
@@ -55,7 +56,7 @@ public final class CheckRequiresSorted implements NodeTraversal.Callback {
     COLLECT_ONLY,
     /** Additionally report a warning. */
     COLLECT_AND_REPORT
-  };
+  }
 
   /** Primitives that may be called in an import statement. */
   enum ImportPrimitive {
@@ -87,8 +88,7 @@ public final class CheckRequiresSorted implements NodeTraversal.Callback {
      * <p>`goog.require` is stronger than `goog.requireType`, which is stronger than
      * `goog.forwardDeclare`.
      */
-    @Nullable
-    static ImportPrimitive stronger(ImportPrimitive p1, ImportPrimitive p2) {
+    static @Nullable ImportPrimitive stronger(ImportPrimitive p1, ImportPrimitive p2) {
       return p1.ordinal() < p2.ordinal() ? p1 : p2;
     }
 
@@ -104,20 +104,19 @@ public final class CheckRequiresSorted implements NodeTraversal.Callback {
    * <p>{@code exportedName} and {@code localName} are equal in the case where the binding does not
    * explicitly specify a local name.
    */
-  @AutoValue
   @Immutable
-  abstract static class DestructuringBinding implements Comparable<DestructuringBinding> {
-    abstract String exportedName();
-
-    abstract String localName();
-
-    abstract boolean isShorthandProperty();
+  private record DestructuringBinding(
+      String exportedName, String localName, boolean isShorthandProperty)
+      implements Comparable<DestructuringBinding> {
+    DestructuringBinding {
+      requireNonNull(exportedName, "exportedName");
+      requireNonNull(localName, "localName");
+      checkArgument(!isShorthandProperty || exportedName.equals(localName));
+    }
 
     static DestructuringBinding of(
         String exportedName, String localName, boolean isShorthandProperty) {
-      checkArgument(!isShorthandProperty || exportedName.equals(localName));
-      return new AutoValue_CheckRequiresSorted_DestructuringBinding(
-          exportedName, localName, isShorthandProperty);
+      return new DestructuringBinding(exportedName, localName, isShorthandProperty);
     }
 
     /** Compares two bindings according to the style guide sort order. */
@@ -146,7 +145,7 @@ public final class CheckRequiresSorted implements NodeTraversal.Callback {
      *
      * <p>In practice, `{Foo: Foo}` gets simplified to `{Foo}`.
      */
-    public DestructuringBinding canonicalizeShorthandProperties() {
+    DestructuringBinding canonicalizeShorthandProperties() {
       return this.isCanonical()
           ? this
           : DestructuringBinding.of(
@@ -166,28 +165,31 @@ public final class CheckRequiresSorted implements NodeTraversal.Callback {
    *   <li>Destructuring: has an LHS with a destructuring pattern, as in `const {name: localName} =
    *       goog.require('namespace')`.
    * </ul>
+   *
+   * @param nodes Returns the nodes this import statement was merged from, in source order.
+   * @param primitive Returns the import primitive being called.
+   * @param namespace Returns the namespace being imported.
+   * @param alias Returns the alias for an aliasing import, or null if the import isn't aliasing.
+   * @param destructures Returns the destructures for a destructuring import in source order, or
+   *     null if the import isn't destructuring.
+   *     <p>If the import is destructuring but the pattern is empty, the value is non-null but
+   *     empty.
    */
-  @AutoValue
-  abstract static class ImportStatement implements Comparable<ImportStatement> {
-    /** Returns the nodes this import statement was merged from, in source order. */
-    abstract ImmutableList<Node> nodes();
-
-    /** Returns the import primitive being called. */
-    abstract ImportPrimitive primitive();
-
-    /** Returns the namespace being imported. */
-    abstract String namespace();
-
-    /** Returns the alias for an aliasing import, or null if the import isn't aliasing. */
-    abstract @Nullable String alias();
-
-    /**
-     * Returns the destructures for a destructuring import in source order, or null if the import
-     * isn't destructuring.
-     *
-     * <p>If the import is destructuring but the pattern is empty, the value is non-null but empty.
-     */
-    abstract @Nullable ImmutableList<DestructuringBinding> destructures();
+  private record ImportStatement(
+      ImmutableList<Node> nodes,
+      ImportPrimitive primitive,
+      String namespace,
+      @Nullable String alias,
+      @Nullable ImmutableList<DestructuringBinding> destructures)
+      implements Comparable<ImportStatement> {
+    ImportStatement {
+      requireNonNull(nodes, "nodes");
+      requireNonNull(primitive, "primitive");
+      requireNonNull(namespace, "namespace");
+      Preconditions.checkArgument(
+          alias == null || destructures == null,
+          "Import statement cannot be simultaneously aliasing and destructuring");
+    }
 
     /** Creates a new import statement. */
     static ImportStatement of(
@@ -196,11 +198,7 @@ public final class CheckRequiresSorted implements NodeTraversal.Callback {
         String namespace,
         @Nullable String alias,
         @Nullable ImmutableList<DestructuringBinding> destructures) {
-      Preconditions.checkArgument(
-          alias == null || destructures == null,
-          "Import statement cannot be simultaneously aliasing and destructuring");
-      return new AutoValue_CheckRequiresSorted_ImportStatement(
-          nodes, primitive, namespace, alias, destructures);
+      return new ImportStatement(nodes, primitive, namespace, alias, destructures);
     }
 
     /** Returns whether the import is standalone. */
@@ -224,8 +222,7 @@ public final class CheckRequiresSorted implements NodeTraversal.Callback {
      */
     ImportStatement upgrade(ImportPrimitive otherPrimitive) {
       if (ImportPrimitive.stronger(primitive(), otherPrimitive) != primitive()) {
-        return new AutoValue_CheckRequiresSorted_ImportStatement(
-            nodes(), otherPrimitive, namespace(), alias(), destructures());
+        return new ImportStatement(nodes(), otherPrimitive, namespace(), alias(), destructures());
       }
       return this;
     }
@@ -270,7 +267,7 @@ public final class CheckRequiresSorted implements NodeTraversal.Callback {
     }
 
     /** Formats the import statement into code. */
-    public String format() {
+    String format() {
       StringBuilder sb = new StringBuilder();
 
       for (Node node : nodes()) {
@@ -296,6 +293,10 @@ public final class CheckRequiresSorted implements NodeTraversal.Callback {
     }
   }
 
+  private static final QualifiedName GOOG_REQUIRE = QualifiedName.of("goog.require");
+  private static final QualifiedName GOOG_REQUIRETYPE = QualifiedName.of("goog.requireType");
+  private static final QualifiedName GOOG_FORWARDDECLARE = QualifiedName.of("goog.forwardDeclare");
+
   private final Mode mode;
 
   // Maps each namespace into the existing import statements for that namespace.
@@ -306,12 +307,12 @@ public final class CheckRequiresSorted implements NodeTraversal.Callback {
   private final List<ImportStatement> originalImports = new ArrayList<>();
 
   // The import statements in canonical order.
-  @Nullable private Node firstNode = null;
-  @Nullable private Node lastNode = null;
+  private @Nullable Node firstNode = null;
+  private @Nullable Node lastNode = null;
   private boolean finished = false;
 
   private boolean needsFix = false;
-  @Nullable private String replacement = null;
+  private @Nullable String replacement = null;
 
   public CheckRequiresSorted(Mode mode) {
     this.mode = mode;
@@ -376,9 +377,9 @@ public final class CheckRequiresSorted implements NodeTraversal.Callback {
   private static boolean isValidImportCall(Node n) {
     return n.isCall()
         && n.hasTwoChildren()
-        && (n.getFirstChild().matchesQualifiedName("goog.require")
-            || n.getFirstChild().matchesQualifiedName("goog.requireType")
-            || n.getFirstChild().matchesQualifiedName("goog.forwardDeclare"))
+        && (GOOG_REQUIRE.matches(n.getFirstChild())
+            || GOOG_REQUIRETYPE.matches(n.getFirstChild())
+            || GOOG_FORWARDDECLARE.matches(n.getFirstChild()))
         && n.getSecondChild().isStringLit();
   }
 
@@ -476,8 +477,8 @@ public final class CheckRequiresSorted implements NodeTraversal.Callback {
               .filter(ImportStatement::isDestructuring)
               .flatMap(i -> i.destructures().stream())
               .map(DestructuringBinding::canonicalizeShorthandProperties)
-              .distinct()
               .sorted()
+              .distinct()
               .collect(toImmutableList());
       if (!destructures.isEmpty()) {
         canonicalImports.add(

@@ -44,12 +44,13 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.javascript.jscomp.base.JSCompObjects.identical;
 
 import com.google.common.collect.ImmutableList;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.javascript.rhino.jstype.FunctionType.Parameter;
 import com.google.javascript.rhino.jstype.JSType.MatchStatus;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Objects;
 import java.util.Set;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Represents the computation of a single equality relationship.
@@ -100,10 +101,11 @@ final class EqualityChecker {
 
   private EqMethod eqMethod;
 
-  private HashMap<CacheKey, MatchStatus> eqCache;
+  private LinkedHashMap<CacheKey, MatchStatus> eqCache;
   private int recursionDepth = 0;
   private boolean hasRun = false;
 
+  @CanIgnoreReturnValue
   EqualityChecker setEqMethod(EqMethod x) {
     this.checkHasNotRun();
     checkState(this.eqMethod == null);
@@ -134,7 +136,7 @@ final class EqualityChecker {
     // Wait to instantiate/use the cache until we have some hint that there may be recursion.
     if (this.recursionDepth > POTENTIALLY_CYCLIC_RECURSION_DEPTH) {
       if (this.eqCache == null) {
-        this.eqCache = new HashMap<>();
+        this.eqCache = new LinkedHashMap<>();
       }
     }
 
@@ -173,13 +175,9 @@ final class EqualityChecker {
     }
 
     if (left.isNoResolvedType() && right.isNoResolvedType()) {
-      if (left.isNamedType() && right.isNamedType()) {
-        return Objects.equals(
-            left.toMaybeNamedType().getReferenceName(), //
-            right.toMaybeNamedType().getReferenceName());
-      } else {
-        return true;
-      }
+      return Objects.equals(
+          left.toObjectType().getReferenceName(), //
+          right.toObjectType().getReferenceName());
     }
 
     boolean leftUnknown = left.isUnknownType();
@@ -216,8 +214,8 @@ final class EqualityChecker {
     }
 
     // TODO(nickreid): Delete `ArrowType` as not a type, or add `toMaybeArrow`.
-    if (left instanceof ArrowType && right instanceof ArrowType) {
-      return this.areArrowEqual((ArrowType) left, (ArrowType) right);
+    if (left instanceof ArrowType leftArrow && right instanceof ArrowType rightArrow) {
+      return this.areArrowEqual(leftArrow, rightArrow);
     }
 
     if (!this.areTypeMapEqual(left.getTemplateTypeMap(), right.getTemplateTypeMap())) {
@@ -239,20 +237,23 @@ final class EqualityChecker {
         // TODO(b/140763807): this is not valid across scopes pre-resolution.
         String nameOfleft = checkNotNull(leftUnwrapped.getReferenceName());
         String nameOfright = checkNotNull(rightUnwrapped.getReferenceName());
-        return Objects.equals(nameOfleft, nameOfright);
+        String googModuleIdOfLeft = getGoogModuleId(leftUnwrapped);
+        String googModuleIdOfRight = getGoogModuleId(rightUnwrapped);
+        return Objects.equals(nameOfleft, nameOfright)
+            && Objects.equals(googModuleIdOfLeft, googModuleIdOfRight);
       }
     }
 
-    /**
+    /*
      * Unwrap proxies.
      *
      * <p>Remember that `TemplateType` has identity semantics and shouldn't be unwrapped.
      */
-    if (left instanceof ProxyObjectType && !(left instanceof TemplateType)) {
-      return this.areEqualCaching(((ProxyObjectType) left).getReferencedTypeInternal(), right);
+    if (left instanceof ProxyObjectType proxyObjectType && !(left instanceof TemplateType)) {
+      return this.areEqualCaching(proxyObjectType.getReferencedTypeInternal(), right);
     }
-    if (right instanceof ProxyObjectType && !(right instanceof TemplateType)) {
-      return this.areEqualCaching(left, ((ProxyObjectType) right).getReferencedTypeInternal());
+    if (right instanceof ProxyObjectType proxyObjectType && !(right instanceof TemplateType)) {
+      return this.areEqualCaching(left, proxyObjectType.getReferencedTypeInternal());
     }
 
     // Relies on the fact right for the base {@link JSType}, only one
@@ -290,6 +291,16 @@ final class EqualityChecker {
     return true;
   }
 
+  private static @Nullable String getGoogModuleId(ObjectType type) {
+    if (type instanceof FunctionType functionType) {
+      return functionType.getGoogModuleId();
+    }
+    if (type.getConstructor() != null) {
+      return type.getConstructor().getGoogModuleId();
+    }
+    return null;
+  }
+
   /**
    * Two function types are equal if their signatures match. Since they don't have signatures, two
    * interfaces are equal if their names match.
@@ -304,18 +315,16 @@ final class EqualityChecker {
       return false;
     }
 
-    switch (left.getKind()) {
-      case CONSTRUCTOR:
-      case INTERFACE:
-        // constructors and interfaces use identity semantics, which we checked for above.
-        return false;
-      case ORDINARY:
-        return this.areEqualCaching(left.getTypeOfThis(), right.getTypeOfThis())
-            && this.areEqualCaching(left.getInternalArrowType(), right.getInternalArrowType())
-            && Objects.equals(left.getClosurePrimitive(), right.getClosurePrimitive());
-      default:
-        throw new AssertionError();
-    }
+    return switch (left.getKind()) {
+      case CONSTRUCTOR, INTERFACE ->
+          // constructors and interfaces use identity semantics, which we checked for above.
+          false;
+      case ORDINARY ->
+          this.areEqualCaching(left.getTypeOfThis(), right.getTypeOfThis())
+              && this.areEqualCaching(left.getInternalArrowType(), right.getInternalArrowType())
+              && Objects.equals(left.getClosurePrimitive(), right.getClosurePrimitive());
+      default -> throw new AssertionError();
+    };
   }
 
   private boolean areArrowEqual(ArrowType left, ArrowType right) {
@@ -366,7 +375,7 @@ final class EqualityChecker {
    * Such structural relationships are correctly expressed in terms of subtyping.
    */
   private boolean areRecordEqual(RecordType left, RecordType right) {
-    /**
+    /*
      * Don't check inherited properties; checking them is both incorrect and slow.
      *
      * <p>The full definition of a record type is contained in its "own" properties (i.e. `{a:
@@ -393,17 +402,17 @@ final class EqualityChecker {
 
   private boolean areTypeMapEqual(TemplateTypeMap left, TemplateTypeMap right) {
     ImmutableList<TemplateType> leftKeys = left.getTemplateKeys();
+    ImmutableList<JSType> leftValues = left.getTemplateValues();
     ImmutableList<TemplateType> rightKeys = right.getTemplateKeys();
+    ImmutableList<JSType> rightValues = right.getTemplateValues();
 
     outer:
     for (int i = 0; i < leftKeys.size(); i++) {
       TemplateType leftKey = leftKeys.get(i);
-      JSType leftType = left.getResolvedTemplateType(leftKey);
 
       inner:
       for (int j = 0; j < rightKeys.size(); j++) {
         TemplateType rightKey = rightKeys.get(j);
-        JSType rightType = right.getResolvedTemplateType(rightKey);
 
         // Cross-compare every key-value pair in this TemplateTypeMap with
         // those in that TemplateTypeMap. Update the Equivalence match for both
@@ -412,7 +421,12 @@ final class EqualityChecker {
           continue inner;
         }
 
-        if (this.areEqualCaching(leftType, rightType)) {
+        // The arrays are index-aligned but we can have more keys than values.
+        JSType leftValue =
+            i < leftValues.size() ? leftValues.get(i) : left.defaultValueType(leftKey);
+        JSType rightValue =
+            j < rightValues.size() ? rightValues.get(j) : right.defaultValueType(rightKey);
+        if (this.areEqualCaching(leftValue, rightValue)) {
           continue outer;
         }
       }
@@ -434,11 +448,7 @@ final class EqualityChecker {
     }
 
     @Override
-    @SuppressWarnings({
-      "ShortCircuitBoolean",
-      "EqualsBrokenForNull",
-      "EqualsUnsafeCast"
-    })
+    @SuppressWarnings({"ShortCircuitBoolean", "EqualsBrokenForNull", "EqualsUnsafeCast"})
     public boolean equals(Object other) {
       // Calling left with `null` or not a `Key` should cause a crash.
       CacheKey right = (CacheKey) other;

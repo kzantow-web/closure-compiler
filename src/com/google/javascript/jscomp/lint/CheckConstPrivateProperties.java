@@ -26,7 +26,7 @@ import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.JSDocInfo.Visibility;
 import com.google.javascript.rhino.Node;
 import java.util.ArrayList;
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -42,8 +42,8 @@ public class CheckConstPrivateProperties extends AbstractPostOrderCallback imple
 
   private final AbstractCompiler compiler;
   private final List<Node> candidates = new ArrayList<>();
-  private final Set<String> modified = new HashSet<>();
-  private final HashSet<String> constructorsAndInterfaces = new HashSet<>();
+  private final Set<String> modified = new LinkedHashSet<>();
+  private final LinkedHashSet<String> constructorsAndInterfaces = new LinkedHashSet<>();
 
   public CheckConstPrivateProperties(AbstractCompiler compiler) {
     this.compiler = compiler;
@@ -69,13 +69,10 @@ public class CheckConstPrivateProperties extends AbstractPostOrderCallback imple
   @Override
   public void visit(NodeTraversal t, Node n, Node parent) {
     switch (n.getToken()) {
-      case SCRIPT:
-        // Exiting the script, report any non-const privates not modified in the file.
-        reportMissingConst(t);
-        break;
-
-      case GETELEM:
-      case GETPROP:
+      case SCRIPT ->
+          // Exiting the script, report any non-const privates not modified in the file.
+          reportMissingConst(t);
+      case GETELEM, GETPROP -> {
         final Node propNode;
         if (n.isGetProp()) {
           propNode = n;
@@ -92,21 +89,15 @@ public class CheckConstPrivateProperties extends AbstractPostOrderCallback imple
           // Mark any other modification operation as a modified property, to deal with lambdas, etc
           modified.add(propNode.getString());
         }
-        break;
-
-      case FUNCTION:
+      }
+      case FUNCTION -> {
         JSDocInfo info = NodeUtil.getBestJSDocInfo(n);
         if (info != null && (info.isConstructor() || info.isInterface())) {
           recordConstructorOrInterface(n);
         }
-        break;
-
-      case CLASS:
-        recordConstructorOrInterface(n);
-        break;
-
-      default:
-        break;
+      }
+      case CLASS -> recordConstructorOrInterface(n);
+      default -> {}
     }
   }
 
@@ -143,7 +134,9 @@ public class CheckConstPrivateProperties extends AbstractPostOrderCallback imple
         && !isFunctionProperty(n);
   }
 
-  /** @return Whether the given property declaration is assigned to a function. */
+  /**
+   * @return Whether the given property declaration is assigned to a function.
+   */
   private boolean isFunctionProperty(Node n) {
     // TODO(dylandavidson): getAssignedValue does not support GETELEM.
     if (n.isGetElem()) {

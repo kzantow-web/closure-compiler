@@ -16,15 +16,18 @@
 
 package com.google.javascript.jscomp.modules;
 
+import static com.google.common.base.Preconditions.checkState;
+
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableMultiset;
 import com.google.common.collect.ImmutableSet;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.javascript.jscomp.deps.ModuleLoader.ModulePath;
 import com.google.javascript.rhino.Node;
 import java.util.Map;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Contains metadata around modules (or scripts) that is useful for checking imports / requires.
@@ -57,6 +60,22 @@ public final class ModuleMetadataMap {
   }
 
   /**
+   * How a goog.provide or goog.module namespace is seen from TypeScript (via Clutz): as a set of
+   * named exports, as a single default export, or omitted because of {@code @nodts}.
+   *
+   * <p>For example, {@code exports = {A, B};} is NAMED, {@code exports = class Foo {};} is DEFAULT,
+   * and {@code /** @nodts *}{@code / exports = class Foo {};} is NO_DTS.
+   */
+  public enum TsExportType {
+    /** The module exports a single default value. */
+    DEFAULT,
+    /** The module exports multiple named values. */
+    NAMED,
+    /** Clutz omits the namespace from the .d.ts (and import mappings) because of {@code @nodts}. */
+    NO_DTS
+  }
+
+  /**
    * Map from module path to module. These modules represent files and thus will contain all goog
    * namespaces that are in the file. These are not the same modules in modulesByGoogNamespace.
    */
@@ -71,9 +90,22 @@ public final class ModuleMetadataMap {
 
   private final ImmutableSet<ModuleMetadata> moduleMetadata;
 
+  /**
+   * Whether the modules' TypeScript export type facts were computed (see {@link
+   * com.google.javascript.jscomp.CompilerOptions#setClassifyTsExportTypes}).
+   */
+  private final boolean tsExportTypesClassified;
+
   public ModuleMetadataMap(
       Map<String, ModuleMetadata> modulesByPath,
       Map<String, ModuleMetadata> modulesByGoogNamespace) {
+    this(modulesByPath, modulesByGoogNamespace, /* tsExportTypesClassified= */ false);
+  }
+
+  public ModuleMetadataMap(
+      Map<String, ModuleMetadata> modulesByPath,
+      Map<String, ModuleMetadata> modulesByGoogNamespace,
+      boolean tsExportTypesClassified) {
     this.modulesByPath = ImmutableMap.copyOf(modulesByPath);
     this.modulesByGoogNamespace = ImmutableMap.copyOf(modulesByGoogNamespace);
     this.moduleMetadata =
@@ -81,6 +113,7 @@ public final class ModuleMetadataMap {
             .addAll(modulesByPath.values())
             .addAll(modulesByGoogNamespace.values())
             .build();
+    this.tsExportTypesClassified = tsExportTypesClassified;
   }
 
   /**
@@ -111,6 +144,10 @@ public final class ModuleMetadataMap {
       return moduleType() == ModuleType.GOOG_PROVIDE;
     }
 
+    public boolean hasLegacyGoogNamespaces() {
+      return isGoogProvide() || isLegacyGoogModule();
+    }
+
     public boolean isCommonJs() {
       return moduleType() == ModuleType.COMMON_JS;
     }
@@ -121,17 +158,10 @@ public final class ModuleMetadataMap {
 
     /** Whether this is a module (with it's own local scope). */
     public boolean isModule() {
-      switch (moduleType()) {
-        case GOOG_PROVIDE:
-        case SCRIPT:
-          return false;
-        case COMMON_JS:
-        case ES6_MODULE:
-        case GOOG_MODULE:
-        case LEGACY_GOOG_MODULE:
-          return true;
-      }
-      throw new AssertionError(moduleType());
+      return switch (moduleType()) {
+        case GOOG_PROVIDE, SCRIPT -> false;
+        case COMMON_JS, ES6_MODULE, GOOG_MODULE, LEGACY_GOOG_MODULE -> true;
+      };
     }
 
     /**
@@ -140,8 +170,7 @@ public final class ModuleMetadataMap {
      * <p>May be null if this is a synthetic piece of metadata - e.g. in a test, or something used
      * as a fallback.
      */
-    @Nullable
-    public abstract Node rootNode();
+    public abstract @Nullable Node rootNode();
 
     /**
      * Whether this file uses Closure Library at all. Note that a file could use Closure Library
@@ -176,6 +205,24 @@ public final class ModuleMetadataMap {
     public abstract ImmutableMultiset<String> stronglyRequiredGoogNamespaces();
 
     /**
+     * Closure namespaces this file dynamically require, i.e., arguments to goog.requireDynamic()
+     * calls.
+     *
+     * <p>This is a multiset as it does not warn on duplicate namespaces, but will still encapsulate
+     * that information with this multiset.
+     */
+    public abstract ImmutableMultiset<String> dynamicallyRequiredGoogNamespaces();
+
+    /**
+     * Closure namespaces this file "maybe" require, i.e., arguments to
+     * goog.maybeRequireFrameworkInternalOnlyDoNotCallOrElse() calls.
+     *
+     * <p>This is a multiset as it does not warn on duplicate namespaces, but will still encapsulate
+     * that information with this multiset.
+     */
+    public abstract ImmutableMultiset<String> maybeRequiredGoogNamespaces();
+
+    /**
      * Closure namespaces this file weakly requires, i.e., arguments to goog.requireType calls.
      *
      * <p>This is a multiset as it does not warn on duplicate namespaces, but will still encapsulate
@@ -188,16 +235,34 @@ public final class ModuleMetadataMap {
 
     public abstract ImmutableList<ModuleMetadata> nestedModules();
 
-    @Nullable
-    public abstract ModulePath path();
+    /**
+     * Arguments to goog.readToggleInternalDoNotCallDirectly() calls.
+     *
+     * <p>This is a multiset as it does not warn on duplicate toggles, but will still encapsulate
+     * that information with this multiset.
+     */
+    public abstract ImmutableMultiset<String> readToggles();
+
+    /**
+     * How TypeScript (via Clutz) sees each namespace in {@link #googNamespaces()}.
+     *
+     * <p>Only populated for goog.provide and goog.module files when {@link
+     * com.google.javascript.jscomp.CompilerOptions#setClassifyTsExportTypes} is enabled; see {@link
+     * ModuleMetadataMap#getTsExportType}.
+     */
+    public abstract ImmutableMap<String, TsExportType> tsExportTypes();
+
+    public abstract @Nullable ModulePath path();
 
     public static Builder builder() {
-      return new AutoValue_ModuleMetadataMap_ModuleMetadata.Builder();
+      return new AutoValue_ModuleMetadataMap_ModuleMetadata.Builder()
+          .tsExportTypes(ImmutableMap.of());
     }
 
     // Use reference equality to prevent bad HashSet<ModuleMetadata> performance on GWT.
     // GatherModuleMetadata is guaranteed to create exactly one ModuleMetadata instance for each
     // input module.
+    // NOTE(user): consider removing this override now that GWT & J2CL builds are gone.
     @Override
     public final boolean equals(Object other) {
       return super.equals(other);
@@ -215,6 +280,7 @@ public final class ModuleMetadataMap {
 
       public abstract ImmutableMultiset.Builder<String> googNamespacesBuilder();
 
+      @CanIgnoreReturnValue
       public Builder addGoogNamespace(String namespace) {
         googNamespacesBuilder().add(namespace);
         return this;
@@ -222,11 +288,19 @@ public final class ModuleMetadataMap {
 
       public abstract ImmutableMultiset.Builder<String> stronglyRequiredGoogNamespacesBuilder();
 
+      public abstract ImmutableMultiset.Builder<String> dynamicallyRequiredGoogNamespacesBuilder();
+
+      public abstract ImmutableMultiset.Builder<String> maybeRequiredGoogNamespacesBuilder();
+
       public abstract ImmutableMultiset.Builder<String> weaklyRequiredGoogNamespacesBuilder();
 
       public abstract ImmutableMultiset.Builder<String> es6ImportSpecifiersBuilder();
 
       public abstract ImmutableList.Builder<ModuleMetadata> nestedModulesBuilder();
+
+      public abstract ImmutableMultiset.Builder<String> readTogglesBuilder();
+
+      public abstract Builder tsExportTypes(Map<String, TsExportType> value);
 
       public abstract Builder path(@Nullable ModulePath value);
 
@@ -272,6 +346,29 @@ public final class ModuleMetadataMap {
    */
   public ImmutableSet<ModuleMetadata> getAllModuleMetadata() {
     return moduleMetadata;
+  }
+
+  /**
+   * Returns whether TypeScript sees the given goog namespace as a set of named exports, as a single
+   * default export, or as omitted because of {@code @nodts}.
+   *
+   * <p>This is a purely syntactic approximation of Clutz's type-based classification, so that it
+   * can be computed without typechecking (e.g. when extracting JsTrimmer summaries).
+   *
+   * <p>Returns DEFAULT for namespaces not in this map, and for namespaces that aren't from a
+   * goog.provide or goog.module, e.g. from goog.declareModuleId, which aren't classified.
+   *
+   * @throws IllegalStateException unless this map was built with {@link
+   *     com.google.javascript.jscomp.CompilerOptions#setClassifyTsExportTypes} enabled
+   */
+  public TsExportType getTsExportType(String googNamespace) {
+    checkState(
+        this.tsExportTypesClassified,
+        "TypeScript export types require CompilerOptions#setClassifyTsExportTypes");
+    ModuleMetadata module = modulesByGoogNamespace.get(googNamespace);
+    return module != null
+        ? module.tsExportTypes().getOrDefault(googNamespace, TsExportType.DEFAULT)
+        : TsExportType.DEFAULT;
   }
 
   public static ModuleMetadataMap emptyForTesting() {

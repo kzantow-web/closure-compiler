@@ -22,7 +22,6 @@ import static com.google.common.base.Predicates.alwaysTrue;
 
 import com.google.common.base.Preconditions;
 import com.google.common.base.Predicate;
-import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.javascript.jscomp.CompilerOptions.Reach;
@@ -32,14 +31,17 @@ import com.google.javascript.jscomp.NodeTraversal.AbstractPostOrderCallback;
 import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.Node;
+import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
+import java.util.function.Supplier;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Inlines functions that are divided into two types: "direct call node replacement" (aka "direct")
@@ -55,13 +57,18 @@ import java.util.Set;
  */
 class InlineFunctions implements CompilerPass {
 
+  static final DiagnosticType MISSED_REQUIRED_INLINING =
+      DiagnosticType.warning(
+          "JSC_MISSED_REQUIRED_INLINING",
+          "function {1} annotated @requireInlining could not be inlined here");
+
   // TODO(nicksantos): This needs to be completely rewritten to use scopes
   // to do variable lookups. Right now, it assumes that all functions are
   // uniquely named variables. There's currently a stopgap scope-check
   // to ensure that this doesn't produce invalid code. But in the long run,
   // this needs a major refactor.
   private final Map<String, FunctionState> fns = new LinkedHashMap<>();
-  private final Map<Node, String> anonFns = new HashMap<>();
+  private final Map<Node, String> anonFns = new LinkedHashMap<>();
 
   private final AbstractCompiler compiler;
 
@@ -69,7 +76,6 @@ class InlineFunctions implements CompilerPass {
   private final FunctionArgumentInjector functionArgumentInjector;
 
   private final Reach reach;
-  private final boolean assumeMinimumCapture;
 
   private final boolean enforceMaxSizeAfterInlining;
   private final int maxSizeAfterInlining;
@@ -79,7 +85,6 @@ class InlineFunctions implements CompilerPass {
       Supplier<String> safeNameIdSupplier,
       Reach reach,
       boolean assumeStrictThis,
-      boolean assumeMinimumCapture,
       int maxSizeAfterInlining) {
     checkArgument(compiler != null);
     checkArgument(safeNameIdSupplier != null);
@@ -88,7 +93,6 @@ class InlineFunctions implements CompilerPass {
     this.compiler = compiler;
 
     this.reach = reach;
-    this.assumeMinimumCapture = assumeMinimumCapture;
 
     this.maxSizeAfterInlining = maxSizeAfterInlining;
     this.enforceMaxSizeAfterInlining =
@@ -105,12 +109,11 @@ class InlineFunctions implements CompilerPass {
         new FunctionInjector.Builder(compiler)
             .safeNameIdSupplier(safeNameIdSupplier)
             .assumeStrictThis(assumeStrictThis)
-            .assumeMinimumCapture(assumeMinimumCapture)
             .functionArgumentInjector(this.functionArgumentInjector)
             .build();
   }
 
-  FunctionState getOrCreateFunctionState(String fnName) {
+  private FunctionState getOrCreateFunctionState(String fnName) {
     return fns.computeIfAbsent(fnName, (String k) -> new FunctionState());
   }
 
@@ -186,18 +189,16 @@ class InlineFunctions implements CompilerPass {
       }
     }
 
-    public void findNamedFunctions(NodeTraversal t, Node n, Node parent) {
+    void findNamedFunctions(NodeTraversal t, Node n, Node parent) {
       if (!NodeUtil.isStatement(n)) {
         // There aren't any interesting functions here.
         return;
       }
 
       switch (n.getToken()) {
+        case VAR, LET, CONST -> {
           // Functions expressions in the form of:
           //   var fooFn = function(x) { return ... }
-        case VAR:
-        case LET:
-        case CONST:
           Preconditions.checkState(n.hasOneChild(), n);
           Node nameNode = n.getFirstChild();
           if (nameNode.isName()
@@ -205,19 +206,17 @@ class InlineFunctions implements CompilerPass {
               && nameNode.getFirstChild().isFunction()) {
             maybeAddFunction(new FunctionVar(n), t.getChunk());
           }
-          break;
-
           // Named functions
           // function Foo(x) { return ... }
-        case FUNCTION:
+        }
+        case FUNCTION -> {
           Preconditions.checkState(NodeUtil.isStatementBlock(parent) || parent.isLabel());
           if (NodeUtil.isFunctionDeclaration(n)) {
             Function fn = new NamedFunction(n);
             maybeAddFunction(fn, t.getChunk());
           }
-          break;
-        default:
-          break;
+        }
+        default -> {}
       }
     }
 
@@ -225,12 +224,11 @@ class InlineFunctions implements CompilerPass {
      * Find function expressions that are called directly in the form of
      * (function(a,b,...){...})(a,b,...) or (function(a,b,...){...}).call(this,a,b, ...)
      */
-    public void findFunctionExpressions(NodeTraversal t, Node n) {
+    void findFunctionExpressions(NodeTraversal t, Node n) {
       switch (n.getToken()) {
+        case OPTCHAIN_CALL, CALL -> {
           // Functions expressions in the form of:
           //   (function(){})();
-        case OPTCHAIN_CALL:
-        case CALL:
           Node fnNode = null;
           if (n.getFirstChild().isFunction()) {
             fnNode = n.getFirstChild();
@@ -247,9 +245,8 @@ class InlineFunctions implements CompilerPass {
             maybeAddFunction(fn, t.getChunk());
             anonFns.put(fnNode, fn.getName());
           }
-          break;
-        default:
-          break;
+        }
+        default -> {}
       }
     }
   }
@@ -258,28 +255,38 @@ class InlineFunctions implements CompilerPass {
    * Updates the FunctionState object for the given function. Checks if the given function matches
    * the criteria for an inlinable function.
    */
-  void maybeAddFunction(Function fn, JSChunk module) {
+  private void maybeAddFunction(Function fn, JSChunk chunk) {
     String name = fn.getName();
     FunctionState functionState = getOrCreateFunctionState(name);
+    updateFunctionStateForInlining(fn, chunk, functionState);
+    checkState(!(hasRequireInliningAnnotation(fn.getFunctionNode()) && !functionState.canInline()));
+  }
 
+  /**
+   * Updates the FunctionState object for the given function. Checks if the given function matches
+   * the criteria for an inlinable function.
+   */
+  private void updateFunctionStateForInlining(
+      Function fn, JSChunk chunk, FunctionState functionState) {
     // TODO(johnlenz): Maybe "smarten" FunctionState by adding this logic to it?
 
     // If the function has multiple definitions, don't inline it.
     if (functionState.hasExistingFunctionDefinition()) {
-      functionState.disallowInlining();
+      functionState.disallowInlining(
+          compiler, DisallowInliningReason.MULTIPLE_FUNCTION_DEFINITIONS);
       return;
     }
     Node fnNode = fn.getFunctionNode();
 
     if (hasNoInlineAnnotation(fnNode)) {
-      functionState.disallowInlining();
+      functionState.disallowInlining(compiler, DisallowInliningReason.NO_INLINE_ANNOTATION);
       return;
     }
 
     if (enforceMaxSizeAfterInlining
         && !isAlwaysInlinable(fnNode)
         && maxSizeAfterInlining <= NodeUtil.countAstSizeUpToLimit(fnNode, maxSizeAfterInlining)) {
-      functionState.disallowInlining();
+      functionState.disallowInlining(compiler, DisallowInliningReason.TARGET_SIZE_EXCEEDS_LIMIT);
       return;
     }
 
@@ -292,7 +299,7 @@ class InlineFunctions implements CompilerPass {
       }
 
       if (hasNonInlinableParam(NodeUtil.getFunctionParameters(fnNode))) {
-        functionState.disallowInlining();
+        functionState.disallowInlining(compiler, DisallowInliningReason.NON_INLINABLE_PARAM);
       }
 
       // verify the function meets all the requirements.
@@ -300,12 +307,12 @@ class InlineFunctions implements CompilerPass {
       // run-time cost of this pass.
       if (!isCandidateFunction(fn)) {
         // It doesn't meet the requirements.
-        functionState.disallowInlining();
+        functionState.disallowInlining(compiler, DisallowInliningReason.NOT_CANDIDATE_FUNCTION);
       }
 
-      // Set the module and gather names that need temporaries.
+      // Set the chunk and gather names that need temporaries.
       if (functionState.canInline()) {
-        functionState.setModule(module);
+        functionState.setChunk(chunk);
 
         Set<String> namesToAlias = functionArgumentInjector.findModifiedParameters(fnNode);
         if (!namesToAlias.isEmpty()) {
@@ -318,15 +325,16 @@ class InlineFunctions implements CompilerPass {
           functionState.setReferencesThis(true);
         }
 
-        if (NodeUtil.has(block, Node::isFunction, alwaysTrue())) {
-          functionState.setHasInnerFunctions(true);
+        if (NodeUtil.has(
+            block, NodeUtil::isFunctionOrNonStaticClassFieldInitializer, alwaysTrue())) {
+          functionState.setHasInnerClosures(true);
           // If there are inner functions, we can inline into global scope
           // if there are no local vars or named functions.
           // TODO(johnlenz): this can be improved by looking at the possible
           // values for locals.  If there are simple values, or constants
           // we could still inline.
-          if (!assumeMinimumCapture && hasLocalNames(fnNode)) {
-            functionState.disallowInlining();
+          if (hasLocalNames(fnNode)) {
+            functionState.disallowInlining(compiler, DisallowInliningReason.HAS_LOCAL_NAMES);
           }
         }
       }
@@ -338,16 +346,17 @@ class InlineFunctions implements CompilerPass {
             && NodeUtil.has(block, (n) -> n.isLet() || n.isConst(), alwaysTrue())) {
           // The function might capture a variable that's not in scope at the call site,
           // so don't inline.
-          functionState.disallowInlining();
+          functionState.disallowInlining(
+              compiler, DisallowInliningReason.CAPTURED_VARIABLE_NOT_IN_SCOPE);
         }
       }
 
       if (fnNode.isGeneratorFunction()) {
-        functionState.disallowInlining();
+        functionState.disallowInlining(compiler, DisallowInliningReason.GENERATOR_FUNCTION);
       }
 
       if (fnNode.isAsyncFunction()) {
-        functionState.disallowInlining();
+        functionState.disallowInlining(compiler, DisallowInliningReason.ASYNC_FUNCTION);
       }
     }
   }
@@ -355,6 +364,16 @@ class InlineFunctions implements CompilerPass {
   private boolean hasNoInlineAnnotation(Node fnNode) {
     JSDocInfo jsDocInfo = NodeUtil.getBestJSDocInfo(fnNode);
     return jsDocInfo != null && jsDocInfo.isNoInline();
+  }
+
+  private static boolean hasEncourageInliningAnnotation(Node fnNode) {
+    JSDocInfo jsDocInfo = NodeUtil.getBestJSDocInfo(fnNode);
+    return jsDocInfo != null && jsDocInfo.isEncourageInlining();
+  }
+
+  private static boolean hasRequireInliningAnnotation(Node fnNode) {
+    JSDocInfo jsDocInfo = NodeUtil.getBestJSDocInfo(fnNode);
+    return jsDocInfo != null && jsDocInfo.isRequireInlining();
   }
 
   /**
@@ -391,20 +410,24 @@ class InlineFunctions implements CompilerPass {
     return injector.doesFunctionMeetMinimumRequirements(fnName, fnNode);
   }
 
-  /** @see CallVisitor */
+  /**
+   * @see CallVisitor
+   */
   private interface CallVisitorCallback {
-    public void visitCallSite(NodeTraversal t, Node callNode, FunctionState functionState);
+    void visitCallSite(NodeTraversal t, Node callNode, FunctionState functionState);
   }
 
   /** Visit call sites for functions in functionMap. */
   private static class CallVisitor extends AbstractPostOrderCallback {
 
-    protected CallVisitorCallback callback;
+    CallVisitorCallback callback;
     private final Map<String, FunctionState> functionMap;
     private final Map<Node, String> anonFunctionMap;
 
     CallVisitor(
-        Map<String, FunctionState> fns, Map<Node, String> anonFns, CallVisitorCallback callback) {
+        Map<String, FunctionState> fns,
+        Map<Node, String> anonFns,
+        @Nullable CallVisitorCallback callback) {
       this.functionMap = fns;
       this.anonFunctionMap = anonFns;
       this.callback = callback;
@@ -413,9 +436,8 @@ class InlineFunctions implements CompilerPass {
     @Override
     public void visit(NodeTraversal t, Node n, Node parent) {
       switch (n.getToken()) {
+        case OPTCHAIN_CALL, CALL -> {
           // Function calls
-        case OPTCHAIN_CALL:
-        case CALL:
           Node child = n.getFirstChild();
           String name = null;
           // NOTE: The normalization pass ensures that local names do not collide with global names.
@@ -441,15 +463,16 @@ class InlineFunctions implements CompilerPass {
               callback.visitCallSite(t, n, functionState);
             }
           }
-          break;
-        default:
-          break;
+        }
+        default -> {}
       }
     }
   }
 
-  /** @return Whether the name is used in a way that might be a candidate for inlining. */
-  static boolean isCandidateUsage(Node name) {
+  /**
+   * @return Whether the name is used in a way that might be a candidate for inlining.
+   */
+  private static boolean isCandidateUsage(Node name) {
     Node parent = name.getParent();
     checkState(name.isName());
     if (NodeUtil.isNameDeclaration(parent) || parent.isFunction()) {
@@ -487,6 +510,8 @@ class InlineFunctions implements CompilerPass {
 
   /** Find references to functions that are inlinable. */
   private class FindCandidatesReferences extends CallVisitor implements CallVisitorCallback {
+    private final Set<Node> functionsWithTaggedTemplateLit = new LinkedHashSet<>();
+
     FindCandidatesReferences(Map<String, FunctionState> fns, Map<Node, String> anonFns) {
       super(fns, anonFns, null);
       this.callback = this;
@@ -497,7 +522,46 @@ class InlineFunctions implements CompilerPass {
       super.visit(t, n, parent);
       if (n.isName()) {
         checkNameUsage(n, parent);
+      } else if (n.isTaggedTemplateLit()) {
+        Node enclosingFn = t.getEnclosingFunction();
+        if (enclosingFn != null) {
+          functionsWithTaggedTemplateLit.add(enclosingFn);
+        }
+      } else if (n.isFunction()
+          && !functionsWithTaggedTemplateLit.isEmpty()
+          && functionsWithTaggedTemplateLit.remove(n)) {
+        FunctionState functionState = getFunctionStateForFunctionNode(n);
+        if (functionState != null) {
+          functionState.setHasTaggedTemplateLit(true);
+        }
+        Node enclosingFn = t.getEnclosingFunction();
+        if (enclosingFn != null) {
+          functionsWithTaggedTemplateLit.add(enclosingFn);
+        }
       }
+    }
+
+    private @Nullable FunctionState getFunctionStateForFunctionNode(Node fnNode) {
+      String name = anonFns.get(fnNode);
+      if (name == null) {
+        if (NodeUtil.isFunctionDeclaration(fnNode)) {
+          name = fnNode.getFirstChild().getString();
+        } else if (fnNode.getParent().isName()
+            && fnNode.getGrandparent() != null
+            && NodeUtil.isNameDeclaration(fnNode.getGrandparent())) {
+          name = fnNode.getParent().getString();
+        }
+      }
+      if (name == null) {
+        return null;
+      }
+      FunctionState functionState = fns.get(name);
+      if (functionState != null
+          && functionState.hasExistingFunctionDefinition()
+          && functionState.getFn().getFunctionNode() == fnNode) {
+        return functionState;
+      }
+      return null;
     }
 
     @Override
@@ -506,25 +570,30 @@ class InlineFunctions implements CompilerPass {
     }
 
     void maybeAddReference(
-        NodeTraversal t, FunctionState functionState, Node callNode, JSChunk module) {
+        NodeTraversal t, FunctionState functionState, Node callNode, JSChunk chunk) {
       if (!functionState.canInline()) {
         return;
       }
 
       InliningMode mode =
           functionState.canInlineDirectly() ? InliningMode.DIRECT : InliningMode.BLOCK;
-      boolean referenceAdded = maybeAddReferenceUsingMode(t, functionState, callNode, module, mode);
+      boolean referenceAdded = maybeAddReferenceUsingMode(t, functionState, callNode, chunk, mode);
       if (!referenceAdded && mode == InliningMode.DIRECT) {
         // This reference can not be directly inlined, see if
         // block replacement inlining is possible.
         mode = InliningMode.BLOCK;
-        referenceAdded = maybeAddReferenceUsingMode(t, functionState, callNode, module, mode);
+        referenceAdded = maybeAddReferenceUsingMode(t, functionState, callNode, chunk, mode);
       }
 
       if (!referenceAdded) {
         // Don't try to remove a function if we can't inline all
         // the references.
-        functionState.setRemove(false);
+        functionState.setRemove(
+            false,
+            compiler,
+            CannotRemoveReason.UNINLINABLE_REFERENCE,
+            ShouldWarnWhenRequireInliningCannotInline.NO,
+            /* contextNode= */ callNode);
       }
     }
 
@@ -532,7 +601,7 @@ class InlineFunctions implements CompilerPass {
         NodeTraversal t,
         FunctionState functionState,
         Node callNode,
-        JSChunk module,
+        JSChunk chunk,
         InliningMode mode) {
 
       // If many functions are inlined into the same function F in the same
@@ -545,14 +614,14 @@ class InlineFunctions implements CompilerPass {
         return false;
       }
 
-      Reference candidate = new Reference(callNode, t.getScope(), module, mode);
+      Reference candidate = new Reference(callNode, t.getScope(), chunk, mode);
       CanInlineResult result =
           injector.canInlineReferenceToFunction(
               candidate,
               functionState.getFn().getFunctionNode(),
               functionState.getNamesToAlias(),
               functionState.getReferencesThis(),
-              functionState.hasInnerFunctions());
+              functionState.hasInnerClosures());
       if (result != CanInlineResult.NO) {
         // Yeah!
         candidate.setRequiresDecomposition(result == CanInlineResult.AFTER_PREPARATION);
@@ -578,17 +647,37 @@ class InlineFunctions implements CompilerPass {
         return;
       }
 
-      // If the name is being assigned to it can not be inlined.
-      if (parent.isAssign() && parent.getFirstChild() == n) {
-        // e.g. bar = something; <== we can't inline "bar"
-        // so mark the function as uninlinable.
-        // TODO(johnlenz): Should we just remove it from fns here?
-        functionState.disallowInlining();
+      // If the name is being assigned to or modified as an L-value (e.g. `bar = something;`,
+      // destructuring `[bar] = ...`, or `for (bar of ...)`), it cannot be inlined.
+      if (NodeUtil.isLValue(n)) {
+        // Mark the function as uninlinable.
+        functionState.disallowInlining(compiler, DisallowInliningReason.REASSIGNED);
+      } else if ((parent.isAssign()
+              && parent.getJSDocInfo() != null
+              && parent.getJSDocInfo().isConstant()
+              && parent.getSecondChild() == n)
+          || (parent.getParent() != null
+              && parent.getParent().isConst()
+              && parent.getFirstChild() == n)) {
+        // e.g. const bar = foo; exports.bar = foo;
+        // We can't see through this reference right now, but we will be able
+        // to once `bar` is inlined; so we shouldn't remove `foo` right now but
+        // this is probably okay with @requireInlining.
+        functionState.setRemove(
+            false,
+            compiler,
+            CannotRemoveReason.UNREMOVABLE_REFERENCE,
+            ShouldWarnWhenRequireInliningCannotInline.NO);
       } else {
         // e.g. var fn = bar; <== we can't inline "bar"
         // As this reference can't be inlined mark the function as
         // unremovable.
-        functionState.setRemove(false);
+        functionState.setRemove(
+            false,
+            compiler,
+            CannotRemoveReason.UNREMOVABLE_REFERENCE,
+            ShouldWarnWhenRequireInliningCannotInline.YES,
+            /* contextNode= */ parent);
       }
     }
   }
@@ -650,6 +739,11 @@ class InlineFunctions implements CompilerPass {
     for (i = fns.entrySet().iterator(); i.hasNext(); ) {
       FunctionState functionState = i.next().getValue();
       if (functionState.hasReferences()) {
+        if (wouldDuplicateTaggedTemplateLit(functionState)) {
+          functionState.disallowInlining(compiler, DisallowInliningReason.TAGGED_TEMPLATE_LITERAL);
+          i.remove();
+          continue;
+        }
         // Only inline function if it decreases the code size.
         boolean lowersCost = minimizeCost(functionState);
         if (!lowersCost) {
@@ -665,6 +759,16 @@ class InlineFunctions implements CompilerPass {
   }
 
   /**
+   * Returns whether inlining {@code functionState} would leave more than one copy of a tagged
+   * template literal in the AST, breaking ECMA-262 {@code GetTemplateObject} call-site identity.
+   */
+  private static boolean wouldDuplicateTaggedTemplateLit(FunctionState functionState) {
+    int refCount = functionState.getReferences().size();
+    return (refCount > 1 || (refCount == 1 && !functionState.canRemove()))
+        && functionState.hasTaggedTemplateLit();
+  }
+
+  /**
    * Determines if the function is worth inlining and potentially trims references that increase the
    * cost.
    *
@@ -674,7 +778,11 @@ class InlineFunctions implements CompilerPass {
     if (!inliningLowersCost(functionState)) {
       // Try again without Block inlining references
       if (functionState.hasBlockInliningReferences()) {
-        functionState.setRemove(false);
+        functionState.setRemove(
+            false,
+            compiler,
+            CannotRemoveReason.BLOCK_INLINING_REFERENCE,
+            ShouldWarnWhenRequireInliningCannotInline.YES);
         functionState.removeBlockInliningReferences();
         if (!functionState.hasReferences() || !inliningLowersCost(functionState)) {
           return false;
@@ -686,15 +794,19 @@ class InlineFunctions implements CompilerPass {
     return true;
   }
 
-  /** @return Whether inlining the function reduces code size. */
+  /**
+   * @return Whether inlining the function reduces code size.
+   */
   private boolean inliningLowersCost(FunctionState functionState) {
-    return injector.inliningLowersCost(
-        functionState.getModule(),
-        functionState.getFn().getFunctionNode(),
-        functionState.getReferences(),
-        functionState.getNamesToAlias(),
-        functionState.canRemove(),
-        functionState.getReferencesThis());
+    return functionState.requireInlining()
+        || functionState.encourageInlining()
+        || injector.inliningLowersCost(
+            functionState.getChunk(),
+            functionState.getFn().getFunctionNode(),
+            functionState.getReferences(),
+            functionState.getNamesToAlias(),
+            functionState.canRemove(),
+            functionState.getReferencesThis());
   }
 
   /**
@@ -728,7 +840,9 @@ class InlineFunctions implements CompilerPass {
     return NodeUtil.has(node, pred, alwaysTrue());
   }
 
-  /** @see #resolveInlineConflicts */
+  /**
+   * @see #resolveInlineConflicts
+   */
   private void resolveInlineConflictsForFunction(FunctionState functionState) {
     // Functions that aren't referenced don't cause conflicts.
     if (!functionState.hasReferences() || !functionState.canInline()) {
@@ -738,16 +852,27 @@ class InlineFunctions implements CompilerPass {
     Node fnNode = functionState.getFn().getFunctionNode();
     Set<String> names = findCalledFunctions(fnNode);
     if (!names.isEmpty()) {
-      // Prevent the removal of the referenced functions.
+      // Prevent the removal of the referenced functions unless they will be immediately inlined.
       for (String name : names) {
         FunctionState fsCalled = fns.get(name);
         if (fsCalled != null && fsCalled.canRemove()) {
-          fsCalled.setRemove(false);
+          fsCalled.setRemove(
+              false,
+              compiler,
+              CannotRemoveReason.CALLED_BY_INLINED_FUNCTION,
+              ShouldWarnWhenRequireInliningCannotInline.NO);
           // For functions that can no longer be removed, check if they should
           // still be inlined.
-          if (!minimizeCost(fsCalled)) {
+          if (wouldDuplicateTaggedTemplateLit(fsCalled)) {
+            fsCalled.disallowInlining(
+                compiler,
+                DisallowInliningReason.TAGGED_TEMPLATE_LITERAL,
+                ShouldWarnWhenRequireInliningCannotInline.NO);
+          } else if (!minimizeCost(fsCalled)
+              && !fsCalled.requireInlining()
+              && !fsCalled.encourageInlining()) {
             // It can't be inlined remove it from the list.
-            fsCalled.disallowInlining();
+            fsCalled.disallowInlining(compiler, DisallowInliningReason.COST);
           }
         }
       }
@@ -759,12 +884,14 @@ class InlineFunctions implements CompilerPass {
 
   /** This functions that may be called directly. */
   private Set<String> findCalledFunctions(Node node) {
-    Set<String> changed = new HashSet<>();
+    Set<String> changed = new LinkedHashSet<>();
     findCalledFunctions(NodeUtil.getFunctionBody(node), changed);
     return changed;
   }
 
-  /** @see #findCalledFunctions(Node) */
+  /**
+   * @see #findCalledFunctions(Node)
+   */
   private static void findCalledFunctions(Node node, Set<String> changed) {
     checkArgument(changed != null);
     // For each referenced function, add a new reference
@@ -794,7 +921,7 @@ class InlineFunctions implements CompilerPass {
   }
 
   /** Removed inlined functions that no longer have any references. */
-  void removeInlinedFunctions() {
+  private void removeInlinedFunctions() {
     for (Map.Entry<String, FunctionState> entry : fns.entrySet()) {
       String name = entry.getKey();
       FunctionState functionState = entry.getValue();
@@ -810,7 +937,7 @@ class InlineFunctions implements CompilerPass {
   }
 
   /** Check to verify that expression rewriting didn't make a call inaccessible. */
-  void verifyAllReferencesInlined(String name, FunctionState functionState) {
+  private void verifyAllReferencesInlined(String name, FunctionState functionState) {
     for (Reference ref : functionState.getReferences()) {
       if (!ref.inlined) {
         Node parent = ref.callNode.getParent();
@@ -827,35 +954,51 @@ class InlineFunctions implements CompilerPass {
 
   /** Use to track the decisions that have been made about a function. */
   private static class FunctionState {
-    private Function fn = null;
-    private Node safeFnNode = null;
+    private @Nullable Function fn = null;
+    private @Nullable Node safeFnNode = null;
     private boolean inline = true;
     private boolean remove = true;
     private boolean inlineDirectly = false;
     private boolean referencesThis = false;
-    private boolean hasInnerFunctions = false;
-    private Map<Node, Reference> references = null;
-    private JSChunk module = null;
-    private Set<String> namesToAlias = null;
+    private boolean hasInnerClosures = false;
+    private boolean hasTaggedTemplateLit = false;
+    private @Nullable Map<Node, Reference> references = null;
+    private @Nullable JSChunk chunk = null;
+    private @Nullable Set<String> namesToAlias = null;
+
+    private boolean hasRequireInliningAnnotation = false;
+    private boolean hasRequireInliningAnnotationInitialized = false;
+
+    private boolean hasEncourageInliningAnnotation = false;
+    private boolean hasEncourageInliningAnnotationInitialized = false;
 
     boolean hasExistingFunctionDefinition() {
       return (fn != null);
     }
 
-    public void setReferencesThis(boolean referencesThis) {
+    void setReferencesThis(boolean referencesThis) {
       this.referencesThis = referencesThis;
     }
 
-    public boolean getReferencesThis() {
+    boolean getReferencesThis() {
       return this.referencesThis;
     }
 
-    public void setHasInnerFunctions(boolean hasInnerFunctions) {
-      this.hasInnerFunctions = hasInnerFunctions;
+    /** Whether the function contains inner functions or non-static class field initializers. */
+    void setHasInnerClosures(boolean hasInnerClosures) {
+      this.hasInnerClosures = hasInnerClosures;
     }
 
-    public boolean hasInnerFunctions() {
-      return hasInnerFunctions;
+    boolean hasInnerClosures() {
+      return hasInnerClosures;
+    }
+
+    void setHasTaggedTemplateLit(boolean hasTaggedTemplateLit) {
+      this.hasTaggedTemplateLit = hasTaggedTemplateLit;
+    }
+
+    boolean hasTaggedTemplateLit() {
+      return hasTaggedTemplateLit;
     }
 
     void removeBlockInliningReferences() {
@@ -868,7 +1011,7 @@ class InlineFunctions implements CompilerPass {
       }
     }
 
-    public boolean hasBlockInliningReferences() {
+    boolean hasBlockInliningReferences() {
       for (Reference r : getReferencesInternal().values()) {
         if (r.mode == InliningMode.BLOCK) {
           return true;
@@ -877,28 +1020,64 @@ class InlineFunctions implements CompilerPass {
       return false;
     }
 
-    public Function getFn() {
+    Function getFn() {
       return fn;
     }
 
-    public void setFn(Function fn) {
+    void setFn(Function fn) {
       checkState(this.fn == null);
       this.fn = fn;
     }
 
-    public Node getSafeFnNode() {
+    Node getSafeFnNode() {
       return (safeFnNode != null) ? safeFnNode : fn.getFunctionNode();
     }
 
-    public void setSafeFnNode(Node safeFnNode) {
+    void setSafeFnNode(Node safeFnNode) {
       this.safeFnNode = safeFnNode;
     }
 
-    public boolean canInline() {
+    boolean canInline() {
       return inline;
     }
 
-    public void disallowInlining() {
+    boolean encourageInlining() {
+      if (fn == null) {
+        return false;
+      }
+      if (!hasEncourageInliningAnnotationInitialized) {
+        hasEncourageInliningAnnotationInitialized = true;
+        hasEncourageInliningAnnotation = hasEncourageInliningAnnotation(fn.getFunctionNode());
+      }
+      return hasEncourageInliningAnnotation;
+    }
+
+    boolean requireInlining() {
+      if (fn == null) {
+        return false;
+      }
+      if (!hasRequireInliningAnnotationInitialized) {
+        hasRequireInliningAnnotationInitialized = true;
+        hasRequireInliningAnnotation = hasRequireInliningAnnotation(fn.getFunctionNode());
+      }
+      return hasRequireInliningAnnotation;
+    }
+
+    void disallowInlining(AbstractCompiler compiler, DisallowInliningReason reason) {
+      disallowInlining(compiler, reason, ShouldWarnWhenRequireInliningCannotInline.YES);
+    }
+
+    void disallowInlining(
+        AbstractCompiler compiler,
+        DisallowInliningReason reason,
+        ShouldWarnWhenRequireInliningCannotInline shouldWarnWhenRequireInliningCannotInline) {
+      if (requireInlining()
+          && compiler.isDebugLoggingEnabled()
+          && shouldWarnWhenRequireInliningCannotInline
+              == ShouldWarnWhenRequireInliningCannotInline.YES) {
+        compiler.report(
+            JSError.make(fn.getFunctionNode(), MISSED_REQUIRED_INLINING, reason.name()));
+      }
       this.inline = false;
 
       // No need to keep references to function that can't be inlined.
@@ -907,23 +1086,47 @@ class InlineFunctions implements CompilerPass {
       remove = false;
     }
 
-    public boolean canRemove() {
+    boolean canRemove() {
       return remove;
     }
 
-    public void setRemove(boolean remove) {
+    void setRemove(
+        boolean remove,
+        AbstractCompiler compiler,
+        CannotRemoveReason reason,
+        ShouldWarnWhenRequireInliningCannotInline shouldWarnIfRequireInlining) {
+      setRemove(remove, compiler, reason, shouldWarnIfRequireInlining, /* contextNode= */ null);
+    }
+
+    void setRemove(
+        boolean remove,
+        AbstractCompiler compiler,
+        CannotRemoveReason reason,
+        ShouldWarnWhenRequireInliningCannotInline shouldWarnIfRequireInlining,
+        @Nullable Node contextNode) {
+      if (!remove
+          && (shouldWarnIfRequireInlining != ShouldWarnWhenRequireInliningCannotInline.NO)
+          && requireInlining()
+          && compiler.isDebugLoggingEnabled()) {
+        compiler.report(
+            JSError.make(
+                fn.getFunctionNode(),
+                MISSED_REQUIRED_INLINING,
+                reason.name(),
+                contextNode == null ? "unknown" : contextNode.toString()));
+      }
       this.remove = remove;
     }
 
-    public boolean canInlineDirectly() {
+    boolean canInlineDirectly() {
       return inlineDirectly;
     }
 
-    public void inlineDirectly(boolean directReplacement) {
+    void inlineDirectly(boolean directReplacement) {
       this.inlineDirectly = directReplacement;
     }
 
-    public boolean hasReferences() {
+    boolean hasReferences() {
       return (references != null && !references.isEmpty());
     }
 
@@ -934,63 +1137,63 @@ class InlineFunctions implements CompilerPass {
       return references;
     }
 
-    public void addReference(Reference ref) {
+    void addReference(Reference ref) {
       if (references == null) {
         references = new LinkedHashMap<>();
       }
       references.put(ref.callNode, ref);
     }
 
-    public Collection<Reference> getReferences() {
+    Collection<Reference> getReferences() {
       return getReferencesInternal().values();
     }
 
-    public Reference getReference(Node n) {
+    Reference getReference(Node n) {
       return getReferencesInternal().get(n);
     }
 
-    public ImmutableSet<String> getNamesToAlias() {
+    ImmutableSet<String> getNamesToAlias() {
       if (namesToAlias == null) {
         return ImmutableSet.of();
       }
       return ImmutableSet.copyOf(namesToAlias);
     }
 
-    public void setNamesToAlias(Set<String> names) {
+    void setNamesToAlias(Set<String> names) {
       namesToAlias = names;
     }
 
-    public void setModule(JSChunk module) {
-      this.module = module;
+    void setChunk(JSChunk chunk) {
+      this.chunk = chunk;
     }
 
-    public JSChunk getModule() {
-      return module;
+    JSChunk getChunk() {
+      return chunk;
     }
   }
 
   /** Interface for dealing with function declarations and function expressions equally */
   private static interface Function {
     /** Gets the name of the function */
-    public String getName();
+    String getName();
 
     /** Gets the name node of the function */
-    public Node getNameNode();
+    Node getNameNode();
 
     /** Gets the function node */
-    public Node getFunctionNode();
+    Node getFunctionNode();
 
     /** Removes itself from the JavaScript */
-    public void remove();
+    void remove();
 
-    public Node getDeclaringBlock();
+    Node getDeclaringBlock();
   }
 
   /** NamedFunction implementation of the Function interface */
   private class NamedFunction implements Function {
     private final Node fn;
 
-    public NamedFunction(Node fn) {
+    NamedFunction(Node fn) {
       this.fn = fn;
     }
 
@@ -1026,7 +1229,7 @@ class InlineFunctions implements CompilerPass {
   private class FunctionVar implements Function {
     private final Node var;
 
-    public FunctionVar(Node var) {
+    FunctionVar(Node var) {
       this.var = var;
     }
 
@@ -1064,7 +1267,7 @@ class InlineFunctions implements CompilerPass {
     private final String fakeName;
     private final Node fakeNameNode;
 
-    public FunctionExpression(Node fn, int index) {
+    FunctionExpression(Node fn, int index) {
       this.fn = fn;
       // A number is not a valid function JavaScript identifier
       // so we don't need to worry about collisions.
@@ -1102,12 +1305,95 @@ class InlineFunctions implements CompilerPass {
     boolean requiresDecomposition = false;
     boolean inlined = false;
 
-    Reference(Node callNode, Scope scope, JSChunk module, InliningMode mode) {
-      super(callNode, scope, module, mode);
+    Reference(Node callNode, Scope scope, JSChunk chunk, InliningMode mode) {
+      super(callNode, scope, chunk, mode);
     }
 
     void setRequiresDecomposition(boolean newVal) {
       this.requiresDecomposition = newVal;
     }
+  }
+
+  static enum ShouldWarnWhenRequireInliningCannotInline {
+    YES,
+    NO;
+  }
+
+  static enum CannotRemoveReason {
+    BLOCK_INLINING_REFERENCE,
+    CALLED_BY_INLINED_FUNCTION,
+    UNINLINABLE_REFERENCE,
+    UNREMOVABLE_REFERENCE;
+  }
+
+  static enum DisallowInliningReason {
+    ASYNC_FUNCTION,
+    CAPTURED_VARIABLE_NOT_IN_SCOPE,
+    COST,
+    GENERATOR_FUNCTION,
+    HAS_LOCAL_NAMES,
+    MULTIPLE_FUNCTION_DEFINITIONS,
+    NON_INLINABLE_PARAM,
+    NOT_CANDIDATE_FUNCTION,
+    NO_INLINE_ANNOTATION,
+    REASSIGNED,
+    TAGGED_TEMPLATE_LITERAL,
+    TARGET_SIZE_EXCEEDS_LIMIT;
+  }
+
+  record ShouldRequireInlining(boolean shouldValidate, String optMessage) {}
+
+  static ShouldRequireInlining checkOptimizationLevelSupportsRequireInlining(
+      CompilerOptions options) {
+    // Non-optimized code might not perform all required inlinings.
+    List<String> problems = new ArrayList<>();
+    if (!options.shouldOptimize()) {
+      problems.add("non-optimized code");
+    }
+    // Required inlinings don't make sense without inlining. If we don't inline
+    // properties we might not be able to inline functions defined on namespaces.
+    if (!options.shouldInlineProperties()) {
+      problems.add("missing shouldInlineProperties");
+    }
+    if (!options.shouldInlineConstantVars()) {
+      problems.add("missing inlineConstantVars");
+    }
+    if (!options.getSmartNameRemoval()) {
+      problems.add("missing smartNameRemoval");
+    }
+    if (!options.getInlineFunctionsLevel().isOn()) {
+      problems.add("missing inlineFunctions");
+    }
+    if (!options.getInlineFunctionsLevel().includesGlobals()) {
+      problems.add("inlineFunctions does not include globals");
+    }
+    // Coverage runs may break some inlining.
+    if (options.getInstrumentForCoverageOption() != CompilerOptions.InstrumentOption.NONE) {
+      problems.add("instrumentForCoverageOption enabled");
+    }
+    // We need to collapse properties or functions might be retained due to
+    // being written on an exported namespace.
+    if (!options.getPropertyCollapseLevel().equals(CompilerOptions.PropertyCollapseLevel.ALL)) {
+      problems.add("missing property collapsing");
+    }
+    // Avoid inlining failures due to asserts.
+    if (!options.shouldRemoveClosureAsserts()) {
+      problems.add("missing removeClosureAsserts");
+    }
+    // Avoid inlining failures due to being unable to devirtualize a method.
+    if (!options.shouldDevirtualizeMethods()) {
+      problems.add("missing devirtualizeMethods");
+    }
+    // We need more than one inlining pass for most required inlinings to work. This
+    // eliminates 'fast' mode.
+    if (options.getMaxOptimizationLoopIterations() == 1) {
+      problems.add(
+          "optimizationLoopMaxIterations should be >= 2, but is: "
+              + options.getMaxOptimizationLoopIterations());
+    }
+    if (problems.isEmpty()) {
+      return new ShouldRequireInlining(true, "");
+    }
+    return new ShouldRequireInlining(false, String.format("[%s]", String.join(", ", problems)));
   }
 }

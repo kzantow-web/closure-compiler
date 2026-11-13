@@ -53,6 +53,21 @@ public class CheckVarTest extends CompilerTestCase {
   }
 
   @Test
+  public void testSuppressWarning() {
+    testSame(
+        """
+        /**
+         * @fileoverview
+         * @suppress {lintVarDeclarations}
+         */
+        var x;
+        var x12 = 12;
+        export var x;
+        function f() { var x = 12; return x; }
+        """);
+  }
+
+  @Test
   public void testNoWarning() {
     testSame("function f() { return 'var'; }");
     testSame("let x;");

@@ -22,7 +22,6 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Streams.stream;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
-import static com.google.javascript.jscomp.CompilerTypeTestCase.lines;
 import static com.google.javascript.jscomp.testing.ScopeSubject.assertScope;
 import static com.google.javascript.rhino.jstype.JSTypeNative.ALL_TYPE;
 import static com.google.javascript.rhino.jstype.JSTypeNative.ARRAY_TYPE;
@@ -70,7 +69,9 @@ import com.google.javascript.rhino.jstype.JSType;
 import com.google.javascript.rhino.jstype.JSTypeNative;
 import com.google.javascript.rhino.jstype.JSTypeRegistry;
 import com.google.javascript.rhino.jstype.JSTypeResolver;
+import com.google.javascript.rhino.jstype.KnownSymbolType;
 import com.google.javascript.rhino.jstype.ObjectType;
+import com.google.javascript.rhino.jstype.Property;
 import com.google.javascript.rhino.jstype.StaticTypedRef;
 import com.google.javascript.rhino.jstype.StaticTypedScope;
 import com.google.javascript.rhino.jstype.StaticTypedSlot;
@@ -79,12 +80,26 @@ import com.google.javascript.rhino.testing.TypeSubject;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
+import org.jspecify.annotations.Nullable;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
-/** Tests {@link TypeInference}. */
+/**
+ * Tests {@link TypeInference}.
+ *
+ * <p>These unit tests don't test the full type inference that happens in a normal compilation. This
+ * is because a normal compilation creates many instances of the {@link TypeInference} class. More
+ * precisely, one instance is created for every scope that is a valid root of a control-flow graph
+ * (as defined by {@link NodeUtil#isValidCfgRoot(Node)} such as, for example, functions.
+ *
+ * <p>These unit tests only ever create a single {@link TypeInference} instance. That means: these
+ * unit tests ignore any code nested within a function.
+ *
+ * <p>To write tests that more fully model the typechecking in a full compilation, which visits
+ * every function body, use {@link TypedScopeCreatorTest} or {@link TypeCheckTest}.
+ */
 @RunWith(JUnit4.class)
 public final class TypeInferenceTest {
 
@@ -93,7 +108,7 @@ public final class TypeInferenceTest {
   private JSTypeResolver.Closer closer;
   private Map<String, JSType> assumptions;
   private JSType assumedThisType;
-  private FlowScope returnScope;
+  private @Nullable FlowScope returnScope;
   private static final AssertionFunctionLookup ASSERTION_FUNCTION_MAP =
       AssertionFunctionLookup.of(new ClosureCodingConvention().getAssertionFunctions());
 
@@ -142,12 +157,22 @@ public final class TypeInferenceTest {
     assuming(name, registry.getNativeType(type));
   }
 
+  /**
+   * Runs an instance of TypeInference over the given code after wrapping it in a function.
+   *
+   * <p>Does not visit any nested functions.
+   */
   private void inFunction(String js) {
     // Parse the body of the function.
     String thisBlock = assumedThisType == null ? "" : "/** @this {" + assumedThisType + "} */";
     parseAndRunTypeInference("(" + thisBlock + " function() {" + js + "});");
   }
 
+  /**
+   * Runs an instance of TypeInference over the given code.
+   *
+   * <p>Does not visit any nested functions.
+   */
   private void inScript(String js) {
     Node script = compiler.parseTestCode(js);
     assertWithMessage("parsing error: " + Joiner.on(", ").join(compiler.getErrors()))
@@ -162,6 +187,11 @@ public final class TypeInferenceTest {
     parseAndRunTypeInference(root, root);
   }
 
+  /**
+   * Runs an instance of TypeInference over the given code after wrapping it in a generator.
+   *
+   * <p>Does not visit any nested functions.
+   */
   private void inGenerator(String js) {
     checkState(assumedThisType == null);
     parseAndRunTypeInference("(function *() {" + js + "});");
@@ -169,12 +199,12 @@ public final class TypeInferenceTest {
 
   private void withModules(ImmutableList<String> js) {
     Node script = compiler.parseTestCode(js);
-    JSChunk module = new JSChunk("entry");
+    JSChunk chunk = new JSChunk("entry");
     Collection<CompilerInput> inputs = compiler.getInputsById().values();
     for (CompilerInput input : inputs) {
-      module.add(input.getSourceFile());
+      chunk.add(input.getSourceFile());
     }
-    compiler.initModules(ImmutableList.of(), ImmutableList.of(module), compiler.getOptions());
+    compiler.initChunks(ImmutableList.of(), ImmutableList.of(chunk), compiler.getOptions());
     compiler.initializeModuleLoader();
     assertWithMessage("parsing error: " + Joiner.on(", ").join(compiler.getErrors()))
         .that(compiler.getErrorCount())
@@ -245,9 +275,13 @@ public final class TypeInferenceTest {
     }
     scopeCreator.finishAndFreeze();
     // Create the control graph.
-    ControlFlowAnalysis cfa = new ControlFlowAnalysis(compiler, false, true);
-    cfa.process(null, cfgRoot);
-    ControlFlowGraph<Node> cfg = cfa.getCfg();
+    ControlFlowGraph<Node> cfg =
+        ControlFlowAnalysis.builder()
+            .setCompiler(compiler)
+            .setCfgRoot(cfgRoot)
+            .setTraverseFunctions(true)
+            .setIncludeEdgeAnnotations(true)
+            .computeCfg();
     // Create a simple reverse abstract interpreter.
     ReverseAbstractInterpreter rai = compiler.getReverseAbstractInterpreter();
     // Do the type inference by data-flow analysis.
@@ -305,7 +339,7 @@ public final class TypeInferenceTest {
   private JSType getType(String name) {
     assertWithMessage("The return scope should not be null.").that(returnScope).isNotNull();
     StaticTypedSlot var = returnScope.getSlot(name);
-    assertWithMessage("The variable " + name + " is missing from the scope.").that(var).isNotNull();
+    assertWithMessage("The variable %s is missing from the scope.", name).that(var).isNotNull();
     return var.getType();
   }
 
@@ -324,7 +358,7 @@ public final class TypeInferenceTest {
   }
 
   private void verify(String name, JSType type) {
-    assertWithMessage("Mismatch for " + name).about(types()).that(getType(name)).isEqualTo(type);
+    assertWithMessage("Mismatch for %s", name).about(types()).that(getType(name)).isEqualTo(type);
   }
 
   private void verify(String name, JSTypeNative type) {
@@ -332,7 +366,10 @@ public final class TypeInferenceTest {
   }
 
   private void verifyUnequal(String name, JSType type) {
-    assertWithMessage("Mismatch for " + name).about(types()).that(getType(name)).isNotEqualTo(type);
+    assertWithMessage("Mismatch for %s", name)
+        .about(types())
+        .that(getType(name))
+        .isNotEqualTo(type);
   }
 
   private void verifyUnequal(String name, JSTypeNative type) {
@@ -341,9 +378,8 @@ public final class TypeInferenceTest {
 
   private void verifySubtypeOf(String name, JSType type) {
     JSType varType = getType(name);
-    assertWithMessage("The variable " + name + " is missing a type.").that(varType).isNotNull();
-    assertWithMessage(
-            "The type " + varType + " of variable " + name + " is not a subtype of " + type + ".")
+    assertWithMessage("The variable %s is missing a type.", name).that(varType).isNotNull();
+    assertWithMessage("The type %s of variable %s is not a subtype of %s.", varType, name, type)
         .that(varType.isSubtypeOf(type))
         .isTrue();
   }
@@ -379,7 +415,7 @@ public final class TypeInferenceTest {
 
   /** Returns a record type with a field `fieldName` and JSType specified by `fieldType`. */
   private JSType createRecordType(String fieldName, JSType fieldType) {
-    Map<String, JSType> property = ImmutableMap.of(fieldName, fieldType);
+    ImmutableMap<String, JSType> property = ImmutableMap.of(fieldName, fieldType);
     return registry.createRecordType(property);
   }
 
@@ -665,7 +701,13 @@ public final class TypeInferenceTest {
             createRecordType(
                 "b", registry.createFunctionType(registry.getNativeType(NUMBER_TYPE))));
     assuming("a", lhsNullableRecordType);
-    inFunction(lines("let x = 'x';", "a?.b(x=5);", "a; ", "x; "));
+    inFunction(
+        """
+        let x = 'x';
+        a?.b(x=5);
+        a;
+        x;
+        """);
     verify("a", lhsNullableRecordType);
     verify("x", createUnionType(NUMBER_TYPE, STRING_TYPE));
   }
@@ -678,7 +720,13 @@ public final class TypeInferenceTest {
     JSType lhsType = registry.createFunctionType(nullableRecordType);
 
     assuming("a", lhsType);
-    inFunction(lines("let x = 'x';", "let res = a(x = 'some')?.b", "a; ", "x; "));
+    inFunction(
+        """
+        let x = 'x';
+        let res = a(x = 'some')?.b
+        a;
+        x;
+        """);
     verify("a", lhsType);
     verify("x", STRING_TYPE);
     verify("res", createUnionType(VOID_TYPE, NUMBER_TYPE));
@@ -693,7 +741,13 @@ public final class TypeInferenceTest {
     JSType lhsType = registry.createFunctionType(nullableRecordType);
 
     assuming("a", lhsType);
-    inFunction(lines("let x = 'x';", "let res = a(x = 1).b", "a; ", "x; "));
+    inFunction(
+        """
+        let x = 'x';
+        let res = a(x = 1).b
+        a;
+        x;
+        """);
     verify("a", lhsType);
     verify("x", NUMBER_TYPE);
     verify("res", funcType);
@@ -706,7 +760,13 @@ public final class TypeInferenceTest {
     JSType lhsType = registry.createFunctionType(recordType);
 
     assuming("a", lhsType);
-    inFunction(lines("let x = 'x';", "let res = a(x = 'some')?.b", "a; ", "x; "));
+    inFunction(
+        """
+        let x = 'x';
+        let res = a(x = 'some')?.b
+        a;
+        x;
+        """);
     verify("a", lhsType);
     verify("x", STRING_TYPE);
     verify("res", NUMBER_TYPE);
@@ -718,7 +778,13 @@ public final class TypeInferenceTest {
     JSType recordType = createRecordType("b", funcType);
     JSType lhsType = registry.createFunctionType(recordType);
     assuming("a", lhsType);
-    inFunction(lines("let x = 'x';", "let res = a(x = 1).b(x = 'x')", "a; ", "x; "));
+    inFunction(
+        """
+        let x = 'x';
+        let res = a(x = 1).b(x = 'x')
+        a;
+        x;
+        """);
     verify("a", lhsType);
     verify("x", STRING_TYPE);
     verify("res", NUMBER_TYPE);
@@ -730,7 +796,13 @@ public final class TypeInferenceTest {
     JSType recordType = createRecordType("b", funcType);
     JSType lhsType = registry.createFunctionType(recordType);
     assuming("a", lhsType);
-    inFunction(lines("let x = 'x';", "let res = a(x = 1)?.b(x = 'x')", "a; ", "x; res; "));
+    inFunction(
+        """
+        let x = 'x';
+        let res = a(x = 1)?.b(x = 'x')
+        a;
+        x; res;
+        """);
     verify("a", lhsType);
     verify("x", STRING_TYPE);
     verify("res", NUMBER_TYPE);
@@ -743,7 +815,13 @@ public final class TypeInferenceTest {
     JSType nullableRecordType = createNullableType(recordType);
     JSType lhsType = registry.createFunctionType(nullableRecordType);
     assuming("a", lhsType);
-    inFunction(lines("let x = 'x';", "let res = a(x = 1).b(x = 'x')", "a; ", "x; "));
+    inFunction(
+        """
+        let x = 'x';
+        let res = a(x = 1).b(x = 'x')
+        a;
+        x;
+        """);
     verify("a", lhsType);
     verify("x", registry.createUnionType(STRING_TYPE));
     verify("res", NUMBER_TYPE);
@@ -756,7 +834,13 @@ public final class TypeInferenceTest {
     JSType nullableRecordType = createNullableType(recordType);
     JSType lhsType = registry.createFunctionType(nullableRecordType);
     assuming("a", lhsType);
-    inFunction(lines("let x = 'x';", "let res = a(x = 1)?.b(x = 'x')", "a; ", "x; "));
+    inFunction(
+        """
+        let x = 'x';
+        let res = a(x = 1)?.b(x = 'x')
+        a;
+        x;
+        """);
     verify("a", lhsType);
     verify("x", registry.createUnionType(NUMBER_TYPE, STRING_TYPE));
     verify("res", createUnionType(VOID_TYPE, NUMBER_TYPE));
@@ -769,7 +853,13 @@ public final class TypeInferenceTest {
     JSType lhsType =
         createRecordType("b", registry.createFunctionType(registry.getNativeType(NUMBER_TYPE)));
     assuming("a", lhsType);
-    inFunction(lines("let x = 'x';", "a?.b(x=5);", "a; ", "x; "));
+    inFunction(
+        """
+        let x = 'x';
+        a?.b(x=5);
+        a;
+        x;
+        """);
     verify("a", lhsType);
     verify("x", NUMBER_TYPE);
   }
@@ -779,7 +869,13 @@ public final class TypeInferenceTest {
     JSType lhsType =
         createRecordType("b", registry.createFunctionType(registry.getNativeType(NUMBER_TYPE)));
     assuming("a", lhsType);
-    inFunction(lines("let x = 'x';", "a.b(x=5);", "a; ", "x; "));
+    inFunction(
+        """
+        let x = 'x';
+        a.b(x=5);
+        a;
+        x;
+        """);
     verify("a", lhsType);
     verify("x", NUMBER_TYPE);
   }
@@ -792,12 +888,13 @@ public final class TypeInferenceTest {
         createRecordType("b", registry.createFunctionType(registry.getNativeType(NUMBER_TYPE)));
     assuming("a", lhsType);
     inFunction(
-        lines(
-            "let x = 'x';",
-            "a?.c(x=5);", // even though prop `c` is inexistent, x=5 will run, and typeOf(x) will
-            // change.
-            "a; ",
-            "x; "));
+        """
+        let x = 'x';
+        a?.c(x=5); // even though prop `c` is inexistent, x=5 will run, and typeOf(x) will
+        // change.
+        a;
+        x;
+        """);
     verify("a", lhsType);
     verify("x", NUMBER_TYPE);
   }
@@ -829,6 +926,78 @@ public final class TypeInferenceTest {
     assuming("x", createUndefinableType(OBJECT_TYPE));
     inFunction("x['z'] = 3;");
     verify("x", OBJECT_TYPE);
+  }
+
+  @Test
+  public void testGetElemDereference_knownSymbol() {
+    ObjectType array = getNativeObjectType(ARRAY_TYPE);
+    KnownSymbolType sym = new KnownSymbolType(registry, "sym");
+    array.defineDeclaredProperty(new Property.SymbolKey(sym), getNativeType(STRING_TYPE), null);
+    assuming("o", array);
+    assuming("sym", sym);
+
+    inFunction("const x = o[sym];");
+    verify("x", STRING_TYPE);
+  }
+
+  @Test
+  public void testGetElemDereference_knownSymbol_nullable() {
+    ObjectType array = getNativeObjectType(ARRAY_TYPE);
+    KnownSymbolType sym = new KnownSymbolType(registry, "sym");
+    array.defineDeclaredProperty(new Property.SymbolKey(sym), getNativeType(STRING_TYPE), null);
+    assuming("o", createNullableType(array));
+    assuming("sym", sym);
+
+    inFunction("const x = o[sym];");
+    verify("x", STRING_TYPE);
+  }
+
+  @Test
+  public void testGetElemDereference_knownSymbol_union() {
+    ObjectType array = getNativeObjectType(ARRAY_TYPE);
+    ObjectType promise = getNativeObjectType(JSTypeNative.PROMISE_TYPE);
+    KnownSymbolType sym = new KnownSymbolType(registry, "sym");
+    array.defineDeclaredProperty(new Property.SymbolKey(sym), getNativeType(STRING_TYPE), null);
+    promise.defineDeclaredProperty(new Property.SymbolKey(sym), getNativeType(NUMBER_TYPE), null);
+    assuming("o", registry.createUnionType(array, promise));
+    assuming("sym", sym);
+
+    inFunction("const x = o[sym];");
+    verify("x", registry.createUnionType(getNativeType(STRING_TYPE), getNativeType(NUMBER_TYPE)));
+  }
+
+  @Test
+  public void testGetElemDereference_knownSymbol_union_notOnAllAlternates() {
+    ObjectType array = getNativeObjectType(ARRAY_TYPE);
+    ObjectType promise = getNativeObjectType(JSTypeNative.PROMISE_TYPE);
+    KnownSymbolType sym = new KnownSymbolType(registry, "sym");
+    array.defineDeclaredProperty(new Property.SymbolKey(sym), getNativeType(STRING_TYPE), null);
+    // don't define sym on promise
+    assuming("o", registry.createUnionType(array, promise));
+    assuming("sym", sym);
+
+    inFunction("const x = o[sym];");
+    verify("x", UNKNOWN_TYPE);
+  }
+
+  @Test
+  public void testGetElemDereference_knownSymbol_onAllType() {
+    KnownSymbolType sym = new KnownSymbolType(registry, "sym");
+    assuming("o", ALL_TYPE);
+    assuming("sym", sym);
+
+    inFunction("const x = o[sym];");
+    verify("x", UNKNOWN_TYPE);
+  }
+
+  @Test
+  public void testGetElemDereference_knownSymbol_onUnknownType() {
+    KnownSymbolType sym = new KnownSymbolType(registry, "sym");
+    assuming("o", UNKNOWN_TYPE);
+    assuming("sym", sym);
+
+    inFunction("const x = o[sym];");
+    verify("x", UNKNOWN_TYPE);
   }
 
   @Test
@@ -1305,8 +1474,10 @@ public final class TypeInferenceTest {
     assuming("z2", createUnionType(BIGINT_TYPE, STRING_TYPE));
 
     inFunction(
-        "valueType = -x; objectType = -y; unknownType = -u; allType = -a; bigintNum = -z1;"
-            + " bigintOther = -z2;");
+        """
+        valueType = -x; objectType = -y; unknownType = -u; allType = -a; bigintNum = -z1;
+         bigintOther = -z2;
+        """);
 
     verify("valueType", BIGINT_TYPE);
     verify("objectType", BIGINT_TYPE);
@@ -1327,8 +1498,10 @@ public final class TypeInferenceTest {
     assuming("z2", createUnionType(BIGINT_TYPE, STRING_TYPE));
 
     inFunction(
-        "valueType = ~x; objectType = ~y; unknownType = ~u; allType = ~a; bigintOrNumber = ~z1;"
-            + " bigintOrOther = ~z2;");
+        """
+        valueType = ~x; objectType = ~y; unknownType = ~u; allType = ~a; bigintOrNumber = ~z1;
+         bigintOrOther = ~z2;
+        """);
 
     verify("valueType", BIGINT_TYPE);
     verify("objectType", BIGINT_TYPE);
@@ -1380,18 +1553,19 @@ public final class TypeInferenceTest {
     assuming("ns", NUMBER_STRING);
 
     inFunction(
-        lines(
-            "valueTypePlusSelf = b + b;",
-            "objectTypePlusSelf = B + B;",
-            "valuePlusObject = b + B;",
-            "bigintPlusNumber = b + n;",
-            "bigintNumberPlusSelf = bn + bn;",
-            "bigintStringConcat = b + s;",
-            "bigintNumberStringConcat = bn + s",
-            "bigintOtherStringConcat = bs + s",
-            "bigintStringConcatWithSelf = bs + bs",
-            "bigintPlusUnknown = b + u;",
-            "bigintPlusNumberString = b + ns;"));
+        """
+        valueTypePlusSelf = b + b;
+        objectTypePlusSelf = B + B;
+        valuePlusObject = b + B;
+        bigintPlusNumber = b + n;
+        bigintNumberPlusSelf = bn + bn;
+        bigintStringConcat = b + s;
+        bigintNumberStringConcat = bn + s
+        bigintOtherStringConcat = bs + s
+        bigintStringConcatWithSelf = bs + bs
+        bigintPlusUnknown = b + u;
+        bigintPlusNumberString = b + ns;
+        """);
 
     verify("valueTypePlusSelf", BIGINT_TYPE);
     verify("objectTypePlusSelf", BIGINT_TYPE);
@@ -1420,15 +1594,16 @@ public final class TypeInferenceTest {
     assuming("ns", NUMBER_STRING);
 
     inFunction(
-        lines(
-            "valueTypeWithSelf = b * b;",
-            "objectTypeWithSelf = B * B;",
-            "valueWithObject = b * B;",
-            "bigintWithNumber = b * n;",
-            "bigintNumberWithSelf = bn * bn;",
-            "bigintWithOther = b * s;",
-            "bigintWithUnknown = b * u;",
-            "bigintWithNumberString = b * ns;"));
+        """
+        valueTypeWithSelf = b * b;
+        objectTypeWithSelf = B * B;
+        valueWithObject = b * B;
+        bigintWithNumber = b * n;
+        bigintNumberWithSelf = bn * bn;
+        bigintWithOther = b * s;
+        bigintWithUnknown = b * u;
+        bigintWithNumberString = b * ns;
+        """);
 
     verify("valueTypeWithSelf", BIGINT_TYPE);
     verify("objectTypeWithSelf", BIGINT_TYPE);
@@ -1458,16 +1633,17 @@ public final class TypeInferenceTest {
     assuming("bigintNumberWithNumber", BIGINT_NUMBER);
 
     inFunction(
-        lines(
-            "bigintWithSelf *= b;",
-            "bigintWithNumber *= n;",
-            "bigintWithOther *= s;",
-            "bigintConcatString += s",
-            "stringConcatBigInt += b",
-            "bigintWithUnknown *= u;",
-            "bigintNumberWithSelf *= bn;",
-            "bigintNumberWithBigInt *= b",
-            "bigintNumberWithNumber *= n"));
+        """
+        bigintWithSelf *= b;
+        bigintWithNumber *= n;
+        bigintWithOther *= s;
+        bigintConcatString += s
+        stringConcatBigInt += b
+        bigintWithUnknown *= u;
+        bigintNumberWithSelf *= bn;
+        bigintNumberWithBigInt *= b
+        bigintNumberWithNumber *= n
+        """);
 
     verify("bigintWithSelf", BIGINT_TYPE);
     verify("bigintWithNumber", NO_TYPE);
@@ -1489,13 +1665,14 @@ public final class TypeInferenceTest {
     assuming("assignBigIntOnBothSides", BIGINT_TYPE);
 
     inFunction(
-        lines(
-            "bigintOnLeft = b >>> n;",
-            "bigintOnRight = n >>> b;",
-            "bigintOnBothSides = b >>> b;",
-            "assignBigIntOnLeft >>>= n",
-            "assignBigIntOnRight >>>= b",
-            "assignBigIntOnBothSides >>>= b"));
+        """
+        bigintOnLeft = b >>> n;
+        bigintOnRight = n >>> b;
+        bigintOnBothSides = b >>> b;
+        assignBigIntOnLeft >>>= n
+        assignBigIntOnRight >>>= b
+        assignBigIntOnBothSides >>>= b
+        """);
 
     verify("bigintOnLeft", NO_TYPE);
     verify("bigintOnRight", NO_TYPE);
@@ -1527,15 +1704,16 @@ public final class TypeInferenceTest {
     assuming("ns", NUMBER_STRING);
 
     inFunction(
-        lines(
-            "valueTypeWithSelf = b && b;",
-            "objectTypeWithSelf = B && B;",
-            "valueWithObject = b && B;",
-            "bigintWithNumber = b && n;",
-            "bigintNumberWithSelf = bn && bn;",
-            "bigintWithOther = b && s;",
-            "bigintWithUnknown = b && u;",
-            "bigintWithNumberString = b && ns;"));
+        """
+        valueTypeWithSelf = b && b;
+        objectTypeWithSelf = B && B;
+        valueWithObject = b && B;
+        bigintWithNumber = b && n;
+        bigintNumberWithSelf = bn && bn;
+        bigintWithOther = b && s;
+        bigintWithUnknown = b && u;
+        bigintWithNumberString = b && ns;
+        """);
 
     verify("valueTypeWithSelf", BIGINT_TYPE);
     verify("objectTypeWithSelf", BIGINT_OBJECT_TYPE);
@@ -1559,15 +1737,16 @@ public final class TypeInferenceTest {
     assuming("ns", NUMBER_STRING);
 
     inFunction(
-        lines(
-            "valueTypeWithSelf = v ? b : b;",
-            "objectTypeWithSelf = v ? B : B;",
-            "valueWithObject = v ? b : B;",
-            "bigintWithNumber = v ? b : n;",
-            "bigintNumberWithSelf = v ? bn : bn;",
-            "bigintWithOther = v ? b : s;",
-            "bigintWithUnknown = v ? b : u;",
-            "bigintWithNumberString = v ? b : ns;"));
+        """
+        valueTypeWithSelf = v ? b : b;
+        objectTypeWithSelf = v ? B : B;
+        valueWithObject = v ? b : B;
+        bigintWithNumber = v ? b : n;
+        bigintNumberWithSelf = v ? bn : bn;
+        bigintWithOther = v ? b : s;
+        bigintWithUnknown = v ? b : u;
+        bigintWithNumberString = v ? b : ns;
+        """);
 
     verify("valueTypeWithSelf", BIGINT_TYPE);
     verify("objectTypeWithSelf", BIGINT_OBJECT_TYPE);
@@ -1672,7 +1851,11 @@ public final class TypeInferenceTest {
     includeGoogAssertionFn("assertObject", getNativeType(OBJECT_TYPE));
     assuming("x", startType);
 
-    inFunction("out1 = x;" + "out2 = /** @type {!Array} */ (goog.asserts.assertObject(x));");
+    inFunction(
+        """
+        out1 = x;
+        out2 = /** @type {!Array} */ (goog.asserts.assertObject(x));
+        """);
 
     verify("out1", startType);
     verify("out2", ARRAY_TYPE);
@@ -1790,14 +1973,15 @@ public final class TypeInferenceTest {
   @Test
   public void testTypeInferenceOccursInConstObjectProperties() {
     inFunction(
-        lines(
-            "/** @return {string} */",
-            "function foo() { return ''; }",
-            "",
-            "const obj = {",
-            "   prop: foo(),",
-            "}",
-            "LABEL: obj.prop;"));
+        """
+        /** @return {string} */
+        function foo() { return ''; }
+
+        const obj = {
+           prop: foo(),
+        }
+        LABEL: obj.prop;
+        """);
 
     assertTypeOfExpression("LABEL").toStringIsEqualTo("string");
     assertTypeOfExpression("LABEL").isNotEqualTo(UNKNOWN_TYPE);
@@ -1850,17 +2034,18 @@ public final class TypeInferenceTest {
   public void testForInWithExistingVar() {
     assuming("y", OBJECT_TYPE);
     inFunction(
-        lines(
-            "var x = null;",
-            "var i = null;",
-            "for (i in y) {",
-            "  I_INSIDE_LOOP: i;",
-            "  X_AT_LOOP_START: x;",
-            "  x = 1;",
-            "  X_AT_LOOP_END: x;",
-            "}",
-            "X_AFTER_LOOP: x;",
-            "I_AFTER_LOOP: i;"));
+        """
+        var x = null;
+        var i = null;
+        for (i in y) {
+          I_INSIDE_LOOP: i;
+          X_AT_LOOP_START: x;
+          x = 1;
+          X_AT_LOOP_END: x;
+        }
+        X_AFTER_LOOP: x;
+        I_AFTER_LOOP: i;
+        """);
     assertScopeEnclosing("I_INSIDE_LOOP").declares("i").onClosestHoistScope();
     assertScopeEnclosing("I_INSIDE_LOOP").declares("x").onClosestHoistScope();
 
@@ -1876,12 +2061,13 @@ public final class TypeInferenceTest {
   public void testForInWithRedeclaredVar() {
     assuming("y", OBJECT_TYPE);
     inFunction(
-        lines(
-            "var i = null;",
-            "for (var i in y) {", // i redeclared here, but really the same variable
-            "  I_INSIDE_LOOP: i;",
-            "}",
-            "I_AFTER_LOOP: i;"));
+        """
+        var i = null;
+        for (var i in y) { // i redeclared here, but really the same variable
+          I_INSIDE_LOOP: i;
+        }
+        I_AFTER_LOOP: i;
+        """);
     assertScopeEnclosing("I_INSIDE_LOOP").declares("i").onClosestHoistScope();
     assertTypeOfExpression("I_INSIDE_LOOP").toStringIsEqualTo("string");
 
@@ -1893,12 +2079,12 @@ public final class TypeInferenceTest {
   public void testForInWithLet() {
     assuming("y", OBJECT_TYPE);
     inFunction(
-        lines(
-            "FOR_IN_LOOP: for (let i in y) {", // preserve newlines
-            "  I_INSIDE_LOOP: i;",
-            "}",
-            "AFTER_LOOP: 1;",
-            ""));
+        """
+        FOR_IN_LOOP: for (let i in y) { // preserve newlines
+          I_INSIDE_LOOP: i;
+        }
+        AFTER_LOOP: 1;
+        """);
     assertScopeEnclosing("I_INSIDE_LOOP").declares("i").onScopeLabeled("FOR_IN_LOOP");
     assertTypeOfExpression("I_INSIDE_LOOP").toStringIsEqualTo("string");
 
@@ -1909,12 +2095,12 @@ public final class TypeInferenceTest {
   public void testForInWithConst() {
     assuming("y", OBJECT_TYPE);
     inFunction(
-        lines(
-            "FOR_IN_LOOP: for (const i in y) {", // preserve newlines
-            "  I_INSIDE_LOOP: i;",
-            "}",
-            "AFTER_LOOP: 1;",
-            ""));
+        """
+        FOR_IN_LOOP: for (const i in y) { // preserve newlines
+          I_INSIDE_LOOP: i;
+        }
+        AFTER_LOOP: 1;
+        """);
     assertScopeEnclosing("I_INSIDE_LOOP").declares("i").onScopeLabeled("FOR_IN_LOOP");
     assertTypeOfExpression("I_INSIDE_LOOP").toStringIsEqualTo("string");
 
@@ -1924,7 +2110,11 @@ public final class TypeInferenceTest {
   @Test
   public void testFor4() {
     assuming("x", createNullableType(OBJECT_TYPE));
-    inFunction("var y = {};\n" + "if (x) { for (var i = 0; i < 10; i++) { break; } y = x; }");
+    inFunction(
+        """
+        var y = {};
+        if (x) { for (var i = 0; i < 10; i++) { break; } y = x; }
+        """);
     verifySubtypeOf("y", OBJECT_TYPE);
   }
 
@@ -1942,10 +2132,12 @@ public final class TypeInferenceTest {
   public void testFor6() {
     assuming("y", getNativeObjectType(ARRAY_TYPE));
     inFunction(
-        "var x = null;"
-            + "for (var i = 0; i < y.length; i++) { "
-            + " if (y[i] == 'z') { x = y[i]; } "
-            + "}");
+        """
+        var x = null;
+        for (var i = 0; i < y.length; i++) {
+         if (y[i] == 'z') { x = y[i]; }
+        }
+        """);
     verify("x", getNativeType(UNKNOWN_TYPE));
     verify("i", NUMBER_TYPE);
   }
@@ -1954,11 +2146,13 @@ public final class TypeInferenceTest {
   public void testSwitch1() {
     assuming("x", NUMBER_TYPE);
     inFunction(
-        "var y = null; switch(x) {\n"
-            + "case 1: y = 1; break;\n"
-            + "case 2: y = {};\n"
-            + "case 3: y = {};\n"
-            + "default: y = 0;}");
+        """
+        var y = null; switch(x) {
+        case 1: y = 1; break;
+        case 2: y = {};
+        case 3: y = {};
+        default: y = 0;}
+        """);
     verify("y", NUMBER_TYPE);
   }
 
@@ -1966,13 +2160,15 @@ public final class TypeInferenceTest {
   public void testSwitch2() {
     assuming("x", ALL_TYPE);
     inFunction(
-        "var y = null; switch (typeof x) {\n"
-            + "case 'string':\n"
-            + "  y = x;\n"
-            + "  return;"
-            + "default:\n"
-            + "  y = 'a';\n"
-            + "}");
+        """
+        var y = null; switch (typeof x) {
+        case 'string':
+          y = x;
+          return;
+        default:
+          y = 'a';
+        }
+        """);
     verify("y", STRING_TYPE);
   }
 
@@ -1980,16 +2176,18 @@ public final class TypeInferenceTest {
   public void testSwitch3() {
     assuming("x", createNullableType(createUnionType(NUMBER_TYPE, STRING_TYPE)));
     inFunction(
-        "var y; var z; switch (typeof x) {\n"
-            + "case 'string':\n"
-            + "  y = 1; z = null;\n"
-            + "  return;\n"
-            + "case 'number':\n"
-            + "  y = x; z = null;\n"
-            + "  return;"
-            + "default:\n"
-            + "  y = 1; z = x;\n"
-            + "}");
+        """
+        var y; var z; switch (typeof x) {
+        case 'string':
+          y = 1; z = null;
+          return;
+        case 'number':
+          y = x; z = null;
+          return;
+        default:
+          y = 1; z = x;
+        }
+        """);
     verify("y", NUMBER_TYPE);
     verify("z", NULL_TYPE);
   }
@@ -1998,14 +2196,16 @@ public final class TypeInferenceTest {
   public void testSwitch4() {
     assuming("x", ALL_TYPE);
     inFunction(
-        "var y = null; switch (typeof x) {\n"
-            + "case 'string':\n"
-            + "case 'number':\n"
-            + "  y = x;\n"
-            + "  return;\n"
-            + "default:\n"
-            + "  y = 1;\n"
-            + "}\n");
+        """
+        var y = null; switch (typeof x) {
+        case 'string':
+        case 'number':
+          y = x;
+          return;
+        default:
+          y = 1;
+        }
+        """);
     verify("y", createUnionType(NUMBER_TYPE, STRING_TYPE));
   }
 
@@ -2027,14 +2227,16 @@ public final class TypeInferenceTest {
   @Test
   public void testNew2() {
     inFunction(
-        "/**\n"
-            + " * @constructor\n"
-            + " * @param {T} x\n"
-            + " * @template T\n"
-            + " */"
-            + "function F(x) {}\n"
-            + "var x = /** @type {!Array<number>} */ ([]);\n"
-            + "var result = new F(x);");
+        """
+        /**
+         * @constructor
+         * @param {T} x
+         * @template T
+         */
+        function F(x) {}
+        var x = /** @type {!Array<number>} */ ([]);
+        var result = new F(x);
+        """);
 
     assertThat(getType("result").toString()).isEqualTo("F<Array<number>>");
   }
@@ -2042,18 +2244,20 @@ public final class TypeInferenceTest {
   @Test
   public void testNew3() {
     inFunction(
-        "/**\n"
-            + " * @constructor\n"
-            + " * @param {Array<T>} x\n"
-            + " * @param {T} y\n"
-            + " * @param {S} z\n"
-            + " * @template T,S\n"
-            + " */"
-            + "function F(x,y,z) {}\n"
-            + "var x = /** @type {!Array<number>} */ ([]);\n"
-            + "var y = /** @type {string} */ ('foo');\n"
-            + "var z = /** @type {boolean} */ (true);\n"
-            + "var result = new F(x,y,z);");
+        """
+        /**
+         * @constructor
+         * @param {Array<T>} x
+         * @param {T} y
+         * @param {S} z
+         * @template T,S
+         */
+        function F(x,y,z) {}
+        var x = /** @type {!Array<number>} */ ([]);
+        var y = /** @type {string} */ ('foo');
+        var z = /** @type {boolean} */ (true);
+        var result = new F(x,y,z);
+        """);
 
     assertThat(getType("result").toString()).isEqualTo("F<(number|string),boolean>");
   }
@@ -2061,21 +2265,22 @@ public final class TypeInferenceTest {
   @Test
   public void testNew4() {
     inFunction(
-        lines(
-            "/**",
-            " * @constructor",
-            " * @param {!Array<T>} x",
-            " * @param {T} y",
-            " * @param {S} z",
-            " * @param {U} m",
-            " * @template T,S,U",
-            " */",
-            "function F(x,y,z,m) {}",
-            "var /** !Array<number> */ x = [];",
-            "var y = 'foo';",
-            "var z = true;",
-            "var m = 9;",
-            "var result = new F(x,y,z,m);"));
+        """
+        /**
+         * @constructor
+         * @param {!Array<T>} x
+         * @param {T} y
+         * @param {S} z
+         * @param {U} m
+         * @template T,S,U
+         */
+        function F(x,y,z,m) {}
+        var /** !Array<number> */ x = [];
+        var y = 'foo';
+        var z = true;
+        var m = 9;
+        var result = new F(x,y,z,m);
+        """);
 
     assertThat(getType("result").toString()).isEqualTo("F<(number|string),boolean,number>");
   }
@@ -2083,14 +2288,15 @@ public final class TypeInferenceTest {
   @Test
   public void testNew_onCtor_instantiatingTemplatizedType_withNoTemplateInformation() {
     inFunction(
-        lines(
-            "/**",
-            " * @constructor",
-            " * @template T",
-            " */",
-            "function Foo() {}",
-            "",
-            "var result = new Foo();"));
+        """
+        /**
+         * @constructor
+         * @template T
+         */
+        function Foo() {}
+
+        var result = new Foo();
+        """);
 
     assertThat(getType("result").toString()).isEqualTo("Foo<?>");
   }
@@ -2098,24 +2304,25 @@ public final class TypeInferenceTest {
   @Test
   public void testNew_onCtor_instantiatingTemplatizedType_specializedOnSecondaryTemplate() {
     inFunction(
-        lines(
-            "/**",
-            " * @constructor",
-            " * @template T",
-            " */",
-            "function Foo() {}",
-            "",
-            "/**",
-            " * @template U",
-            " * @param {function(new:Foo<U>)} ctor",
-            " * @param {U} arg",
-            " * @return {!Foo<U>}",
-            " */",
-            "function create(ctor, arg) {",
-            "  return new ctor(arg);",
-            "}",
-            "",
-            "var result = create(Foo, 0);"));
+        """
+        /**
+         * @constructor
+         * @template T
+         */
+        function Foo() {}
+
+        /**
+         * @template U
+         * @param {function(new:Foo<U>)} ctor
+         * @param {U} arg
+         * @return {!Foo<U>}
+         */
+        function create(ctor, arg) {
+          return new ctor(arg);
+        }
+
+        var result = create(Foo, 0);
+        """);
 
     assertThat(getType("result").toString()).isEqualTo("Foo<number>");
   }
@@ -2123,19 +2330,20 @@ public final class TypeInferenceTest {
   @Test
   public void testNewRest() {
     inFunction(
-        lines(
-            "/**",
-            " * @constructor",
-            " * @param {Array<T>} x",
-            " * @param {T} y",
-            " * @param {...S} rest",
-            " * @template T,S",
-            " */",
-            "function F(x, y, ...rest) {}",
-            "var x = /** @type {!Array<number>} */ ([]);",
-            "var y = /** @type {string} */ ('foo');",
-            "var z = /** @type {boolean} */ (true);",
-            "var result = new F(x,y,z);"));
+        """
+        /**
+         * @constructor
+         * @param {Array<T>} x
+         * @param {T} y
+         * @param {...S} rest
+         * @template T,S
+         */
+        function F(x, y, ...rest) {}
+        var x = /** @type {!Array<number>} */ ([]);
+        var y = /** @type {string} */ ('foo');
+        var z = /** @type {boolean} */ (true);
+        var result = new F(x,y,z);
+        """);
 
     assertThat(getType("result").toString()).isEqualTo("F<(number|string),boolean>");
   }
@@ -2181,9 +2389,10 @@ public final class TypeInferenceTest {
   @Test
   public void testParamNodeType_arrayDestructuring_withDefault() {
     parseAndRunTypeInference(
-        lines(
-            "(/** @param {!Iterable<number>=} unused */",
-            "function([i] = /** @type ({!Array<number>} */ ([])) {})"));
+        """
+        (/** @param {!Iterable<number>=} unused */
+        function([i] = /** @type ({!Array<number>} */ ([])) {})
+        """);
 
     // TODO(nickreid): Also check the types of the other nodes in the PARAM_LIST tree.
     // TODO(b/122904530): `i` should be `number`.
@@ -2229,13 +2438,14 @@ public final class TypeInferenceTest {
   @Test
   public void testFunctionDeclarationHasBlockScope() {
     inFunction(
-        lines(
-            "BLOCK_SCOPE: {",
-            "  BEFORE_DEFINITION: f;",
-            "  function f() {}",
-            "  AFTER_DEFINITION: f;",
-            "}",
-            "AFTER_BLOCK: f;"));
+        """
+        BLOCK_SCOPE: {
+          BEFORE_DEFINITION: f;
+          function f() {}
+          AFTER_DEFINITION: f;
+        }
+        AFTER_BLOCK: f;
+        """);
     // A block-scoped function declaration is hoisted to the beginning of its block, so it is always
     // defined within the block.
     assertScopeEnclosing("BEFORE_DEFINITION").declares("f").onScopeLabeled("BLOCK_SCOPE");
@@ -2254,7 +2464,12 @@ public final class TypeInferenceTest {
   @Test
   public void testThrow() {
     assuming("x", createNullableType(NUMBER_TYPE));
-    inFunction("var y = 1;\n" + "if (x == null) { throw new Error('x is null') }\n" + "y = x;");
+    inFunction(
+        """
+        var y = 1;
+        if (x == null) { throw new Error('x is null') }
+        y = x;
+        """);
     verify("y", NUMBER_TYPE);
   }
 
@@ -2268,7 +2483,11 @@ public final class TypeInferenceTest {
   @Test
   public void testTry2() {
     assuming("x", NUMBER_TYPE);
-    inFunction("var y = null;\n" + "try {  } catch (e) { y = null; } finally { y = x; }");
+    inFunction(
+        """
+        var y = null;
+        try {  } catch (e) { y = null; } finally { y = x; }
+        """);
     verify("y", NUMBER_TYPE);
   }
 
@@ -2566,6 +2785,19 @@ public final class TypeInferenceTest {
   }
 
   @Test
+  public void testAssignAdd_lhsNodeInputType() {
+    inFunction("L: { /** @type {*} */ let data; data += ''; }");
+    Node block = getLabeledStatement("L").statementNode;
+    // In L: { let data; data += ''; }, the block has two children: LET and EXPR_RESULT.
+    Node exprResult = block.getLastChild();
+    Node assignAdd = exprResult.getFirstChild();
+    Node lhs = assignAdd.getFirstChild();
+    // Pre-fix: LHS node under ASSIGN_ADD gets overwritten with the result type (STRING_TYPE).
+    // Post-fix: LHS node preserves its input type (UNKNOWN_TYPE / ALL_TYPE).
+    assertNode(lhs).hasJSTypeThat().isEqualTo(getNativeType(ALL_TYPE));
+  }
+
+  @Test
   public void testAssignOrToNumeric() {
     // This in line with the existing type-inferencing logic for
     // or/and, since any boolean type is treated as {true, false},
@@ -2575,17 +2807,95 @@ public final class TypeInferenceTest {
   }
 
   @Test
-  public void testClassFieldsInControlFlow() {
+  public void testComputedClassFieldsInControlFlow() {
     // Based on the class semantics, the static RHS expressions only execute after all of the
     // computed properties, so `y` will get the string value rather than the boolean here.
     inFunction(
-        lines(
-            "let y;", //
-            "class Foo {",
-            "  static [y = null] = (y = '');",
-            "  [y = false] = [y = null];",
-            "}"));
+        """
+        let y;
+        class Foo {
+          static [y = null] = (y = '');
+          [y = false] = [y = null];
+        }
+        """);
     verify("y", STRING_TYPE);
+  }
+
+  @Test
+  public void testClassFieldsInControlFlow() {
+    inFunction(
+        """
+        let y;
+        class Foo {
+          static y = (y = '');
+          z = [y = null];
+        }
+        """);
+    verify("y", STRING_TYPE);
+  }
+
+  @Test
+  public void testThisTypeAfterMemberField() {
+    JSType thisType = createRecordType("x", STRING_TYPE);
+    assumingThisType(thisType);
+    inFunction(
+        """
+        let thisDotX;
+        (class C {
+          /** @type {number} */
+          static x = 0;
+        }, thisDotX = this.x);
+        """);
+    verify("thisDotX", STRING_TYPE);
+  }
+
+  @Test
+  public void testFunction() {
+    // should verify y as string, but due to function-rooted CFG
+    // being detached from larger, root CFG, verifies y as void
+    inScript(
+        """
+        let y;
+        function foo() {
+          y = 'hi';
+        }
+        foo();
+        """);
+    verify("y", VOID_TYPE);
+  }
+
+  @Test
+  public void testClassStaticBlock() {
+    // should verify y as string, but due to static block-rooted CFG
+    // being detached from larger, root CFG, verifies y as void
+    inScript(
+        """
+        let y;
+        class Foo {
+          static {
+            y = 'hi';
+          }
+        }
+        """);
+    verify("y", VOID_TYPE);
+  }
+
+  @Test
+  public void testSuper() {
+    // does not infer super
+    inScript(
+        """
+        class Foo {
+          static str;
+        }
+        class Bar extends Foo {
+          static {
+            super.str = 'hi';
+          }
+        }
+        let x = Bar.str;
+        """);
+    verify("x", ALL_TYPE);
   }
 
   @Test
@@ -2737,7 +3047,11 @@ public final class TypeInferenceTest {
 
   @Test
   public void testThrownExpression() {
-    inFunction("var x = 'foo'; " + "try { throw new Error(x = 3); } catch (ex) {}");
+    inFunction(
+        """
+        var x = 'foo';
+        try { throw new Error(x = 3); } catch (ex) {}
+        """);
     verify("x", NUMBER_TYPE);
   }
 
@@ -2757,13 +3071,23 @@ public final class TypeInferenceTest {
     verify("out", UNKNOWN_TYPE);
 
     inFunction(
-        "var x = {" + "  /** @return {number} */ get a() {return 1}" + "};" + "var out = x.a;");
+        """
+        var x = {
+          /** @return {number} */ get a() {return 1}
+        };
+        var out = x.a;
+        """);
     verify("out", NUMBER_TYPE);
 
     inFunction("var x = { set a(b) {} }; var out = x.a;");
     verify("out", UNKNOWN_TYPE);
 
-    inFunction("var x = { " + "/** @param {number} b */ set a(b) {} };" + "var out = x.a;");
+    inFunction(
+        """
+        var x = {
+        /** @param {number} b */ set a(b) {} };
+        var out = x.a;
+        """);
     verify("out", NUMBER_TYPE);
   }
 
@@ -2781,7 +3105,7 @@ public final class TypeInferenceTest {
     assuming("after", NULL_TYPE);
 
     // When
-    inFunction(lines("let spread = {before, ...obj, after};"));
+    inFunction("let spread = {before, ...obj, after};");
 
     // Then
 
@@ -2800,9 +3124,11 @@ public final class TypeInferenceTest {
   @Test
   public void testCast2() {
     inFunction(
-        "/** @return {boolean} */"
-            + "Object.prototype.method = function() { return true; };"
-            + "var x = /** @type {Object} */ (this).method;");
+        """
+        /** @return {boolean} */
+        Object.prototype.method = function() { return true; };
+        var x = /** @type {Object} */ (this).method;
+        """);
     verify(
         "x",
         registry.createFunctionTypeWithInstanceType(
@@ -2814,10 +3140,12 @@ public final class TypeInferenceTest {
   @Test
   public void testBackwardsInferenceCall() {
     inFunction(
-        "/** @param {{foo: (number|undefined)}} x */"
-            + "function f(x) {}"
-            + "var y = {};"
-            + "f(y);");
+        """
+        /** @param {{foo: (number|undefined)}} x */
+        function f(x) {}
+        var y = {};
+        f(y);
+        """);
 
     assertThat(getType("y").toString()).isEqualTo("{foo: (number|undefined)}");
   }
@@ -2825,11 +3153,12 @@ public final class TypeInferenceTest {
   @Test
   public void testBackwardsInferenceCallRestParameter() {
     inFunction(
-        lines(
-            "/** @param {...{foo: (number|undefined)}} rest */",
-            "function f(...rest) {}",
-            "var y = {};",
-            "f(y);"));
+        """
+        /** @param {...{foo: (number|undefined)}} rest */
+        function f(...rest) {}
+        var y = {};
+        f(y);
+        """);
 
     assertThat(getType("y").toString()).isEqualTo("{foo: (number|undefined)}");
   }
@@ -2837,13 +3166,15 @@ public final class TypeInferenceTest {
   @Test
   public void testBackwardsInferenceNew() {
     inFunction(
-        "/**\n"
-            + " * @constructor\n"
-            + " * @param {{foo: (number|undefined)}} x\n"
-            + " */"
-            + "function F(x) {}"
-            + "var y = {};"
-            + "new F(y);");
+        """
+        /**
+         * @constructor
+         * @param {{foo: (number|undefined)}} x
+         */
+        function F(x) {}
+        var y = {};
+        new F(y);
+        """);
 
     assertThat(getType("y").toString()).isEqualTo("{foo: (number|undefined)}");
   }
@@ -2859,10 +3190,12 @@ public final class TypeInferenceTest {
   @Test
   public void testRecordInference() {
     inFunction(
-        "/** @param {{a: boolean}|{b: string}} x */"
-            + "function f(x) {}"
-            + "var out = {};"
-            + "f(out);");
+        """
+        /** @param {{a: boolean}|{b: string}} x */
+        function f(x) {}
+        var out = {};
+        f(out);
+        """);
     assertThat(getType("out").toString())
         .isEqualTo("{\n  a: (boolean|undefined),\n  b: (string|undefined)\n}");
   }
@@ -2883,26 +3216,29 @@ public final class TypeInferenceTest {
   @Test
   public void testIssue785() {
     inFunction(
-        "/** @param {string|{prop: (string|undefined)}} x */"
-            + "function f(x) {}"
-            + "var out = {};"
-            + "f(out);");
+        """
+        /** @param {string|{prop: (string|undefined)}} x */
+        function f(x) {}
+        var out = {};
+        f(out);
+        """);
     assertThat(getType("out").toString()).isEqualTo("{prop: (string|undefined)}");
   }
 
   @Test
   public void testFunctionTemplateType_specializedFunctionType_copiesColorIdCompnents() {
     inFunction(
-        lines(
-            "/**",
-            " * @template T",
-            " * @param {T} a",
-            " * @return {T}",
-            " */",
-            "function f(a) {}",
-            "TEMPLATE: f;",
-            "",
-            "SPECIALIZED: f(10);"));
+        """
+        /**
+         * @template T
+         * @param {T} a
+         * @return {T}
+         */
+        function f(a) {}
+        TEMPLATE: f;
+
+        SPECIALIZED: f(10);
+        """);
 
     FunctionType templateFn =
         getLabeledStatement("TEMPLATE")
@@ -2926,168 +3262,181 @@ public final class TypeInferenceTest {
   @Test
   public void testFunctionTemplateType_literalParam() {
     inFunction(
-        lines(
-            "/**",
-            " * @template T",
-            " * @param {T} a",
-            " * @return {T}",
-            " */",
-            "function f(a){}",
-            "",
-            "var result = f(10);"));
+        """
+        /**
+         * @template T
+         * @param {T} a
+         * @return {T}
+         */
+        function f(a){}
+
+        var result = f(10);
+        """);
     verify("result", NUMBER_TYPE);
   }
 
   @Test
   public void testFunctionTemplateType_unionsPossibilities() {
     inFunction(
-        lines(
-            "/**",
-            " * @template T",
-            " * @param {T} a",
-            " * @param {T} b",
-            " * @return {T}",
-            " */",
-            "function f(a, b){}",
-            "",
-            "var result = f(10, 'x');"));
+        """
+        /**
+         * @template T
+         * @param {T} a
+         * @param {T} b
+         * @return {T}
+         */
+        function f(a, b){}
+
+        var result = f(10, 'x');
+        """);
     verify("result", registry.createUnionType(NUMBER_TYPE, STRING_TYPE));
   }
 
   @Test
   public void testFunctionTemplateType_willUseUnknown() {
     inFunction(
-        lines(
-            "/**",
-            " * @template T",
-            " * @param {T} a",
-            " * @return {T}",
-            " */",
-            "function f(a){}",
-            "",
-            "var result = f(/** @type {?} */ ({}));"));
+        """
+        /**
+         * @template T
+         * @param {T} a
+         * @return {T}
+         */
+        function f(a){}
+
+        var result = f(/** @type {?} */ ({}));
+        """);
     verify("result", UNKNOWN_TYPE);
   }
 
   @Test
   public void testFunctionTemplateType_willUseUnknown_butPrefersTighterTypes() {
     inFunction(
-        lines(
-            "/**",
-            " * @template T",
-            " * @param {T} a",
-            " * @param {T} b",
-            " * @param {T} c",
-            " * @return {T}",
-            " */",
-            "function f(a, b, c){}",
-            "",
-            // Make sure `?` is dispreferred before *and* after a known type.
-            "var result = f('x', /** @type {?} */ ({}), 5);"));
+        """
+        /**
+         * @template T
+         * @param {T} a
+         * @param {T} b
+         * @param {T} c
+         * @return {T}
+         */
+        function f(a, b, c){}
+
+        // Make sure `?` is dispreferred before *and* after a known type.
+        var result = f('x', /** @type {?} */ ({}), 5);
+        """);
     verify("result", registry.createUnionType(NUMBER_TYPE, STRING_TYPE));
   }
 
   @Test
   public void testFunctionTemplateType_recursesIntoFunctionParams() {
     inFunction(
-        lines(
-            "/**",
-            " * @template T",
-            " * @param {function(T)} a",
-            " * @return {T}",
-            " */",
-            "function f(a){}",
-            "",
-            "var result = f(function(/** number */ a) { });"));
+        """
+        /**
+         * @template T
+         * @param {function(T)} a
+         * @return {T}
+         */
+        function f(a){}
+
+        var result = f(function(/** number */ a) { });
+        """);
     verify("result", NUMBER_TYPE);
   }
 
   @Test
   public void testFunctionTemplateType_recursesIntoFunctionParams_throughUnknown() {
     inFunction(
-        lines(
-            "/**",
-            " * @template T",
-            " * @param {function(T)=} a",
-            " * @return {T}",
-            " */",
-            "function f(a){}",
-            "",
-            "var result = f(/** @type {?} */ ({}));"));
+        """
+        /**
+         * @template T
+         * @param {function(T)=} a
+         * @return {T}
+         */
+        function f(a){}
+
+        var result = f(/** @type {?} */ ({}));
+        """);
     verify("result", UNKNOWN_TYPE);
   }
 
   @Test
   public void testFunctionTemplateType_unpacksUnions_fromParamType() {
     inFunction(
-        lines(
-            "/**",
-            " * @template T",
-            " * @param {!Iterable<T>|number} a",
-            " * @return {T}",
-            " */",
-            "function f(a){}",
-            "",
-            "var result = f(/** @type {!Iterable<number>} */ ({}));"));
+        """
+        /**
+         * @template T
+         * @param {!Iterable<T>|number} a
+         * @return {T}
+         */
+        function f(a){}
+
+        var result = f(/** @type {!Iterable<number>} */ ({}));
+        """);
     verify("result", NUMBER_TYPE);
   }
 
   @Test
   public void testFunctionTemplateType_unpacksUnions_fromArgType() {
     inFunction(
-        lines(
-            "/**",
-            " * @template T",
-            " * @param {!Iterable<T>} a",
-            " * @return {T}",
-            " */",
-            "function f(a){}",
-            "",
-            // The arg type is illegal, but the inference should still work.
-            "var result = f(/** @type {!Iterable<number>|number} */ ({}));"));
+        """
+        /**
+         * @template T
+         * @param {!Iterable<T>} a
+         * @return {T}
+         */
+        function f(a){}
+
+        // The arg type is illegal, but the inference should still work.
+        var result = f(/** @type {!Iterable<number>|number} */ ({}));
+        """);
     verify("result", NUMBER_TYPE);
   }
 
   @Test
   public void testFunctionTemplateType_unpacksUnions_fromArgType_acrossSubtypes() {
     inFunction(
-        lines(
-            "/**",
-            " * @template T",
-            " * @param {!Iterable<T>} a",
-            " * @return {T}",
-            " */",
-            "function f(a){}",
-            "",
-            "var result = f(/** @type {!Array<number>|!Generator<string>} */ ({}));"));
+        """
+        /**
+         * @template T
+         * @param {!Iterable<T>} a
+         * @return {T}
+         */
+        function f(a){}
+
+        var result = f(/** @type {!Array<number>|!Generator<string>} */ ({}));
+        """);
     verify("result", registry.createUnionType(NUMBER_TYPE, STRING_TYPE));
   }
 
   @Test
   public void testTypeTransformationTypePredicate() {
     inFunction(
-        "/**\n"
-            + " * @return {R}\n"
-            + " * @template R := 'number' =:\n"
-            + " */\n"
-            + "function f(a){}\n"
-            + "var result = f(10);");
+        """
+        /**
+         * @return {R}
+         * @template R := 'number' =:
+         */
+        function f(a){}
+        var result = f(10);
+        """);
     verify("result", NUMBER_TYPE);
   }
 
   @Test
   public void testTypeTransformationConditional() {
     inFunction(
-        "/**\n"
-            + " * @param {T} a\n"
-            + " * @param {N} b\n"
-            + " * @return {R}\n"
-            + " * @template T, N\n"
-            + " * @template R := cond( eq(T, N), 'string', 'boolean' ) =:\n"
-            + " */\n"
-            + "function f(a, b){}\n"
-            + "var result = f(1, 2);"
-            + "var result2 = f(1, 'a');");
+        """
+        /**
+         * @param {T} a
+         * @param {N} b
+         * @return {R}
+         * @template T, N
+         * @template R := cond( eq(T, N), 'string', 'boolean' ) =:
+         */
+        function f(a, b){}
+        var result = f(1, 2);
+        var result2 = f(1, 'a');
+        """);
     verify("result", STRING_TYPE);
     verify("result2", BOOLEAN_TYPE);
   }
@@ -3095,68 +3444,76 @@ public final class TypeInferenceTest {
   @Test
   public void testTypeTransformationNoneType() {
     inFunction(
-        "/**\n"
-            + " * @return {R}\n"
-            + " * @template R := none() =:\n"
-            + " */\n"
-            + "function f(){}\n"
-            + "var result = f(10);");
+        """
+        /**
+         * @return {R}
+         * @template R := none() =:
+         */
+        function f(){}
+        var result = f(10);
+        """);
     verify("result", JSTypeNative.UNKNOWN_TYPE);
   }
 
   @Test
   public void testTypeTransformationUnionType() {
     inFunction(
-        "/**\n"
-            + " * @param {S} a\n"
-            + " * @param {N} b\n"
-            + " * @return {R}\n"
-            + " * @template S, N\n"
-            + " * @template R := union(S, N) =:\n"
-            + " */\n"
-            + "function f(a, b) {}\n"
-            + "var result = f(1, 'a');");
+        """
+        /**
+         * @param {S} a
+         * @param {N} b
+         * @return {R}
+         * @template S, N
+         * @template R := union(S, N) =:
+         */
+        function f(a, b) {}
+        var result = f(1, 'a');
+        """);
     verify("result", createUnionType(STRING_TYPE, NUMBER_TYPE));
   }
 
   @Test
   public void testTypeTransformationMapunion() {
     inFunction(
-        "/**\n"
-            + " * @param {U} a\n"
-            + " * @return {R}\n"
-            + " * @template U\n"
-            + " * @template R :=\n"
-            + " * mapunion(U, (x) => cond(eq(x, 'string'), 'boolean', 'null'))\n"
-            + " * =:\n"
-            + " */\n"
-            + "function f(a) {}\n"
-            + "/** @type {string|number} */ var x;"
-            + "var result = f(x);");
+        """
+        /**
+         * @param {U} a
+         * @return {R}
+         * @template U
+         * @template R :=
+         * mapunion(U, (x) => cond(eq(x, 'string'), 'boolean', 'null'))
+         * =:
+         */
+        function f(a) {}
+        /** @type {string|number} */ var x;
+        var result = f(x);
+        """);
     verify("result", createUnionType(BOOLEAN_TYPE, NULL_TYPE));
   }
 
   @Test
   public void testTypeTransformationObjectUseCase() {
     inFunction(
-        "/** \n"
-            + " * @param {T} a\n"
-            + " * @return {R}\n"
-            + " * @template T \n"
-            + " * @template R := \n"
-            + " * mapunion(T, (x) => \n"
-            + " *      cond(eq(x, 'string'), 'String',\n"
-            + " *      cond(eq(x, 'number'), 'Number',\n"
-            + " *      cond(eq(x, 'boolean'), 'Boolean',\n"
-            + " *      cond(eq(x, 'null'), 'Object', \n"
-            + " *      cond(eq(x, 'undefined'), 'Object',\n"
-            + " *      x)))))) \n"
-            + " * =:\n"
-            + " */\n"
-            + "function Object(a) {}\n"
-            + "/** @type {(string|number|boolean)} */\n"
-            + "var o;\n"
-            + "var r = Object(o);");
+        """
+        /**\s
+         * @param {T} a
+         * @return {R}
+         * @template T\s
+         * @template R :=\s
+         * mapunion(T, (x) =>\s
+         *      cond(eq(x, 'string'), 'String',
+         *      cond(eq(x, 'number'), 'Number',
+         *      cond(eq(x, 'boolean'), 'Boolean',
+         *      cond(eq(x, 'null'), 'Object',\s
+         *      cond(eq(x, 'undefined'), 'Object',
+         *      x))))))\s
+         * =:
+         */
+        function Object(a) {}
+        /** @type {(string|number|boolean)} */
+        var o;
+        var r = Object(o);
+        """);
     verify(
         "r",
         createMultiParamUnionType(
@@ -3166,228 +3523,255 @@ public final class TypeInferenceTest {
   @Test
   public void testTypeTransformationObjectUseCase2() {
     inFunction(
-        "/** \n"
-            + " * @param {T} a\n"
-            + " * @return {R}\n"
-            + " * @template T \n"
-            + " * @template R := \n"
-            + " * mapunion(T, (x) => \n"
-            + " *      cond(eq(x, 'string'), 'String',\n"
-            + " *      cond(eq(x, 'number'), 'Number',\n"
-            + " *      cond(eq(x, 'boolean'), 'Boolean',\n"
-            + " *      cond(eq(x, 'null'), 'Object', \n"
-            + " *      cond(eq(x, 'undefined'), 'Object',\n"
-            + " *      x)))))) \n"
-            + " * =:\n"
-            + " */\n"
-            + "function fn(a) {}\n"
-            + "/** @type {(string|null|undefined)} */\n"
-            + "var o;\n"
-            + "var r = fn(o);");
+        """
+        /**\s
+         * @param {T} a
+         * @return {R}
+         * @template T\s
+         * @template R :=\s
+         * mapunion(T, (x) =>\s
+         *      cond(eq(x, 'string'), 'String',
+         *      cond(eq(x, 'number'), 'Number',
+         *      cond(eq(x, 'boolean'), 'Boolean',
+         *      cond(eq(x, 'null'), 'Object',\s
+         *      cond(eq(x, 'undefined'), 'Object',
+         *      x))))))\s
+         * =:
+         */
+        function fn(a) {}
+        /** @type {(string|null|undefined)} */
+        var o;
+        var r = fn(o);
+        """);
     verify("r", OBJECT_TYPE);
   }
 
   @Test
   public void testTypeTransformationObjectUseCase3() {
     inFunction(
-        "/** \n"
-            + " * @param {T} a\n"
-            + " * @return {R}\n"
-            + " * @template T \n"
-            + " * @template R := \n"
-            + " * mapunion(T, (x) => \n"
-            + " *      cond(eq(x, 'string'), 'String',\n"
-            + " *      cond(eq(x, 'number'), 'Number',\n"
-            + " *      cond(eq(x, 'boolean'), 'Boolean',\n"
-            + " *      cond(eq(x, 'null'), 'Object', \n"
-            + " *      cond(eq(x, 'undefined'), 'Object',\n"
-            + " *      x)))))) \n"
-            + " * =:\n"
-            + " */\n"
-            + "function fn(a) {}\n"
-            + "/** @type {(Array|undefined)} */\n"
-            + "var o;\n"
-            + "var r = fn(o);");
+        """
+        /**\s
+         * @param {T} a
+         * @return {R}
+         * @template T\s
+         * @template R :=\s
+         * mapunion(T, (x) =>\s
+         *      cond(eq(x, 'string'), 'String',
+         *      cond(eq(x, 'number'), 'Number',
+         *      cond(eq(x, 'boolean'), 'Boolean',
+         *      cond(eq(x, 'null'), 'Object',\s
+         *      cond(eq(x, 'undefined'), 'Object',
+         *      x))))))\s
+         * =:
+         */
+        function fn(a) {}
+        /** @type {(Array|undefined)} */
+        var o;
+        var r = fn(o);
+        """);
     verify("r", OBJECT_TYPE);
   }
 
   @Test
   public void testTypeTransformationTypeOfVarWithInstanceOfConstructor() {
     inFunction(
-        "/** @constructor */\n"
-            + "function Bar() {}"
-            + "var b = new Bar();"
-            + "/** \n"
-            + " * @return {R}\n"
-            + " * @template R := typeOfVar('b') =:\n"
-            + " */\n"
-            + "function f(){}\n"
-            + "var r = f();");
+        """
+        /** @constructor */
+        function Bar() {}
+        var b = new Bar();
+        /**\s
+         * @return {R}
+         * @template R := typeOfVar('b') =:
+         */
+        function f(){}
+        var r = f();
+        """);
     verify("r", getType("b"));
   }
 
   @Test
   public void testTypeTransformationTypeOfVarWithConstructor() {
     inFunction(
-        "/** @constructor */\n"
-            + "function Bar() {}"
-            + "/** \n"
-            + " * @return {R}\n"
-            + " * @template R := typeOfVar('Bar') =:\n"
-            + " */\n"
-            + "function f(){}\n"
-            + "var r = f();");
+        """
+        /** @constructor */
+        function Bar() {}
+        /**\s
+         * @return {R}
+         * @template R := typeOfVar('Bar') =:
+         */
+        function f(){}
+        var r = f();
+        """);
     verify("r", getType("Bar"));
   }
 
   @Test
   public void testTypeTransformationTypeOfVarWithTypedef() {
     inFunction(
-        "/** @typedef {(string|number)} */\n"
-            + "var NumberLike;"
-            + "/** @type {!NumberLike} */"
-            + "var x;"
-            + "/**\n"
-            + " * @return {R}\n"
-            + " * @template R := typeOfVar('x') =:"
-            + " */\n"
-            + "function f(){}\n"
-            + "var r = f();");
+        """
+        /** @typedef {(string|number)} */
+        var NumberLike;
+        /** @type {!NumberLike} */
+        var x;
+        /**
+         * @return {R}
+         * @template R := typeOfVar('x') =:
+         */
+        function f(){}
+        var r = f();
+        """);
     verify("r", getType("x"));
   }
 
   @Test
   public void testTypeTransformationWithTypeFromConstructor() {
     inFunction(
-        "/** @constructor */\n"
-            + "function Bar(){}"
-            + "var x = new Bar();"
-            + "/** \n"
-            + " * @return {R}\n"
-            + " * @template R := 'Bar' =:"
-            + " */\n"
-            + "function f(){}\n"
-            + "var r = f();");
+        """
+        /** @constructor */
+        function Bar(){}
+        var x = new Bar();
+        /**\s
+         * @return {R}
+         * @template R := 'Bar' =:
+         */
+        function f(){}
+        var r = f();
+        """);
     verify("r", getType("x"));
   }
 
   @Test
   public void testTypeTransformationWithTypeFromTypedef() {
     inFunction(
-        "/** @typedef {(string|number)} */\n"
-            + "var NumberLike;"
-            + "/** @type {!NumberLike} */"
-            + "var x;"
-            + "/**\n"
-            + " * @return {R}\n"
-            + " * @template R := 'NumberLike' =:"
-            + " */\n"
-            + "function f(){}\n"
-            + "var r = f();");
+        """
+        /** @typedef {(string|number)} */
+        var NumberLike;
+        /** @type {!NumberLike} */
+        var x;
+        /**
+         * @return {R}
+         * @template R := 'NumberLike' =:
+         */
+        function f(){}
+        var r = f();
+        """);
     verify("r", createUnionType(STRING_TYPE, NUMBER_TYPE));
   }
 
   @Test
   public void testTypeTransformationWithTypeFromNamespace() {
     inFunction(
-        lines(
-            "var wiz",
-            "/** @constructor */",
-            "wiz.async.Response = function() {};",
-            "/**",
-            " * @return {R}",
-            " * @template R := typeOfVar('wiz.async.Response') =:",
-            " */",
-            "function f(){}",
-            "var r = f();"));
+        """
+        var wiz
+        /** @constructor */
+        wiz.async.Response = function() {};
+        /**
+         * @return {R}
+         * @template R := typeOfVar('wiz.async.Response') =:
+         */
+        function f(){}
+        var r = f();
+        """);
     verify("r", getType("wiz.async.Response"));
   }
 
   @Test
   public void testTypeTransformationWithNativeTypeExpressionFunction() {
     inFunction(
-        "/** @type {function(string, boolean)} */\n"
-            + "var x;\n"
-            + "/**\n"
-            + " * @return {R}\n"
-            + " * @template R := typeExpr('function(string, boolean)') =:\n"
-            + " */\n"
-            + "function f(){}\n"
-            + "var r = f();");
+        """
+        /** @type {function(string, boolean)} */
+        var x;
+        /**
+         * @return {R}
+         * @template R := typeExpr('function(string, boolean)') =:
+         */
+        function f(){}
+        var r = f();
+        """);
     verify("r", getType("x"));
   }
 
   @Test
   public void testTypeTransformationWithNativeTypeExpressionFunctionReturn() {
     inFunction(
-        "/** @type {function(): number} */\n"
-            + "var x;\n"
-            + "/**\n"
-            + " * @return {R}\n"
-            + " * @template R := typeExpr('function(): number') =:\n"
-            + " */\n"
-            + "function f(){}\n"
-            + "var r = f();");
+        """
+        /** @type {function(): number} */
+        var x;
+        /**
+         * @return {R}
+         * @template R := typeExpr('function(): number') =:
+         */
+        function f(){}
+        var r = f();
+        """);
     verify("r", getType("x"));
   }
 
   @Test
   public void testTypeTransformationWithNativeTypeExpressionFunctionThis() {
     inFunction(
-        "/** @type {function(this:boolean, string)} */\n"
-            + "var x;\n"
-            + "/**\n"
-            + " * @return {R}\n"
-            + " * @template R := typeExpr('function(this:boolean, string)') =:\n"
-            + " */\n"
-            + "function f(){}\n"
-            + "var r = f();");
+        """
+        /** @type {function(this:boolean, string)} */
+        var x;
+        /**
+         * @return {R}
+         * @template R := typeExpr('function(this:boolean, string)') =:
+         */
+        function f(){}
+        var r = f();
+        """);
     verify("r", getType("x"));
   }
 
   @Test
   public void testTypeTransformationWithNativeTypeExpressionFunctionVarargs() {
     inFunction(
-        "/** @type {function(string, ...number): number} */\n"
-            + "var x;\n"
-            + "/**\n"
-            + " * @return {R}\n"
-            + " * @template R := typeExpr('function(string, ...number): number') =:\n"
-            + " */\n"
-            + "function f(){}\n"
-            + "var r = f();");
+        """
+        /** @type {function(string, ...number): number} */
+        var x;
+        /**
+         * @return {R}
+         * @template R := typeExpr('function(string, ...number): number') =:
+         */
+        function f(){}
+        var r = f();
+        """);
     verify("r", getType("x"));
   }
 
   @Test
   public void testTypeTransformationWithNativeTypeExpressionFunctionOptional() {
     inFunction(
-        "/** @type {function(?string=, number=)} */\n"
-            + "var x;\n"
-            + "/**\n"
-            + " * @return {R}\n"
-            + " * @template R := typeExpr('function(?string=, number=)') =:\n"
-            + " */\n"
-            + "function f(){}\n"
-            + "var r = f();");
+        """
+        /** @type {function(?string=, number=)} */
+        var x;
+        /**
+         * @return {R}
+         * @template R := typeExpr('function(?string=, number=)') =:
+         */
+        function f(){}
+        var r = f();
+        """);
     verify("r", getType("x"));
   }
 
   @Test
   public void testTypeTransformationRecordFromObject() {
     inFunction(
-        "/** \n"
-            + " * @param {T} a\n"
-            + " * @return {R}\n"
-            + " * @template T \n"
-            + " * @template R := record(T) =:"
-            + " */\n"
-            + "function f(a) {}\n"
-            + "/** @type {{foo:?}} */"
-            + "var e;"
-            + "/** @type {?} */"
-            + "var bar;"
-            + "var r = f({foo:bar});");
+        """
+        /**\s
+         * @param {T} a
+         * @return {R}
+         * @template T\s
+         * @template R := record(T) =:
+         */
+        function f(a) {}
+        /** @type {{foo:?}} */
+        var e;
+        /** @type {?} */
+        var bar;
+        var r = f({foo:bar});
+        """);
     assertThat(getType("r").isRecordType()).isTrue();
     verify("r", getType("e"));
   }
@@ -3395,17 +3779,19 @@ public final class TypeInferenceTest {
   @Test
   public void testTypeTransformationRecordFromObjectNested() {
     inFunction(
-        "/** \n"
-            + " * @param {T} a\n"
-            + " * @return {R}\n"
-            + " * @template T \n"
-            + " * @template R :=\n"
-            + " * maprecord(record(T), (k, v) => record({[k]:record(v)})) =:"
-            + " */\n"
-            + "function f(a) {}\n"
-            + "/** @type {{foo:!Object, bar:!Object}} */"
-            + "var e;"
-            + "var r = f({foo:{}, bar:{}});");
+        """
+        /**\s
+         * @param {T} a
+         * @return {R}
+         * @template T\s
+         * @template R :=
+         * maprecord(record(T), (k, v) => record({[k]:record(v)})) =:
+         */
+        function f(a) {}
+        /** @type {{foo:!Object, bar:!Object}} */
+        var e;
+        var r = f({foo:{}, bar:{}});
+        """);
     assertThat(getType("r").isRecordType()).isTrue();
     verify("r", getType("e"));
   }
@@ -3413,18 +3799,20 @@ public final class TypeInferenceTest {
   @Test
   public void testTypeTransformationRecordFromObjectWithTemplatizedType() {
     inFunction(
-        "/** \n"
-            + " * @param {T} a\n"
-            + " * @return {R}\n"
-            + " * @template T \n"
-            + " * @template R := record(T) =:"
-            + " */\n"
-            + "function f(a) {}\n"
-            + "/** @type {{foo:!Array<number>}} */"
-            + "var e;"
-            + "/** @type {!Array<number>} */"
-            + "var something;"
-            + "var r = f({foo:something});");
+        """
+        /**\s
+         * @param {T} a
+         * @return {R}
+         * @template T\s
+         * @template R := record(T) =:
+         */
+        function f(a) {}
+        /** @type {{foo:!Array<number>}} */
+        var e;
+        /** @type {!Array<number>} */
+        var something;
+        var r = f({foo:something});
+        """);
     assertThat(getType("r").isRecordType()).isTrue();
     verify("r", getType("e"));
   }
@@ -3432,27 +3820,30 @@ public final class TypeInferenceTest {
   @Test
   public void testTypeTransformationIsTemplatizedPartially() {
     inFunction(
-        Joiner.on('\n')
-            .join(
-                "/**",
-                " * @constructor",
-                " * @template T, U",
-                " */",
-                "function Foo() {}",
-                "/**",
-                " * @template T := cond(isTemplatized(type('Foo', 'number')), 'number', 'string')"
-                    + " =:",
-                " * @return {T}",
-                " */",
-                "function f() { return 123; }",
-                "var x = f();"));
+        """
+        /**
+         * @constructor
+         * @template T, U
+         */
+        function Foo() {}
+        /**
+         * @template T := cond(isTemplatized(type('Foo', 'number')), 'number', 'string') =:
+         * @return {T}
+         */
+        function f() { return 123; }
+        var x = f();
+        """);
     assertThat(getType("x").isNumber()).isTrue();
   }
 
   @Test
   public void testAssertTypeofProp() {
     assuming("x", createNullableType(OBJECT_TYPE));
-    inFunction("goog.asserts.assert(typeof x.prop != 'undefined');" + "out = x.prop;");
+    inFunction(
+        """
+        goog.asserts.assert(typeof x.prop != 'undefined');
+        out = x.prop;
+        """);
     verify("out", CHECKED_UNKNOWN_TYPE);
   }
 
@@ -3480,7 +3871,12 @@ public final class TypeInferenceTest {
   public void testYield2() {
     // test that type inference happens inside the yield expression
     inGenerator(
-        lines("var obj;", "yield (obj = {a: 3, b: '4'});", "var a = obj.a;", "var b = obj.b;"));
+        """
+        var obj;
+        yield (obj = {a: 3, b: '4'});
+        var a = obj.a;
+        var b = obj.b;
+        """);
 
     verify("a", registry.getNativeType(NUMBER_TYPE));
     verify("b", registry.getNativeType(STRING_TYPE));
@@ -3495,10 +3891,11 @@ public final class TypeInferenceTest {
   @Test
   public void testSpreadExpression() {
     inFunction(
-        lines(
-            "let x = 1;", // x is initially a number
-            "let y = [...[x = 'hi', 'there']];", // reassign x a string in the spread
-            "X: x;"));
+        """
+        let x = 1; // x is initially a number
+        let y = [...[x = 'hi', 'there']]; // reassign x a string in the spread
+        X: x;
+        """);
     assertTypeOfExpression("X").toStringIsEqualTo("string");
   }
 
@@ -3513,24 +3910,25 @@ public final class TypeInferenceTest {
   @Test
   public void testRestParamType() {
     parseAndRunTypeInference(
-        lines(
-            "(",
-            "/**", // preserve newlines
-            " * @param {...number} nums",
-            " */",
-            "function(str, ...nums) {",
-            "  NUMS: nums;",
-            "  let n = null;",
-            "  N_START: n;",
-            "  if (nums.length > 0) {",
-            "    n = nums[0];",
-            "    N_IF_TRUE: n;",
-            "  } else {",
-            "    N_IF_FALSE: n;",
-            "  }",
-            "  N_FINAL: n;",
-            "}",
-            ");"));
+        """
+        (
+        /** // preserve newlines
+         * @param {...number} nums
+         */
+        function(str, ...nums) {
+          NUMS: nums;
+          let n = null;
+          N_START: n;
+          if (nums.length > 0) {
+            n = nums[0];
+            N_IF_TRUE: n;
+          } else {
+            N_IF_FALSE: n;
+          }
+          N_FINAL: n;
+        }
+        );
+        """);
     assertTypeOfExpression("N_START").toStringIsEqualTo("null");
     assertTypeOfExpression("N_IF_TRUE").toStringIsEqualTo("number");
     assertTypeOfExpression("N_IF_FALSE").toStringIsEqualTo("null");
@@ -3547,10 +3945,11 @@ public final class TypeInferenceTest {
     assuming("obj", recordType);
 
     inFunction(
-        lines(
-            "let {x, y} = obj; ", // preserve newline
-            "X: x;",
-            "Y: y;"));
+        """
+        let {x, y} = obj;  // preserve newline
+        X: x;
+        Y: y;
+        """);
     assertTypeOfExpression("X").toStringIsEqualTo("string");
     assertTypeOfExpression("Y").toStringIsEqualTo("number");
 
@@ -3560,20 +3959,22 @@ public final class TypeInferenceTest {
   @Test
   public void testObjectDestructuringDeclarationInferenceWithDefaultValue() {
     inFunction(
-        lines(
-            "var /** {x: (?string|undefined)} */ obj;",
-            "let {x = 3} = obj; ", // preserve newline
-            "X: x;"));
+        """
+        var /** {x: (?string|undefined)} */ obj;
+        let {x = 3} = obj;  // preserve newline
+        X: x;
+        """);
     assertTypeOfExpression("X").toStringIsEqualTo("(null|number|string)");
   }
 
   @Test
   public void testObjectDestructuringDeclarationInferenceWithUnnecessaryDefaultValue() {
     inFunction(
-        lines(
-            "var /** {x: string} */ obj;",
-            "let {x = 3} = obj; ", // we ignore the default value's type
-            "X: x;"));
+        """
+        var /** {x: string} */ obj;
+        let {x = 3} = obj;  // we ignore the default value's type
+        X: x;
+        """);
     // TODO(b/77597706): should this just be `string`?
     // the legacy behavior (typechecking transpiled code) produces (number|string), but we should
     // possibly realize that the default value will never be evaluated.
@@ -3583,20 +3984,22 @@ public final class TypeInferenceTest {
   @Test
   public void testObjectDestructuringDeclarationInference_unknownRhsAndKnownDefaultValue() {
     inFunction(
-        lines(
-            "var /** ? */ obj;",
-            "let {x = 3} = obj; ", // preserve newline
-            "X: x;"));
+        """
+        var /** ? */ obj;
+        let {x = 3} = obj;  // preserve newline
+        X: x;
+        """);
     assertTypeOfExpression("X").toStringIsEqualTo("?");
   }
 
   @Test
   public void testObjectDestructuringDeclarationInference_knownRhsAndUnknownDefaultValue() {
     inFunction(
-        lines(
-            "var /** {x: (string|undefined)} */ obj;",
-            "let {x = someUnknown} = obj; ", // preserve newline
-            "X: x;"));
+        """
+        var /** {x: (string|undefined)} */ obj;
+        let {x = someUnknown} = obj;  // preserve newline
+        X: x;
+        """);
     assertTypeOfExpression("X").toStringIsEqualTo("?");
   }
 
@@ -3605,12 +4008,13 @@ public final class TypeInferenceTest {
     // contrived example to verify that we traverse the computed property before the default value.
 
     inFunction(
-        lines(
-            "var /** !Object<string, (number|undefined)> */ obj = {};",
-            "var a = 1;",
-            "const {[a = 'string']: b = a} = obj",
-            "A: a",
-            "B: b"));
+        """
+        var /** !Object<string, (number|undefined)> */ obj = {};
+        var a = 1;
+        const {[a = 'string']: b = a} = obj
+        A: a
+        B: b
+        """);
 
     assertTypeOfExpression("A").toStringIsEqualTo("string");
     assertTypeOfExpression("B").toStringIsEqualTo("(number|string)");
@@ -3622,20 +4026,22 @@ public final class TypeInferenceTest {
     assuming("obj", recordType);
 
     inFunction(
-        lines(
-            "let {x} = obj; ", // preserve newline
-            "X: x;"));
+        """
+        let {x} = obj;  // preserve newline
+        X: x;
+        """);
     assertTypeOfExpression("X").toStringIsEqualTo("?");
   }
 
   @Test
   public void testObjectDestructuringDoesInferenceWithinComputedProp() {
     inFunction(
-        lines(
-            "let y = 'foobar'; ", // preserve newline
-            "let {[y = 3]: z} = {};",
-            "Y: y",
-            "Z: z"));
+        """
+        let y = 'foobar';  // preserve newline
+        let {[y = 3]: z} = {};
+        Y: y
+        Z: z
+        """);
 
     assertTypeOfExpression("Y").toStringIsEqualTo("number");
     assertTypeOfExpression("Z").toStringIsEqualTo("?");
@@ -3644,10 +4050,11 @@ public final class TypeInferenceTest {
   @Test
   public void testObjectDestructuringUsesIObjectTypeForComputedProp() {
     inFunction(
-        lines(
-            "let /** !IObject<string, number> */ myObj = {['foo']: 3}; ", // preserve newline
-            "let {[42]: x} = myObj;",
-            "X: x"));
+        """
+        let /** !IObject<string, number> */ myObj = {['foo']: 3};  // preserve newline
+        let {[42]: x} = myObj;
+        X: x
+        """);
 
     assertTypeOfExpression("X").toStringIsEqualTo("number");
   }
@@ -3655,10 +4062,11 @@ public final class TypeInferenceTest {
   @Test
   public void testObjectDestructuringDeclarationWithNestedPattern() {
     inFunction(
-        lines(
-            "let /** {a: {b: number}} */ obj = {a: {b: 3}};", //
-            "let {a: {b: x}} = obj;",
-            "X: x"));
+        """
+        let /** {a: {b: number}} */ obj = {a: {b: 3}};
+        let {a: {b: x}} = obj;
+        X: x
+        """);
 
     assertTypeOfExpression("X").toStringIsEqualTo("number");
   }
@@ -3666,10 +4074,11 @@ public final class TypeInferenceTest {
   @Test
   public void testObjectDestructuringAssignmentToQualifiedName() {
     inFunction(
-        lines(
-            "const ns = {};", //
-            "({x: ns.x} = {x: 3});",
-            "X: ns.x;"));
+        """
+        const ns = {};
+        ({x: ns.x} = {x: 3});
+        X: ns.x;
+        """);
 
     assertTypeOfExpression("X").toStringIsEqualTo("number");
   }
@@ -3677,11 +4086,12 @@ public final class TypeInferenceTest {
   @Test
   public void testObjectDestructuringDeclarationInForOf() {
     inFunction(
-        lines(
-            "const /** !Iterable<{x: number}> */ data = [{x: 3}];", //
-            "for (let {x} of data) {",
-            "  X: x;",
-            "}"));
+        """
+        const /** !Iterable<{x: number}> */ data = [{x: 3}];
+        for (let {x} of data) {
+          X: x;
+        }
+        """);
 
     assertTypeOfExpression("X").toStringIsEqualTo("number");
   }
@@ -3689,12 +4099,13 @@ public final class TypeInferenceTest {
   @Test
   public void testObjectDestructuringAssignInForOf() {
     inFunction(
-        lines(
-            "const /** !Iterable<{x: number}> */ data = [{x: 3}];", //
-            "var x;",
-            "for ({x} of data) {",
-            "  X: x;",
-            "}"));
+        """
+        const /** !Iterable<{x: number}> */ data = [{x: 3}];
+        var x;
+        for ({x} of data) {
+          X: x;
+        }
+        """);
 
     assertTypeOfExpression("X").toStringIsEqualTo("number");
   }
@@ -3716,13 +4127,36 @@ public final class TypeInferenceTest {
   }
 
   @Test
+  public void testObjectLiteralNoSideEffect() {
+    // Repro for b/260837012.
+    inFunction(
+        """
+          for (let x = 0; x < 3; x++) {
+            obj = {
+              data: {tipsMetadata: ''},
+              ...{}
+            };
+          }
+        """);
+    assertWithMessage("Type inference must not alter OBJECT_TYPE.")
+        .that(registry.getNativeObjectType(JSTypeNative.OBJECT_TYPE).hasOwnProperty("data"))
+        .isFalse();
+    // Check that the inferred type of 'obj' has a property 'data' associated with it.
+    assertWithMessage("Cannot resolve type of 'obj'").that(getType("obj")).isNotNull();
+    assertWithMessage("Expect property 'data' to be defined on 'obj'")
+        .that(registry.canPropertyBeDefined(getType("obj"), "data"))
+        .isNotEqualTo(JSTypeRegistry.PropDefinitionKind.UNKNOWN);
+  }
+
+  @Test
   public void testArrayDestructuringDeclaration() {
     inFunction(
-        lines(
-            "const /** !Iterable<number> */ numbers = [1, 2, 3];",
-            "let [x, y] = numbers;",
-            "X: x",
-            "Y: y"));
+        """
+        const /** !Iterable<number> */ numbers = [1, 2, 3];
+        let [x, y] = numbers;
+        X: x
+        Y: y
+        """);
 
     assertTypeOfExpression("X").toStringIsEqualTo("number");
     assertTypeOfExpression("Y").toStringIsEqualTo("number");
@@ -3731,11 +4165,12 @@ public final class TypeInferenceTest {
   @Test
   public void testArrayDestructuringDeclarationWithDefaultValue() {
     inFunction(
-        lines(
-            "const /** !Iterable<(number|undefined)> */ numbers = [1, 2, 3];",
-            "let [x = 'x', y = 'y'] = numbers;",
-            "X: x",
-            "Y: y"));
+        """
+        const /** !Iterable<(number|undefined)> */ numbers = [1, 2, 3];
+        let [x = 'x', y = 'y'] = numbers;
+        X: x
+        Y: y
+        """);
 
     assertTypeOfExpression("X").toStringIsEqualTo("(number|string)");
     assertTypeOfExpression("Y").toStringIsEqualTo("(number|string)");
@@ -3744,11 +4179,12 @@ public final class TypeInferenceTest {
   @Test
   public void testArrayDestructuringDeclarationWithDefaultValueForNestedPattern() {
     inFunction(
-        lines(
-            "const /** !Iterable<({x: number}|undefined)> */ xNumberObjs = [];",
-            "let [{x = 'foo'} = {}] = xNumberObjs;",
-            "X: x",
-            "Y: y"));
+        """
+        const /** !Iterable<({x: number}|undefined)> */ xNumberObjs = [];
+        let [{x = 'foo'} = {}] = xNumberObjs;
+        X: x
+        Y: y
+        """);
 
     assertTypeOfExpression("X").toStringIsEqualTo("(number|string)");
   }
@@ -3756,11 +4192,12 @@ public final class TypeInferenceTest {
   @Test
   public void testArrayDestructuringDeclarationWithRest() {
     inFunction(
-        lines(
-            "const /** !Iterable<number> */ numbers = [1, 2, 3];",
-            "let [x, ...y] = numbers;",
-            "X: x",
-            "Y: y"));
+        """
+        const /** !Iterable<number> */ numbers = [1, 2, 3];
+        let [x, ...y] = numbers;
+        X: x
+        Y: y
+        """);
 
     assertTypeOfExpression("X").toStringIsEqualTo("number");
     assertTypeOfExpression("Y").toStringIsEqualTo("Array<number>");
@@ -3769,24 +4206,26 @@ public final class TypeInferenceTest {
   @Test
   public void testArrayDestructuringDeclarationWithNestedArrayPattern() {
     inFunction(
-        lines(
-            "const /** !Iterable<!Iterable<number>> */ numbers = [[1, 2, 3]];",
-            "let [[x], y] = numbers;",
-            "X: x",
-            "Y: y"));
+        """
+        const /** !Iterable<!Iterable<number>> */ numbers = [[1, 2, 3]];
+        let [[x], y] = numbers;
+        X: x
+        Y: y
+        """);
 
     assertTypeOfExpression("X").toStringIsEqualTo("number");
-    assertTypeOfExpression("Y").toStringIsEqualTo("Iterable<number>");
+    assertTypeOfExpression("Y").toStringIsEqualTo("Iterable<number,?,?>");
   }
 
   @Test
   public void testArrayDestructuringDeclarationWithNestedObjectPattern() {
     inFunction(
-        lines(
-            "const /** !Iterable<{x: number}> */ numbers = [{x: 3}, {x: 4}];",
-            "let [{x}, {x: y}] = numbers;",
-            "X: x",
-            "Y: y"));
+        """
+        const /** !Iterable<{x: number}> */ numbers = [{x: 3}, {x: 4}];
+        let [{x}, {x: y}] = numbers;
+        X: x
+        Y: y
+        """);
 
     assertTypeOfExpression("X").toStringIsEqualTo("number");
     assertTypeOfExpression("Y").toStringIsEqualTo("number");
@@ -3803,11 +4242,12 @@ public final class TypeInferenceTest {
   @Test
   public void testArrayDestructuringAssignWithGetProp() {
     inFunction(
-        lines(
-            "const ns = {};", //
-            "const /** !Iterable<number> */ numbers = [1, 2, 3];",
-            "[ns.x] = numbers;",
-            "NSX: ns.x;"));
+        """
+        const ns = {};
+        const /** !Iterable<number> */ numbers = [1, 2, 3];
+        [ns.x] = numbers;
+        NSX: ns.x;
+        """);
 
     assertTypeOfExpression("NSX").toStringIsEqualTo("number");
   }
@@ -3817,11 +4257,12 @@ public final class TypeInferenceTest {
     // we don't update the scope on an assignment to a getelem, so this test just verifies that
     // a) type inference doesn't crash and b) type info validation passes.
     inFunction(
-        lines(
-            "const arr = [];", //
-            "const /** !Iterable<number> */ numbers = [1, 2, 3];",
-            "[arr[1]] = numbers;",
-            "ARR1: arr[1];"));
+        """
+        const arr = [];
+        const /** !Iterable<number> */ numbers = [1, 2, 3];
+        [arr[1]] = numbers;
+        ARR1: arr[1];
+        """);
 
     assertTypeOfExpression("ARR1").toStringIsEqualTo("?");
   }
@@ -3845,13 +4286,14 @@ public final class TypeInferenceTest {
     assuming("x", NUMBER_TYPE);
 
     inFunction(
-        lines(
-            "try {",
-            "  throw {err: 3}; ",
-            "} catch ({[x = 'err']: /** number */ err}) {",
-            "  ERR: err;",
-            "  X: x;",
-            "}"));
+        """
+        try {
+          throw {err: 3};
+        } catch ({[x = 'err']: /** number */ err}) {
+          ERR: err;
+          X: x;
+        }
+        """);
 
     assertTypeOfExpression("ERR").toStringIsEqualTo("number");
     // verify we do inference on the assignment to `x` inside the computed property
@@ -3863,14 +4305,15 @@ public final class TypeInferenceTest {
     assuming("x", NUMBER_TYPE);
 
     inFunction(
-        lines(
-            "/** @type {number} */",
-            "String.prototype.length;",
-            "",
-            "var obj = {};",
-            "for ({length: obj.length} in {'1': 1, '22': 22}) {",
-            "  LENGTH: obj.length;", // set to '1'.length and '22'.length
-            "}"));
+        """
+        /** @type {number} */
+        String.prototype.length;
+
+        var obj = {};
+        for ({length: obj.length} in {'1': 1, '22': 22}) {
+          LENGTH: obj.length; // set to '1'.length and '22'.length
+        }
+        """);
 
     assertTypeOfExpression("LENGTH").toStringIsEqualTo("number");
   }
@@ -3889,10 +4332,11 @@ public final class TypeInferenceTest {
     JSType fooOfNumber = templatize(fooInstanceType, ImmutableList.of(getNativeType(NUMBER_TYPE)));
     assuming("obj", fooOfNumber);
     inFunction(
-        lines(
-            "const {data} = obj;", //
-            "OBJ: obj;",
-            "DATA: data"));
+        """
+        const {data} = obj;
+        OBJ: obj;
+        DATA: data
+        """);
 
     assertTypeOfExpression("OBJ").toStringIsEqualTo("Foo<number>");
     assertTypeOfExpression("DATA").toStringIsEqualTo("number");
@@ -3910,7 +4354,7 @@ public final class TypeInferenceTest {
   public void constDeclarationWithReturnJSDoc_ignoresUnknownRhsType() {
     assuming("foo", UNKNOWN_TYPE);
 
-    inFunction(lines("/** @return {number} */ const fn = foo;"));
+    inFunction("/** @return {number} */ const fn = foo;");
 
     JSType fooWithInterfaceType = getType("fn");
     assertType(fooWithInterfaceType).isFunctionTypeThat().hasReturnTypeThat().isNumber();
@@ -3926,7 +4370,7 @@ public final class TypeInferenceTest {
 
     // The @constructor JSDoc should declare a new type, and FooExtended should refer to that
     // type instead of the constructor for Foo
-    inFunction(lines("/** @constructor @extends {Foo} */ const FooExtended = mixin();"));
+    inFunction("/** @constructor @extends {Foo} */ const FooExtended = mixin();");
 
     JSType fooWithInterfaceType = getType("FooExtended");
     assertType(fooWithInterfaceType).isNotEqualTo(fooType);
@@ -3988,29 +4432,48 @@ public final class TypeInferenceTest {
 
     assertType(getType("foo"))
         .toStringIsEqualTo(
-            "Promise<{\n" + "  Bar: function(): string,\n" + "  default: number\n" + "}>");
+            """
+            Promise<{
+              Bar: function(): string,
+              default: number
+            }>\
+            """);
+  }
+
+  @Test
+  public void testRequireDynamic() {
+    withModules(
+        ImmutableList.of(
+            "goog.module('foo'); exports.barFunc = function Bar() { return 'bar'; };",
+            "const f = goog.requireDynamic('foo');",
+            "const e = goog.require('foo');"));
+
+    assertType(getType("f")).toStringIsEqualTo("IThenable<{barFunc: function(): ?}>");
+    assertType(getType("e")).toStringIsEqualTo("{barFunc: function(): ?}");
   }
 
   @Test
   public void testDynamicImportAfterModuleRewriting() {
     withModules(
         ImmutableList.of(
-            lines(
-                "const module$testcode0 = {};",
-                "/** @const */ module$testcode0.default = 1;",
-                "/** @return {string} */ function Bar() { return 'bar'; };",
-                "/** @const */ module$testcode0.Bar = Bar;"),
+            """
+            const module$testcode0 = {};
+            /** @const */ module$testcode0.default = 1;
+            /** @return {string} */ function Bar() { return 'bar'; };
+            /** @const */ module$testcode0.Bar = Bar;
+            """,
             // modules are named of the format `testcode#` based off their index.
             // testcode0 refers the first module.
             "const foo = import('./testcode0');"));
 
     assertType(getType("foo"))
         .toStringIsEqualTo(
-            lines(
-                "Promise<{", //
-                "  Bar: function(): string,",
-                "  default: number",
-                "}>"));
+            """
+            Promise<{
+              Bar: function(): string,
+              default: number
+            }>\
+            """);
   }
 
   private static void testForAllBigInt(JSType type) {

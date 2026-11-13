@@ -33,11 +33,10 @@ var google = {};
 google.maps = {};
 
 /**
- * Google Maps JavaScript API version loaded by the browser.
- * @see https://developers.google.com/maps/documentation/javascript/versions
- *
- * @type {string}
+ * Google Maps JavaScript API version loaded by the browser. See <a
+ * href="https://developers.google.com/maps/documentation/javascript/versions">https://developers.google.com/maps/documentation/javascript/versions</a>
  * @const
+ * @type {string}
  */
 google.maps.version;
 
@@ -1586,13 +1585,6 @@ google.maps.DirectionsLeg.prototype.start_location;
 google.maps.DirectionsLeg.prototype.steps;
 
 /**
- * Information about traffic speed along the leg.
- * @type {!Array<?>}
- * @deprecated This array will always be empty.
- */
-google.maps.DirectionsLeg.prototype.traffic_speed_entry;
-
-/**
  * An array of non-stopover waypoints along this leg, which were specified in
  * the original request. <p> <strong>Deprecated in alternative routes</strong>.
  * Version 3.27 will be the last version of the API that adds extra
@@ -1604,6 +1596,13 @@ google.maps.DirectionsLeg.prototype.traffic_speed_entry;
  * @type {!Array<!google.maps.LatLng>}
  */
 google.maps.DirectionsLeg.prototype.via_waypoints;
+
+/**
+ * Information about traffic speed along the leg.
+ * @type {!Array<?>}
+ * @deprecated This array will always be empty.
+ */
+google.maps.DirectionsLeg.prototype.traffic_speed_entry;
 
 /**
  * An object containing a <code>points</code> property to describe the polyline
@@ -1871,8 +1870,15 @@ google.maps.DirectionsRequest.prototype.origin;
 google.maps.DirectionsRequest.prototype.provideRouteAlternatives;
 
 /**
- * Region code used as a bias for geocoding requests. Optional.
- * @type {string|undefined}
+ * Region code used as a bias for geocoding requests. The region code accepts a
+ * <a
+ * href="https://en.wikipedia.org/wiki/List_of_Internet_top-level_domains#Country_code_top-level_domains">ccTLD
+ * (&quot;top-level domain&quot;)</a> two-character value. Most ccTLD codes are
+ * identical to ISO 3166-1 codes, with some notable exceptions. For example, the
+ * United Kingdom&#39;s ccTLD is &quot;uk&quot; (<code>.co.uk</code>) while its
+ * ISO 3166-1 code is &quot;gb&quot; (technically for the entity of &quot;The
+ * United Kingdom of Great Britain and Northern Ireland&quot;).
+ * @type {?string|undefined}
  */
 google.maps.DirectionsRequest.prototype.region;
 
@@ -2129,25 +2135,10 @@ google.maps.DirectionsStep.prototype.encoded_lat_lngs;
 google.maps.DirectionsStep.prototype.end_location;
 
 /**
- * The ending location of this step.
- * @type {!google.maps.LatLng}
- * @deprecated Please use {@link google.maps.DirectionsStep.end_location}.
- */
-google.maps.DirectionsStep.prototype.end_point;
-
-/**
  * Instructions for this step.
  * @type {string}
  */
 google.maps.DirectionsStep.prototype.instructions;
-
-/**
- * A sequence of <code>LatLng</code>s describing the course of this step. This
- * is an approximate (smoothed) path of the step.
- * @type {!Array<!google.maps.LatLng>}
- * @deprecated Please use {@link google.maps.DirectionsStep.path}.
- */
-google.maps.DirectionsStep.prototype.lat_lngs;
 
 /**
  * Contains the action to take for the current step (<code>turn-left</code>,
@@ -2165,27 +2156,10 @@ google.maps.DirectionsStep.prototype.maneuver;
 google.maps.DirectionsStep.prototype.path;
 
 /**
- * Contains an object with a single property, &#39;points&#39;, that holds an <a
- * href="https://developers.google.com/maps/documentation/utilities/polylinealgorithm">encoded
- * polyline</a> representation of the step. This polyline is an approximate
- * (smoothed) path of the step.
- * @type {!Array<!google.maps.DirectionsStep>|undefined}
- * @deprecated Please use {@link google.maps.DirectionsStep.encoded_lat_lngs}.
- */
-google.maps.DirectionsStep.prototype.polyline;
-
-/**
  * The starting location of this step.
  * @type {!google.maps.LatLng}
  */
 google.maps.DirectionsStep.prototype.start_location;
-
-/**
- * The starting location of this step.
- * @type {!google.maps.LatLng}
- * @deprecated Please use {@link google.maps.DirectionsStep.start_location}.
- */
-google.maps.DirectionsStep.prototype.start_point;
 
 /**
  * Sub-steps of this step. Specified for non-transit sections of transit routes.
@@ -2211,6 +2185,38 @@ google.maps.DirectionsStep.prototype.transit_details;
  * @type {!google.maps.TravelMode}
  */
 google.maps.DirectionsStep.prototype.travel_mode;
+
+/**
+ * The starting location of this step.
+ * @type {!google.maps.LatLng}
+ * @deprecated Please use {@link google.maps.DirectionsStep.start_location}.
+ */
+google.maps.DirectionsStep.prototype.start_point;
+
+/**
+ * The ending location of this step.
+ * @type {!google.maps.LatLng}
+ * @deprecated Please use {@link google.maps.DirectionsStep.end_location}.
+ */
+google.maps.DirectionsStep.prototype.end_point;
+
+/**
+ * A sequence of <code>LatLng</code>s describing the course of this step. This
+ * is an approximate (smoothed) path of the step.
+ * @type {!Array<!google.maps.LatLng>}
+ * @deprecated Please use {@link google.maps.DirectionsStep.path}.
+ */
+google.maps.DirectionsStep.prototype.lat_lngs;
+
+/**
+ * Contains an object with a single property, &#39;points&#39;, that holds an <a
+ * href="https://developers.google.com/maps/documentation/utilities/polylinealgorithm">encoded
+ * polyline</a> representation of the step. This polyline is an approximate
+ * (smoothed) path of the step.
+ * @type {!Array<!google.maps.DirectionsStep>|undefined}
+ * @deprecated Please use {@link google.maps.DirectionsStep.encoded_lat_lngs}.
+ */
+google.maps.DirectionsStep.prototype.polyline;
 
 /**
  * A <code>DirectionsWaypoint</code> represents a location between origin and
@@ -2331,8 +2337,15 @@ google.maps.DistanceMatrixRequest.prototype.drivingOptions;
 google.maps.DistanceMatrixRequest.prototype.origins;
 
 /**
- * Region code used as a bias for geocoding requests. Optional.
- * @type {string|undefined}
+ * Region code used as a bias for geocoding requests. The region code accepts a
+ * <a
+ * href="https://en.wikipedia.org/wiki/List_of_Internet_top-level_domains#Country_code_top-level_domains">ccTLD
+ * (&quot;top-level domain&quot;)</a> two-character value. Most ccTLD codes are
+ * identical to ISO 3166-1 codes, with some notable exceptions. For example, the
+ * United Kingdom&#39;s ccTLD is &quot;uk&quot; (<code>.co.uk</code>) while its
+ * ISO 3166-1 code is &quot;gb&quot; (technically for the entity of &quot;The
+ * United Kingdom of Great Britain and Northern Ireland&quot;).
+ * @type {?string|undefined}
  */
 google.maps.DistanceMatrixRequest.prototype.region;
 
@@ -2644,6 +2657,202 @@ google.maps.ErrorEvent = function() {};
 google.maps.ErrorEvent.prototype.error;
 
 /**
+ * Available only in the v=beta channel: https://goo.gle/3oAthT3.
+ * An interface representing a vector map tile feature. These are inputs to the
+ * <code>FeatureStyleFunction</code>. Do not save a reference to a particular
+ * <code>Feature</code> object because the reference will not be stable.
+ * @record
+ */
+google.maps.Feature = function() {};
+
+/**
+ * Available only in the v=beta channel: https://goo.gle/3oAthT3.
+ * <code>FeatureType</code> of this <code>Feature</code>.
+ * @type {!google.maps.FeatureType}
+ */
+google.maps.Feature.prototype.featureType;
+
+/**
+ * Available only in the v=beta channel: https://goo.gle/3oAthT3.
+ * An interface representing a map layer containing features of a
+ * specific {@link google.maps.FeatureType} whose style can be overridden
+ * client-side, or have events attached.
+ * @record
+ */
+google.maps.FeatureLayer = function() {};
+
+/**
+ * Available only in the v=beta channel: https://goo.gle/3oAthT3.
+ * The <code>FeatureType</code> associated with this <code>FeatureLayer</code>.
+ * @type {!google.maps.FeatureType}
+ */
+google.maps.FeatureLayer.prototype.featureType;
+
+/**
+ * Available only in the v=beta channel: https://goo.gle/3oAthT3.
+ * Whether this <code>FeatureLayer</code> is available, meaning whether
+ * Data-driven styling is available for this map (there is a map ID using vector
+ * tiles with this <code>FeatureLayer</code> enabled in the Google Cloud Console
+ * map style.) If this is false (or becomes false), styling on this
+ * <code>FeatureLayer</code> returns to default and events are not triggered.
+ * @type {boolean}
+ */
+google.maps.FeatureLayer.prototype.isAvailable;
+
+/**
+ * Available only in the v=beta channel: https://goo.gle/3oAthT3.
+ * The style of <code>Feature</code>s in the <code>FeatureLayer</code>. The
+ * style is applied when style is set. If your style function updates, you must
+ * set the style property again. A <code>FeatureStyleFunction</code> must return
+ * consistent results when it is applied over the map tiles, and should be
+ * optimized for performance. If you use a <code>FeatureStyleOptions</code>, all
+ * features of that layer will be styled with the same
+ * <code>FeatureStyleOptions</code>. Set the style to <code>null</code> to
+ * remove the previously set style. If this <code>FeatureLayer</code> is not
+ * available, setting style does nothing and logs an error.
+ * @type {?google.maps.FeatureStyleOptions|?google.maps.FeatureStyleFunction|undefined}
+ */
+google.maps.FeatureLayer.prototype.style;
+
+/**
+ * Available only in the v=beta channel: https://goo.gle/3oAthT3.
+ * Adds the given listener function to the given event name. Returns an
+ * identifier for this listener that can be used with {@link
+ * google.maps.event.removeListener}.
+ * @param {string} eventName Observed event.
+ * @param {!Function} handler Function to handle events.
+ * @return {!google.maps.MapsEventListener} Resulting event listener.
+ */
+google.maps.FeatureLayer.prototype.addListener = function(
+    eventName, handler) {};
+
+/**
+ * Available only in the v=beta channel: https://goo.gle/3oAthT3.
+ * This object is returned from a mouse event on a <code>FeatureLayer</code>.
+ * @extends {google.maps.MapMouseEvent}
+ * @record
+ */
+google.maps.FeatureMouseEvent = function() {};
+
+/**
+ * Available only in the v=beta channel: https://goo.gle/3oAthT3.
+ * The <code>Feature</code>s at this mouse event.
+ * @type {!Array<!google.maps.Feature>}
+ */
+google.maps.FeatureMouseEvent.prototype.features;
+
+/**
+ * Available only in the v=beta channel: https://goo.gle/3oAthT3.
+ * @typedef {function(!google.maps.FeatureStyleFunctionOptions):
+ * (?google.maps.FeatureStyleOptions|undefined)}
+ */
+google.maps.FeatureStyleFunction;
+
+/**
+ * Available only in the v=beta channel: https://goo.gle/3oAthT3.
+ * Options passed to a <code>FeatureStyleFunction</code>.
+ * @record
+ */
+google.maps.FeatureStyleFunctionOptions = function() {};
+
+/**
+ * Available only in the v=beta channel: https://goo.gle/3oAthT3.
+ * <code>Feature</code> passed into the <code>FeatureStyleFunction</code> for
+ * styling.
+ * @type {!google.maps.Feature}
+ */
+google.maps.FeatureStyleFunctionOptions.prototype.feature;
+
+/**
+ * Available only in the v=beta channel: https://goo.gle/3oAthT3.
+ * These options specify the way the style of a <code>Feature</code> should be
+ * modified on a map.
+ * @record
+ */
+google.maps.FeatureStyleOptions = function() {};
+
+/**
+ * Available only in the v=beta channel: https://goo.gle/3oAthT3.
+ * Hex RGB string (like &quot;#00FF00&quot; for green). Only applies to polygon
+ * geometries.
+ * @type {string|undefined}
+ */
+google.maps.FeatureStyleOptions.prototype.fillColor;
+
+/**
+ * Available only in the v=beta channel: https://goo.gle/3oAthT3.
+ * The fill opacity between 0.0 and 1.0. Only applies to polygon geometries.
+ * @type {number|undefined}
+ */
+google.maps.FeatureStyleOptions.prototype.fillOpacity;
+
+/**
+ * Available only in the v=beta channel: https://goo.gle/3oAthT3.
+ * Hex RGB string (like &quot;#00FF00&quot; for green).
+ * @type {string|undefined}
+ */
+google.maps.FeatureStyleOptions.prototype.strokeColor;
+
+/**
+ * Available only in the v=beta channel: https://goo.gle/3oAthT3.
+ * The stroke opacity between 0.0 and 1.0. Only applies to line and polygon
+ * geometries.
+ * @type {number|undefined}
+ */
+google.maps.FeatureStyleOptions.prototype.strokeOpacity;
+
+/**
+ * Available only in the v=beta channel: https://goo.gle/3oAthT3.
+ * The stroke width in pixels. Only applies to line and polygon geometries.
+ * @type {number|undefined}
+ */
+google.maps.FeatureStyleOptions.prototype.strokeWeight;
+
+/**
+ * Available only in the v=beta channel: https://goo.gle/3oAthT3.
+ * Identifiers for feature types.
+ * @enum {string}
+ */
+google.maps.FeatureType = {
+  /**
+   * Indicates a first-order civil entity below the country level.
+   */
+  ADMINISTRATIVE_AREA_LEVEL_1: 'ADMINISTRATIVE_AREA_LEVEL_1',
+  /**
+   * Indicates a second-order civil entity below the country level.
+   */
+  ADMINISTRATIVE_AREA_LEVEL_2: 'ADMINISTRATIVE_AREA_LEVEL_2',
+  /**
+   * Indicates a third-order civil entity below the country level.
+   */
+  ADMINISTRATIVE_AREA_LEVEL_3: 'ADMINISTRATIVE_AREA_LEVEL_3',
+  /**
+   * Indicates a fourth-order civil entity below the country level.
+   */
+  ADMINISTRATIVE_AREA_LEVEL_4: 'ADMINISTRATIVE_AREA_LEVEL_4',
+  /**
+   * Indicates the national political entity.
+   */
+  COUNTRY: 'COUNTRY',
+  /**
+   * Indicates an incorporated city or town political entity.
+   */
+  LOCALITY: 'LOCALITY',
+  /**
+   * Indicates a named neighborhood.
+   */
+  NEIGHBORHOOD: 'NEIGHBORHOOD',
+  /**
+   * Indicates a postal code as used to address postal mail within the country.
+   */
+  POSTAL_CODE: 'POSTAL_CODE',
+  /**
+   * Indicates a first-order civil entity below a locality.
+   */
+  SUBLOCALITY_LEVEL_1: 'SUBLOCALITY_LEVEL_1',
+};
+
+/**
  * Options for the rendering of the fullscreen control.
  * @record
  */
@@ -2931,7 +3140,7 @@ google.maps.GeocoderResult.prototype.plus_code;
 /**
  * An array of strings denoting all the localities contained in a postal code.
  * This is only present when the result is a postal code that contains multiple
- * localities. This array can contain up to 10 localities.
+ * localities.
  * @type {!Array<string>|undefined}
  */
 google.maps.GeocoderResult.prototype.postcode_localities;
@@ -4432,6 +4641,20 @@ google.maps.Map.prototype.getClickableIcons = function() {};
 google.maps.Map.prototype.getDiv = function() {};
 
 /**
+ * Available only in the v=beta channel: https://goo.gle/3oAthT3.
+ * Returns the <code>FeatureLayer</code> of the specific
+ * <code>FeatureType</code>. A <code>FeatureLayer</code> must be enabled in the
+ * Google Cloud Console. If a <code>FeatureLayer</code> of the specified
+ * <code>FeatureType</code> does not exist on this map, or if Data-driven
+ * styling is not available (no map ID, no vector tiles, and no
+ * <code>FeatureLayer</code> enabled in the map style), this logs an error, and
+ * the resulting <code>FeatureLayer.isAvailable</code> will be false.
+ * @param {!google.maps.FeatureType} featureType
+ * @return {!google.maps.FeatureLayer}
+ */
+google.maps.Map.prototype.getFeatureLayer = function(featureType) {};
+
+/**
  * Returns the compass heading of the map. The heading value is measured in
  * degrees (clockwise) from cardinal direction North. If the map is not yet
  * initialized then the result is <code>undefined</code>.
@@ -4755,16 +4978,6 @@ google.maps.MapOptions.prototype.disableDefaultUI;
 google.maps.MapOptions.prototype.disableDoubleClickZoom;
 
 /**
- * If <code>false</code>, prevents the map from being dragged. Dragging is
- * enabled by default.
- * @type {?boolean|undefined}
- * @deprecated Deprecated in 2017. To disable dragging on the map, you can use
- *     the <code>gestureHandling</code> property, and set it to
- *     <code>"none"</code>.
- */
-google.maps.MapOptions.prototype.draggable;
-
-/**
  * The name or url of the cursor to display when mousing over a draggable map.
  * This property uses the css <code>cursor</code> attribute to change the icon.
  * As with the css property, you must specify at least one fallback cursor that
@@ -5028,6 +5241,16 @@ google.maps.MapOptions.prototype.zoomControl;
  * @type {?google.maps.ZoomControlOptions|undefined}
  */
 google.maps.MapOptions.prototype.zoomControlOptions;
+
+/**
+ * If <code>false</code>, prevents the map from being dragged. Dragging is
+ * enabled by default.
+ * @type {?boolean|undefined}
+ * @deprecated Deprecated in 2017. To disable dragging on the map, you can use
+ *     the <code>gestureHandling</code> property, and set it to
+ *     <code>"none"</code>.
+ */
+google.maps.MapOptions.prototype.draggable;
 
 /**
  * @record
@@ -5481,7 +5704,7 @@ google.maps.Marker.prototype.getIcon = function() {};
 /**
  * Get the label of the {@link google.maps.Marker}. See {@link
  * google.maps.MarkerOptions.label}.
- * @return {?google.maps.MarkerLabel|undefined}
+ * @return {?google.maps.MarkerLabel|string|undefined}
  */
 google.maps.Marker.prototype.getLabel = function() {};
 
@@ -6188,6 +6411,37 @@ google.maps.Place.prototype.placeId;
  * @type {string|undefined}
  */
 google.maps.Place.prototype.query;
+
+/**
+ * Available only in the v=beta channel: https://goo.gle/3oAthT3.
+ * An interface representing a feature with a place ID which includes features
+ * of type {@link google.maps.FeatureType.ADMINISTRATIVE_AREA_LEVEL_1}, {@link
+ * google.maps.FeatureType.ADMINISTRATIVE_AREA_LEVEL_2}, {@link
+ * google.maps.FeatureType.ADMINISTRATIVE_AREA_LEVEL_3}, {@link
+ * google.maps.FeatureType.ADMINISTRATIVE_AREA_LEVEL_4}, {@link
+ * google.maps.FeatureType.COUNTRY}, {@link
+ * google.maps.FeatureType.LOCALITY}, {@link
+ * google.maps.FeatureType.NEIGHBORHOOD}, {@link
+ * google.maps.FeatureType.POSTAL_CODE}, and {@link
+ * google.maps.FeatureType.SUBLOCALITY_LEVEL_1}.
+ * @extends {google.maps.Feature}
+ * @record
+ */
+google.maps.PlaceFeature = function() {};
+
+/**
+ * Available only in the v=beta channel: https://goo.gle/3oAthT3.
+ * The display name.
+ * @type {string}
+ */
+google.maps.PlaceFeature.prototype.displayName;
+
+/**
+ * Available only in the v=beta channel: https://goo.gle/3oAthT3.
+ * The {@link google.maps.places.PlaceResult.place_id}.
+ * @type {string}
+ */
+google.maps.PlaceFeature.prototype.placeId;
 
 /**
  * @param {number} x
@@ -7156,6 +7410,15 @@ google.maps.StreetViewPanorama = function(container, opts) {};
 google.maps.StreetViewPanorama.prototype.controls;
 
 /**
+ * Sets focus on this <code>StreetViewPanorama</code>. You may wish to consider
+ * using this method along with a <code>visible_changed</code> event to make
+ * sure that <code>StreetViewPanorama</code> is visible before setting focus on
+ * it. A <code>StreetViewPanorama</code> that is not visible cannot be focused.
+ * @return {undefined}
+ */
+google.maps.StreetViewPanorama.prototype.focus = function() {};
+
+/**
  * Returns the set of navigation links for the Street View panorama.
  * @return {Array<google.maps.StreetViewLink>}
  */
@@ -7415,12 +7678,18 @@ google.maps.StreetViewPanoramaOptions.prototype.linksControl;
 
 /**
  * Whether motion tracking is on or off. Enabled by default when the motion
- * tracking control is present, so that the POV (point of view) follows the
- * orientation of the device. This is primarily applicable to mobile devices. If
+ * tracking control is present and permission is granted by a user or not
+ * required, so that the POV (point of view) follows the orientation of the
+ * device. This is primarily applicable to mobile devices. If
  * <code>motionTracking</code> is set to <code>false</code> while
  * <code>motionTrackingControl</code> is enabled, the motion tracking control
  * appears but tracking is off. The user can tap the motion tracking control to
- * toggle this option.
+ * toggle this option. If <code>motionTracking</code> is set to
+ * <code>true</code> while permission is required but not yet requested, the
+ * motion tracking control appears but tracking is off. The user can tap the
+ * motion tracking control to request permission. If <code>motionTracking</code>
+ * is set to <code>true</code> while permission is denied by a user, the motion
+ * tracking control appears disabled with tracking turned off.
  * @type {?boolean|undefined}
  */
 google.maps.StreetViewPanoramaOptions.prototype.motionTracking;
@@ -8867,40 +9136,6 @@ google.maps.drawing.OverlayType = {
 google.maps.event = {};
 
 /**
- * Cross browser event handler registration. This listener is removed by calling
- * removeListener(handle) for the handle that is returned by this function.
- * @param {!Object} instance
- * @param {string} eventName
- * @param {!Function} handler
- * @param {boolean=} capture
- * @return {!google.maps.MapsEventListener}
- * @deprecated <code>google.maps.event.addDomListener()</code> is deprecated,
- *     use the standard <a
- *     href="https://developer.mozilla.org/docs/Web/API/EventTarget/addEventListener">addEventListener()</a>
- *     method instead. The feature will continue to work and there is no plan to
- *     decommission it.
- */
-google.maps.event.addDomListener = function(
-    instance, eventName, handler, capture) {};
-
-/**
- * Wrapper around addDomListener that removes the listener after the first
- * event.
- * @param {!Object} instance
- * @param {string} eventName
- * @param {!Function} handler
- * @param {boolean=} capture
- * @return {!google.maps.MapsEventListener}
- * @deprecated <code>google.maps.event.addDomListenerOnce()</code> is
- *     deprecated, use the standard <a
- *     href="https://developer.mozilla.org/docs/Web/API/EventTarget/addEventListener">addEventListener()</a>
- *     method instead. The feature will continue to work and there is no plan to
- *     decommission it.
- */
-google.maps.event.addDomListenerOnce = function(
-    instance, eventName, handler, capture) {};
-
-/**
  * Adds the given listener function to the given event name for the given object
  * instance. Returns an identifier for this listener that can be used with
  * removeListener().
@@ -8964,6 +9199,40 @@ google.maps.event.removeListener = function(listener) {};
 google.maps.event.trigger = function(instance, eventName, eventArgs) {};
 
 /**
+ * Cross browser event handler registration. This listener is removed by calling
+ * removeListener(handle) for the handle that is returned by this function.
+ * @param {!Object} instance
+ * @param {string} eventName
+ * @param {!Function} handler
+ * @param {boolean=} capture
+ * @return {!google.maps.MapsEventListener}
+ * @deprecated <code>google.maps.event.addDomListener()</code> is deprecated,
+ *     use the standard <a
+ *     href="https://developer.mozilla.org/docs/Web/API/EventTarget/addEventListener">addEventListener()</a>
+ *     method instead. The feature will continue to work and there is no plan to
+ *     decommission it.
+ */
+google.maps.event.addDomListener = function(
+    instance, eventName, handler, capture) {};
+
+/**
+ * Wrapper around addDomListener that removes the listener after the first
+ * event.
+ * @param {!Object} instance
+ * @param {string} eventName
+ * @param {!Function} handler
+ * @param {boolean=} capture
+ * @return {!google.maps.MapsEventListener}
+ * @deprecated <code>google.maps.event.addDomListenerOnce()</code> is
+ *     deprecated, use the standard <a
+ *     href="https://developer.mozilla.org/docs/Web/API/EventTarget/addEventListener">addEventListener()</a>
+ *     method instead. The feature will continue to work and there is no plan to
+ *     decommission it.
+ */
+google.maps.event.addDomListenerOnce = function(
+    instance, eventName, handler, capture) {};
+
+/**
  * @const
  */
 google.maps.geometry = {};
@@ -9025,9 +9294,9 @@ google.maps.geometry.poly.isLocationOnEdge = function(
 google.maps.geometry.spherical = {};
 
 /**
- * Returns the area of a closed path. The computed area uses the same units as
- * the radius. The radius defaults to the Earth&#39;s radius in meters, in which
- * case the area is in square meters.
+ * Returns the unsigned area of a closed path, in the range [0, -2×pi×radius²].
+ * The computed area uses the same units as the radius. The radius defaults to
+ * the Earth&#39;s radius in meters, in which case the area is in square meters.
  * @param {!Array<!google.maps.LatLng|!google.maps.LatLngLiteral>|!google.maps.MVCArray<!google.maps.LatLng|!google.maps.LatLngLiteral>}
  *     path
  * @param {number=} radius
@@ -9091,10 +9360,17 @@ google.maps.geometry.spherical.computeOffsetOrigin = function(
     to, distance, heading, radius) {};
 
 /**
- * Returns the signed area of a closed path. The signed area may be used to
- * determine the orientation of the path. The computed area uses the same units
- * as the radius. The radius defaults to the Earth&#39;s radius in meters, in
- * which case the area is in square meters.
+ * Returns the signed area of a closed path, where counterclockwise is positive,
+ * in the range [-2×pi×radius², 2×pi×radius²]. The computed area uses the same
+ * units as the radius. The radius defaults to the Earth&#39;s radius in meters,
+ * in which case the area is in square meters. <br><br> The area is computed
+ * using the <a href="https://wikipedia.org/wiki/Parallel_transport">parallel
+ * transport</a> method; the parallel transport around a closed path on the unit
+ * sphere twists by an angle that is equal to the area enclosed by the path.
+ * This is simpler and more accurate and robust than triangulation using Girard,
+ * l&#39;Huilier, or Eriksson on each triangle. In particular, since it
+ * doesn&#39;t triangulate, it suffers no instability except in the unavoidable
+ * case when an <em>edge</em> (not a diagonal) of the polygon spans 180 degrees.
  * @param {!Array<!google.maps.LatLng|!google.maps.LatLngLiteral>|!google.maps.MVCArray<!google.maps.LatLng|!google.maps.LatLngLiteral>}
  *     loop
  * @param {number=} radius
@@ -9510,7 +9786,11 @@ google.maps.journeySharing.FleetEngineDeliveryVehicleLocationProviderOptions
     .prototype.authTokenFetcher;
 
 /**
- * The delivery vehicle ID to track initially.
+ * The delivery vehicle ID to track immediately after the location provider is
+ * instantiated. If not specified, the location provider does not start tracking
+ * any vehicle; use {@link
+ * google.maps.journeySharing.FleetEngineDeliveryVehicleLocationProvider.deliveryVehicleId}
+ * to set the ID and begin tracking.
  * @type {?string}
  */
 google.maps.journeySharing.FleetEngineDeliveryVehicleLocationProviderOptions
@@ -9698,8 +9978,12 @@ google.maps.journeySharing.FleetEngineShipmentLocationProviderOptions.prototype
     .projectId;
 
 /**
- * The tracking ID to track initially.
- * @type {string}
+ * The tracking ID of the task to track immediately after the location provider
+ * is instantiated. If not specified, the location provider does not start
+ * tracking any task; use {@link
+ * google.maps.journeySharing.FleetEngineShipmentLocationProvider.trackingId} to
+ * set the tracking ID and begin tracking.
+ * @type {?string}
  */
 google.maps.journeySharing.FleetEngineShipmentLocationProviderOptions.prototype
     .trackingId;
@@ -9812,8 +10096,11 @@ google.maps.journeySharing.FleetEngineTripLocationProviderOptions.prototype
     .projectId;
 
 /**
- * The trip ID to track initially.
- * @type {string}
+ * The trip ID to track immediately after the location provider is instantiated.
+ * If not specified, the location provider does not start tracking any trip;
+ * use {@link google.maps.journeySharing.FleetEngineTripLocationProvider.tripId}
+ * to set the ID and begin tracking.
+ * @type {?string}
  */
 google.maps.journeySharing.FleetEngineTripLocationProviderOptions.prototype
     .tripId;
@@ -10643,7 +10930,7 @@ google.maps.journeySharing.VehicleLocationUpdate.prototype
     .speedKilometersPerHour;
 
 /**
- * The update time.
+ * The time this update was received from the vehicle.
  * @type {?Date}
  */
 google.maps.journeySharing.VehicleLocationUpdate.prototype.time;
@@ -11183,19 +11470,6 @@ google.maps.places.AutocompleteOptions.prototype.componentRestrictions;
 google.maps.places.AutocompleteOptions.prototype.fields;
 
 /**
- * Whether to retrieve only Place IDs. The PlaceResult made available when the
- * place_changed event is fired will only have the place_id, types and name
- * fields, with the place_id, types and description returned by the Autocomplete
- * service. Disabled by default.
- * @type {boolean|undefined}
- * @deprecated <code>placeIdOnly</code> is deprecated as of January 15, 2019,
- *     and will be turned off on January 15, 2020. Use {@link
- *     google.maps.places.AutocompleteOptions.fields} instead: <code>fields:
- *     [&#39;place_id&#39;, &#39;name&#39;, &#39;types&#39;]</code>.
- */
-google.maps.places.AutocompleteOptions.prototype.placeIdOnly;
-
-/**
  * A boolean value, indicating that the Autocomplete widget should only return
  * those places that are inside the bounds of the Autocomplete widget at the
  * time the query is sent. Setting strictBounds to <code>false</code> (which is
@@ -11213,6 +11487,19 @@ google.maps.places.AutocompleteOptions.prototype.strictBounds;
  * @type {!Array<string>|undefined}
  */
 google.maps.places.AutocompleteOptions.prototype.types;
+
+/**
+ * Whether to retrieve only Place IDs. The PlaceResult made available when the
+ * place_changed event is fired will only have the place_id, types and name
+ * fields, with the place_id, types and description returned by the Autocomplete
+ * service. Disabled by default.
+ * @type {boolean|undefined}
+ * @deprecated <code>placeIdOnly</code> is deprecated as of January 15, 2019,
+ *     and will be turned off on January 15, 2020. Use {@link
+ *     google.maps.places.AutocompleteOptions.fields} instead: <code>fields:
+ *     [&#39;place_id&#39;, &#39;name&#39;, &#39;types&#39;]</code>.
+ */
+google.maps.places.AutocompleteOptions.prototype.placeIdOnly;
 
 /**
  * Represents a single autocomplete prediction.
@@ -11693,16 +11980,6 @@ google.maps.places.PlaceGeometry.prototype.viewport;
 google.maps.places.PlaceOpeningHours = function() {};
 
 /**
- * Whether the Place is open at the current time.
- * @type {boolean|undefined}
- * @deprecated <code>open_now</code> is deprecated as of November 2019. Use
- *     the {@link google.maps.places.PlaceOpeningHours.isOpen} method from
- *     a {@link google.maps.places.PlacesService.getDetails} result instead. See
- *     <a href="https://goo.gle/js-open-now">https://goo.gle/js-open-now</a>
- */
-google.maps.places.PlaceOpeningHours.prototype.open_now;
-
-/**
  * Opening periods covering for each day of the week, starting from Sunday, in
  * chronological order. Days in which the Place is not open are not included.
  * Only available with {@link google.maps.places.PlacesService.getDetails}.
@@ -11721,6 +11998,16 @@ google.maps.places.PlaceOpeningHours.prototype.periods;
  * @type {!Array<string>|undefined}
  */
 google.maps.places.PlaceOpeningHours.prototype.weekday_text;
+
+/**
+ * Whether the Place is open at the current time.
+ * @type {boolean|undefined}
+ * @deprecated <code>open_now</code> is deprecated as of November 2019. Use
+ *     the {@link google.maps.places.PlaceOpeningHours.isOpen} method from
+ *     a {@link google.maps.places.PlacesService.getDetails} result instead. See
+ *     <a href="https://goo.gle/js-open-now">https://goo.gle/js-open-now</a>
+ */
+google.maps.places.PlaceOpeningHours.prototype.open_now;
 
 /**
  * Check whether the place is open now (when no date is passed), or at the given
@@ -11978,19 +12265,6 @@ google.maps.places.PlaceResult.prototype.name;
 google.maps.places.PlaceResult.prototype.opening_hours;
 
 /**
- * A flag indicating whether the Place is closed, either permanently or
- * temporarily. If the place is operational, or if no data is available, the
- * flag is absent from the response.
- * @type {boolean|undefined}
- * @deprecated <code>permanently_closed</code> is deprecated as of May 2020 and
- *     will be turned off in May 2021. Use {@link
- *     google.maps.places.PlaceResult.business_status} instead as
- *     <code>permanently_closed</code> does not distinguish between temporary
- *     and permanent closures.
- */
-google.maps.places.PlaceResult.prototype.permanently_closed;
-
-/**
  * Photos of this Place. The collection will contain up to ten {@link
  * google.maps.places.PlacePhoto} objects.
  * @type {!Array<!google.maps.places.PlacePhoto>|undefined}
@@ -12060,20 +12334,6 @@ google.maps.places.PlaceResult.prototype.user_ratings_total;
 /**
  * The offset from UTC of the Place’s current timezone, in minutes. For example,
  * Sydney, Australia in daylight savings is 11 hours ahead of UTC, so the
- * <code>utc_offset</code> will be <code>660</code>. For timezones behind UTC,
- * the offset is negative. For example, the <code>utc_offset</code> is
- * <code>-60</code> for Cape Verde. Only available with {@link
- * google.maps.places.PlacesService.getDetails}.
- * @type {number|undefined}
- * @deprecated <code>utc_offset</code> is deprecated as of November 2019.
- *     Use {@link google.maps.places.PlaceResult.utc_offset_minutes} instead.
- *     See <a href="https://goo.gle/js-open-now">https://goo.gle/js-open-now</a>
- */
-google.maps.places.PlaceResult.prototype.utc_offset;
-
-/**
- * The offset from UTC of the Place’s current timezone, in minutes. For example,
- * Sydney, Australia in daylight savings is 11 hours ahead of UTC, so the
  * <code>utc_offset_minutes</code> will be <code>660</code>. For timezones
  * behind UTC, the offset is negative. For example, the
  * <code>utc_offset_minutes</code> is <code>-60</code> for Cape Verde. Only
@@ -12100,17 +12360,37 @@ google.maps.places.PlaceResult.prototype.vicinity;
 google.maps.places.PlaceResult.prototype.website;
 
 /**
+ * The offset from UTC of the Place’s current timezone, in minutes. For example,
+ * Sydney, Australia in daylight savings is 11 hours ahead of UTC, so the
+ * <code>utc_offset</code> will be <code>660</code>. For timezones behind UTC,
+ * the offset is negative. For example, the <code>utc_offset</code> is
+ * <code>-60</code> for Cape Verde. Only available with {@link
+ * google.maps.places.PlacesService.getDetails}.
+ * @type {number|undefined}
+ * @deprecated <code>utc_offset</code> is deprecated as of November 2019.
+ *     Use {@link google.maps.places.PlaceResult.utc_offset_minutes} instead.
+ *     See <a href="https://goo.gle/js-open-now">https://goo.gle/js-open-now</a>
+ */
+google.maps.places.PlaceResult.prototype.utc_offset;
+
+/**
+ * A flag indicating whether the Place is closed, either permanently or
+ * temporarily. If the place is operational, or if no data is available, the
+ * flag is absent from the response.
+ * @type {boolean|undefined}
+ * @deprecated <code>permanently_closed</code> is deprecated as of May 2020 and
+ *     will be turned off in May 2021. Use {@link
+ *     google.maps.places.PlaceResult.business_status} instead as
+ *     <code>permanently_closed</code> does not distinguish between temporary
+ *     and permanent closures.
+ */
+google.maps.places.PlaceResult.prototype.permanently_closed;
+
+/**
  * Represents a single review of a place.
  * @record
  */
 google.maps.places.PlaceReview = function() {};
-
-/**
- * The aspects rated by the review. The ratings on a scale of 0 to 3.
- * @type {!Array<!google.maps.places.PlaceAspectRating>|undefined}
- * @deprecated This field is no longer available.
- */
-google.maps.places.PlaceReview.prototype.aspects;
 
 /**
  * The name of the reviewer.
@@ -12166,6 +12446,13 @@ google.maps.places.PlaceReview.prototype.text;
  * @type {number}
  */
 google.maps.places.PlaceReview.prototype.time;
+
+/**
+ * The aspects rated by the review. The ratings on a scale of 0 to 3.
+ * @type {!Array<!google.maps.places.PlaceAspectRating>|undefined}
+ * @deprecated This field is no longer available.
+ */
+google.maps.places.PlaceReview.prototype.aspects;
 
 /**
  * An object used to fetch additional pages of Places results.
@@ -12244,15 +12531,6 @@ google.maps.places.PlaceSearchRequest.prototype.maxPriceLevel;
 google.maps.places.PlaceSearchRequest.prototype.minPriceLevel;
 
 /**
- * Equivalent to <code>keyword</code>. Values in this field are combined with
- * values in the <code>keyword</code> field and passed as part of the same
- * search string.
- * @type {string|undefined}
- * @deprecated Use <code>keyword</code> instead.
- */
-google.maps.places.PlaceSearchRequest.prototype.name;
-
-/**
  * Restricts results to only those places that are open right now.
  * @type {boolean|undefined}
  */
@@ -12286,6 +12564,15 @@ google.maps.places.PlaceSearchRequest.prototype.rankBy;
  * @type {string|undefined}
  */
 google.maps.places.PlaceSearchRequest.prototype.type;
+
+/**
+ * Equivalent to <code>keyword</code>. Values in this field are combined with
+ * values in the <code>keyword</code> field and passed as part of the same
+ * search string.
+ * @type {string|undefined}
+ * @deprecated Use <code>keyword</code> instead.
+ */
+google.maps.places.PlaceSearchRequest.prototype.name;
 
 /**
  * Contains methods related to searching for places and retrieving details about

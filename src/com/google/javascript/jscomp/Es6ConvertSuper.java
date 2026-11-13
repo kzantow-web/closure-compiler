@@ -17,10 +17,13 @@ package com.google.javascript.jscomp;
 
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.javascript.jscomp.AstFactory.type;
-import static com.google.javascript.jscomp.Es6ToEs3Util.CANNOT_CONVERT_YET;
+import static com.google.javascript.jscomp.TranspilationUtil.CANNOT_CONVERT;
+import static com.google.javascript.jscomp.TranspilationUtil.CANNOT_CONVERT_YET;
 
+import com.google.javascript.jscomp.colors.StandardColors;
 import com.google.javascript.jscomp.parsing.parser.FeatureSet;
 import com.google.javascript.jscomp.parsing.parser.FeatureSet.Feature;
+import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.Node;
 
@@ -35,7 +38,10 @@ public final class Es6ConvertSuper extends NodeTraversal.AbstractPostOrderCallba
   private final AbstractCompiler compiler;
   private final AstFactory astFactory;
   private final SynthesizeExplicitConstructors constructorSynthesizer;
-  private static final FeatureSet transpiledFeatures = FeatureSet.BARE_MINIMUM.with(Feature.SUPER);
+  // TODO(b/329447979): Run this pass only for scripts containing Feature.SUPER and not for scripts
+  // containing just Feature.CLASSES?
+  private static final FeatureSet FEATURES_TO_RUN_FOR =
+      FeatureSet.BARE_MINIMUM.with(Feature.SUPER, Feature.CLASSES);
 
   public Es6ConvertSuper(AbstractCompiler compiler) {
     this.compiler = compiler;
@@ -68,17 +74,17 @@ public final class Es6ConvertSuper extends NodeTraversal.AbstractPostOrderCallba
     Node enclosingMemberDef =
         NodeUtil.getEnclosingNode(
             exprRoot,
-            (Node n) -> {
-              switch (n.getToken()) {
-                case MEMBER_FUNCTION_DEF:
-                case GETTER_DEF:
-                case SETTER_DEF:
-                case COMPUTED_PROP:
-                  return true;
-                default:
-                  return false;
-              }
-            });
+            (Node n) ->
+                switch (n.getToken()) {
+                  case MEMBER_FUNCTION_DEF, GETTER_DEF, SETTER_DEF, COMPUTED_PROP -> true;
+                  default -> false;
+                });
+
+    if (enclosingMemberDef == null || enclosingMemberDef.getParent().isObjectLit()) {
+      compiler.report(
+          JSError.make(node, CANNOT_CONVERT, "super is not supported in object literal methods."));
+      return;
+    }
 
     if (parent.isCall()) {
       // super(...)
@@ -168,6 +174,9 @@ public final class Es6ConvertSuper extends NodeTraversal.AbstractPostOrderCallba
       thisNode.makeNonIndexable(); // no direct correlation with original source
       thisNode.insertAfter(callTarget);
       grandparent.srcrefTreeIfMissing(parent);
+
+      // We added a `this` reference to the call. We need to make sure this member is not collapsed.
+      ensureNoCollapseOnStaticMemberDef(enclosingMemberDef);
     } else {
       // Replace super node to give
       // super.method(...) -> SuperClass.prototype.method(...)
@@ -205,26 +214,73 @@ public final class Es6ConvertSuper extends NodeTraversal.AbstractPostOrderCallba
       return;
     }
 
+    Node newProp;
     if (enclosingMemberDef.isStaticMember()) {
       // super.prop -> SuperClass.prop
-      Node expandedSuper = superName.cloneTree().srcrefTree(node);
-      expandedSuper.setOriginalName("super");
-      node.replaceWith(expandedSuper);
+      newProp = superName.cloneTree().srcrefTree(node);
     } else {
       // super.prop -> SuperClass.prototype.prop
-      Node newprop = astFactory.createPrototypeAccess(superName.cloneTree()).srcrefTree(node);
-      newprop.setOriginalName("super");
-      node.replaceWith(newprop);
+      newProp = astFactory.createPrototypeAccess(superName.cloneTree()).srcrefTree(node);
     }
 
+    if (parent.isGetProp()
+        && compiler.getAccessorSummary().getKind(parent.getString()).hasGetter()) {
+      // Rewrites
+      //   super.x
+      // as
+      //   Reflect.get(super, JSCompiler_renameProperty('x', ParentClass), this)
+      Node superPlaceholder = IR.name("sp"); // No need for type info as this will be replaced.
+
+      Node reflectGetCall =
+          astFactory
+              .createCall(
+                  astFactory.createGetPropWithUnknownType(
+                      astFactory.createConstantName("Reflect", type(StandardColors.UNKNOWN)),
+                      "get"),
+                  type(parent),
+                  superPlaceholder,
+                  parent.isGetProp()
+                      ? astFactory.createCall(
+                          astFactory.createName(
+                              NodeUtil.JSC_PROPERTY_NAME_FN, type(StandardColors.UNKNOWN)),
+                          type(StandardColors.STRING),
+                          astFactory.createString(parent.getString()),
+                          superName.cloneTree().srcrefTree(node))
+                      :
+                      // For getElem, we just use the accessor value in the Reflect.get call.
+                      node.getNext().detach(),
+                  astFactory.createThis(type(clazz)))
+              .srcrefTreeIfMissing(parent);
+
+      // Replace the getProp/getElem with the Reflect.get call.
+      parent.replaceWith(reflectGetCall);
+      // Swap in the `n` (super) where it goes in the Reflect.get call.
+      superPlaceholder.replaceWith(node.detach());
+
+      // We added a `this` reference to the call. We need to make sure this member is not collapsed.
+      ensureNoCollapseOnStaticMemberDef(enclosingMemberDef);
+    }
+
+    node.replaceWith(newProp);
+    newProp.setOriginalName("super");
+
     compiler.reportChangeToEnclosingScope(grandparent);
+  }
+
+  private void ensureNoCollapseOnStaticMemberDef(Node memberDef) {
+    if (!memberDef.isStaticMember()) {
+      return;
+    }
+    JSDocInfo.Builder builder = JSDocInfo.Builder.maybeCopyFrom(memberDef.getJSDocInfo());
+    if (builder.recordNoCollapse()) {
+      memberDef.setJSDocInfo(builder.build());
+    }
   }
 
   @Override
   public void process(Node externs, Node root) {
     // Might need to synthesize constructors for ambient classes in .d.ts externs
-    TranspilationPasses.processTranspile(compiler, externs, transpiledFeatures, this);
-    TranspilationPasses.processTranspile(compiler, root, transpiledFeatures, this);
+    TranspilationPasses.processTranspile(compiler, externs, FEATURES_TO_RUN_FOR, this);
+    TranspilationPasses.processTranspile(compiler, root, FEATURES_TO_RUN_FOR, this);
   }
-
 }

@@ -20,6 +20,9 @@ import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
 
 import com.google.common.collect.ImmutableSet;
+import java.util.Arrays;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -29,13 +32,13 @@ public final class DefaultNameGeneratorTest {
 
   private static final ImmutableSet<String> RESERVED_NAMES = ImmutableSet.of("ba", "xba");
 
-  private static String[] generate(
-      DefaultNameGenerator ng, String prefix, int num) throws Exception {
+  private static String[] generate(DefaultNameGenerator ng, String prefix, int num)
+      throws Exception {
     String[] result = new String[num];
     for (int i = 0; i < num; i++) {
       result[i] = ng.generateNextName();
       if (!result[i].startsWith(prefix)) {
-        assertWithMessage("Error: " + result[i]).fail();
+        assertWithMessage("Error: %s", result[i]).fail();
       }
     }
     return result;
@@ -44,7 +47,7 @@ public final class DefaultNameGeneratorTest {
   @Test
   public void testNameGeneratorInvalidPrefixes() throws Exception {
     try {
-      new DefaultNameGenerator(ImmutableSet.of(), "123abc", null);
+      new DefaultNameGenerator(ImmutableSet.of(), "123abc", ImmutableSet.of());
       assertWithMessage(
               "Constructor should throw exception when the first char of prefix is invalid")
           .fail();
@@ -54,7 +57,7 @@ public final class DefaultNameGeneratorTest {
     }
 
     try {
-      new DefaultNameGenerator(ImmutableSet.of(), "abc%", null);
+      new DefaultNameGenerator(ImmutableSet.of(), "abc%", ImmutableSet.of());
       assertWithMessage(
               "Constructor should throw exception when one of prefix characters is invalid")
           .fail();
@@ -65,8 +68,7 @@ public final class DefaultNameGeneratorTest {
 
   @Test
   public void testGenerate() throws Exception {
-    DefaultNameGenerator ng = new DefaultNameGenerator(
-        RESERVED_NAMES, "", null);
+    DefaultNameGenerator ng = new DefaultNameGenerator(RESERVED_NAMES, "", ImmutableSet.of());
     String[] result = generate(ng, "", 106);
     assertThat(result[0]).isEqualTo("a");
     assertThat(result[25]).isEqualTo("z");
@@ -78,7 +80,7 @@ public final class DefaultNameGeneratorTest {
     assertThat(result[54]).isEqualTo("ca");
     assertThat(result[104]).isEqualTo("$a");
 
-    ng = new DefaultNameGenerator(RESERVED_NAMES, "x", null);
+    ng = new DefaultNameGenerator(RESERVED_NAMES, "x", ImmutableSet.of());
     result = generate(ng, "x", 132);
 
     // Expected: x, xa, ..., x$, xaa, ..., x$$
@@ -92,8 +94,7 @@ public final class DefaultNameGeneratorTest {
 
   @Test
   public void testReserve() throws Exception {
-    DefaultNameGenerator ng = new DefaultNameGenerator(
-        RESERVED_NAMES, "", new char[] {'$'});
+    DefaultNameGenerator ng = new DefaultNameGenerator(RESERVED_NAMES, "", ImmutableSet.of('$'));
     String[] result = generate(ng, "", 106);
     assertThat(result[0]).isEqualTo("a");
     assertThat(result[25]).isEqualTo("z");
@@ -107,13 +108,13 @@ public final class DefaultNameGeneratorTest {
 
   @Test
   public void testES6KeywordsNotGenerated() throws Exception {
-    DefaultNameGenerator ng = new DefaultNameGenerator(RESERVED_NAMES, "le", new char[] {'$'});
+    DefaultNameGenerator ng = new DefaultNameGenerator(RESERVED_NAMES, "le", ImmutableSet.of('$'));
     String[] result = generate(ng, "le", 106);
     assertThat(result[19]).isEqualTo("les");
     assertThat(result[20]).isEqualTo("leu"); // "let" keyword skipped
     assertThat(result[45]).isEqualTo("leT"); // "leT" not skipped
 
-    ng = new DefaultNameGenerator(RESERVED_NAMES, "awai", new char[] {'$'});
+    ng = new DefaultNameGenerator(RESERVED_NAMES, "awai", ImmutableSet.of('$'));
     result = generate(ng, "awai", 106);
     assertThat(result[19]).isEqualTo("awais");
     assertThat(result[20]).isEqualTo("awaiu"); // "await" keyword skipped
@@ -122,8 +123,7 @@ public final class DefaultNameGeneratorTest {
 
   @Test
   public void testGenerateWithPriority1() throws Exception {
-    DefaultNameGenerator ng = new DefaultNameGenerator(
-        RESERVED_NAMES, "", null);
+    DefaultNameGenerator ng = new DefaultNameGenerator(RESERVED_NAMES, "", ImmutableSet.of());
     String[] result = generate(ng, "", 106);
     assertThat(result[0]).isEqualTo("a");
     assertThat(result[25]).isEqualTo("z");
@@ -133,7 +133,7 @@ public final class DefaultNameGeneratorTest {
     assertThat(result[53]).isEqualTo("aa");
 
     ng.favors("b");
-    ng.reset(RESERVED_NAMES, "", null);
+    ng.reset(RESERVED_NAMES, "", ImmutableSet.of());
     result = generate(ng, "", 106);
     assertThat(result[0]).isEqualTo("b");
     assertThat(result[1]).isEqualTo("a");
@@ -141,7 +141,7 @@ public final class DefaultNameGeneratorTest {
     assertThat(result[3]).isEqualTo("d");
 
     ng.favors("cc");
-    ng.reset(RESERVED_NAMES, "", null);
+    ng.reset(RESERVED_NAMES, "", ImmutableSet.of());
     result = generate(ng, "", 106);
     assertThat(result[0]).isEqualTo("c");
     assertThat(result[1]).isEqualTo("b");
@@ -151,8 +151,7 @@ public final class DefaultNameGeneratorTest {
 
   @Test
   public void testGenerateWithPriority2() throws Exception {
-    DefaultNameGenerator ng = new DefaultNameGenerator(
-        RESERVED_NAMES, "", null);
+    DefaultNameGenerator ng = new DefaultNameGenerator(RESERVED_NAMES, "", ImmutableSet.of());
     String[] result = generate(ng, "", 106);
     assertThat(result[0]).isEqualTo("a");
     assertThat(result[25]).isEqualTo("z");
@@ -165,7 +164,7 @@ public final class DefaultNameGeneratorTest {
     ng.favors("function");
     ng.favors("function");
 
-    ng.reset(RESERVED_NAMES, "", null);
+    ng.reset(RESERVED_NAMES, "", ImmutableSet.of());
     result = generate(ng, "", 106);
 
     // All the letters of function should come first. In alphabetical order.
@@ -192,12 +191,36 @@ public final class DefaultNameGeneratorTest {
 
   @Test
   public void testGenerateWithPriority3() throws Exception {
-    DefaultNameGenerator ng = new DefaultNameGenerator(
-        RESERVED_NAMES, "", null);
+    DefaultNameGenerator ng = new DefaultNameGenerator(RESERVED_NAMES, "", ImmutableSet.of());
     String[] result = generate(ng, "", 106);
     ng.favors("???");
-    ng.reset(RESERVED_NAMES, "", null);
+    ng.reset(RESERVED_NAMES, "", ImmutableSet.of());
     result = generate(ng, "", 106);
     assertThat(result[0]).isEqualTo("a");
+  }
+
+  @Test
+  public void testDeterministicNameGeneration() throws Exception {
+    Set<Character> reservedChars1 = new LinkedHashSet<>(Arrays.asList('a', 'b', 'c'));
+    Set<Character> reservedChars2 = new LinkedHashSet<>(Arrays.asList('c', 'b', 'a'));
+
+    DefaultNameGenerator ng1 = new DefaultNameGenerator(ImmutableSet.of(), "", reservedChars1);
+    DefaultNameGenerator ng2 = new DefaultNameGenerator(ImmutableSet.of(), "", reservedChars2);
+
+    String[] result1 = generate(ng1, "", 10);
+    String[] result2 = generate(ng2, "", 10);
+
+    assertThat(result1).isEqualTo(result2);
+
+    Set<String> reservedNames1 = new LinkedHashSet<>(Arrays.asList("a", "b", "c"));
+    Set<String> reservedNames2 = new LinkedHashSet<>(Arrays.asList("c", "b", "a"));
+
+    ng1 = new DefaultNameGenerator(reservedNames1, "", ImmutableSet.of());
+    ng2 = new DefaultNameGenerator(reservedNames2, "", ImmutableSet.of());
+
+    result1 = generate(ng1, "", 10);
+    result2 = generate(ng2, "", 10);
+
+    assertThat(result1).isEqualTo(result2);
   }
 }

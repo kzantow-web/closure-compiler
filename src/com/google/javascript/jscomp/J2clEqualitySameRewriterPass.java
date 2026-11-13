@@ -21,6 +21,7 @@ import com.google.javascript.jscomp.colors.Color;
 import com.google.javascript.jscomp.colors.StandardColors;
 import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.Node;
+import org.jspecify.annotations.Nullable;
 
 /** An optimization pass to re-write J2CL Equality.$same. */
 public class J2clEqualitySameRewriterPass extends AbstractPeepholeOptimization {
@@ -66,7 +67,7 @@ public class J2clEqualitySameRewriterPass extends AbstractPeepholeOptimization {
     return replacement;
   }
 
-  private Node trySubstituteStringEquals(Node callNode) {
+  private @Nullable Node trySubstituteStringEquals(Node callNode) {
     NodeValue firstExprValue = getKnownLiteralValue(callNode.getSecondChild());
     if (firstExprValue == NodeValue.UNKNOWN || firstExprValue == NodeValue.NULL_OR_UNDEFINED) {
       // Potential NPE, don't optimize.
@@ -76,7 +77,7 @@ public class J2clEqualitySameRewriterPass extends AbstractPeepholeOptimization {
     return trySubstituteEqualitySame(callNode);
   }
 
-  private Node trySubstituteEqualitySame(Node callNode) {
+  private @Nullable Node trySubstituteEqualitySame(Node callNode) {
     Node firstExpr = callNode.getSecondChild();
     NodeValue firstExprValue = getKnownLiteralValue(firstExpr);
     Node secondExpr = callNode.getLastChild();
@@ -127,7 +128,13 @@ public class J2clEqualitySameRewriterPass extends AbstractPeepholeOptimization {
     }
 
     // In theory we could allow unions of multiple objects here
-    return !color.isUnion() && !color.isPrimitive() && !color.equals(StandardColors.UNKNOWN);
+    return !color.isUnion()
+        && !color.isPrimitive()
+        && !color.equals(StandardColors.UNKNOWN)
+        // Avoid TOP_OBJECT because the `gbigint` interface type is assignable to it, so might end
+        // up here. In practice `gbigint` is actually a primitive (bigint or string) and its
+        // interface definition is a (useful) lie to the typechecker.
+        && !color.equals(StandardColors.TOP_OBJECT);
   }
 
   private Node rewriteAsStrictEq(Node firstExpr, Node secondExpr) {
@@ -136,7 +143,7 @@ public class J2clEqualitySameRewriterPass extends AbstractPeepholeOptimization {
     return IR.sheq(firstExpr, secondExpr);
   }
 
-  private Node rewriteNumberCheck(Node firstExpr, Node secondExpr) {
+  private @Nullable Node rewriteNumberCheck(Node firstExpr, Node secondExpr) {
     Double firstValue = NodeUtil.getNumberValue(firstExpr);
     Double secondValue = NodeUtil.getNumberValue(secondExpr);
 
@@ -173,25 +180,13 @@ public class J2clEqualitySameRewriterPass extends AbstractPeepholeOptimization {
   }
 
   private static NodeValue getKnownLiteralValue(Node n) {
-    switch (NodeUtil.getKnownValueType(n)) {
-      case VOID:
-        return NodeUtil.canBeSideEffected(n) ? NodeValue.UNKNOWN : NodeValue.NULL_OR_UNDEFINED;
-      case NULL:
-        return NodeValue.NULL_OR_UNDEFINED;
-
-      case STRING:
-      case BOOLEAN:
-      case OBJECT:
-      case BIGINT:
-        return NodeValue.NON_NULL;
-
-      case NUMBER:
-        return NodeValue.NUMBER;
-
-      case UNDETERMINED:
-        return NodeValue.UNKNOWN;
-    }
-    throw new AssertionError("Unknown ValueType");
+    return switch (NodeUtil.getKnownValueType(n)) {
+      case VOID -> NodeUtil.canBeSideEffected(n) ? NodeValue.UNKNOWN : NodeValue.NULL_OR_UNDEFINED;
+      case NULL -> NodeValue.NULL_OR_UNDEFINED;
+      case STRING, BOOLEAN, OBJECT, BIGINT -> NodeValue.NON_NULL;
+      case NUMBER -> NodeValue.NUMBER;
+      case UNDETERMINED -> NodeValue.UNKNOWN;
+    };
   }
 
   private static boolean isEqualitySameCall(Node node) {
@@ -200,7 +195,10 @@ public class J2clEqualitySameRewriterPass extends AbstractPeepholeOptimization {
 
   private static boolean isStringEqualsMethod(Node node) {
     return node.isCall()
-        && hasName(node.getFirstChild(), "String", "m_equals__java_lang_String__java_lang_Object");
+        && hasName(
+            node.getFirstChild(),
+            "String",
+            "m_equals__java_lang_String__java_lang_Object__boolean");
   }
 
   private static boolean hasName(Node fnName, String className, String methodName) {

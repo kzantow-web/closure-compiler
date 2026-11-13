@@ -24,7 +24,6 @@ import com.google.javascript.jscomp.FunctionInjector.Reference;
 import com.google.javascript.jscomp.NodeTraversal.AbstractPostOrderCallback;
 import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.Node;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -78,12 +77,12 @@ public class J2clPropertyInlinerPass implements CompilerPass {
       new InlinePropertiesPass(result).run();
     }
 
-    private abstract class J2clProperty {
+    private abstract static class J2clProperty {
       final Node getKey;
       final Node setKey;
       boolean isSafeToInline;
 
-      public J2clProperty(Node getKey, Node setKey) {
+      J2clProperty(Node getKey, Node setKey) {
         this.getKey = getKey;
         this.setKey = setKey;
         this.isSafeToInline = true;
@@ -94,7 +93,7 @@ public class J2clPropertyInlinerPass implements CompilerPass {
 
     /** A J2CL property with a getter and setter from an Object.defineProperties call */
     private class J2clPropertyEs5 extends J2clProperty {
-      public J2clPropertyEs5(Node getKey, Node setKey) {
+      J2clPropertyEs5(Node getKey, Node setKey) {
         super(getKey, setKey);
         checkArgument(getKey.isStringKey() && getKey.getString().equals("get"), getKey);
         checkArgument(
@@ -118,7 +117,7 @@ public class J2clPropertyInlinerPass implements CompilerPass {
 
     /** A J2CL property created with a ES6-style static getter and setter */
     private class J2clPropertyEs6 extends J2clProperty {
-      public J2clPropertyEs6(Node getKey, Node setKey) {
+      J2clPropertyEs6(Node getKey, Node setKey) {
         super(getKey, setKey);
         checkArgument(getKey.isGetterDef(), getKey);
         checkArgument(setKey == null || setKey.isSetterDef(), setKey);
@@ -289,7 +288,7 @@ public class J2clPropertyInlinerPass implements CompilerPass {
      * Object.defineProperties nodes.
      */
     private class GatherJ2CLClassGetterSetters extends AbstractPostOrderCallback {
-      private final Map<String, J2clProperty> j2clPropertiesByName = new HashMap<>();
+      private final Map<String, J2clProperty> j2clPropertiesByName = new LinkedHashMap<>();
 
       private Map<String, J2clProperty> getResults() {
         return j2clPropertiesByName;
@@ -323,18 +322,18 @@ public class J2clPropertyInlinerPass implements CompilerPass {
               continue;
             }
             switch (innerKey.getString()) {
-              case "get":
+              case "get" -> {
                 if (matchesJ2clGetKeySignature(classNameString, innerKey)) {
                   getKey = innerKey;
                 }
-                break;
-              case "set":
+              }
+              case "set" -> {
                 hasSetter = true;
                 if (matchesJ2clSetKeySignature(classNameString, innerKey)) {
                   setKey = innerKey;
                 }
-                break;
-              default: // fall out
+              }
+              default -> {}
             }
           }
           if (getKey != null && (!hasSetter || setKey != null)) {
@@ -360,13 +359,9 @@ public class J2clPropertyInlinerPass implements CompilerPass {
             continue;
           }
           switch (memberFunction.getToken()) {
-            case GETTER_DEF:
-              getterDefByName.put(memberFunction.getString(), memberFunction);
-              break;
-            case SETTER_DEF:
-              setterDefByName.put(memberFunction.getString(), memberFunction);
-              break;
-            default: // fall out
+            case GETTER_DEF -> getterDefByName.put(memberFunction.getString(), memberFunction);
+            case SETTER_DEF -> setterDefByName.put(memberFunction.getString(), memberFunction);
+            default -> {}
           }
         }
 
@@ -383,7 +378,7 @@ public class J2clPropertyInlinerPass implements CompilerPass {
       }
     }
 
-    private class DetermineInlinableProperties extends AbstractPostOrderCallback {
+    private static class DetermineInlinableProperties extends AbstractPostOrderCallback {
       private final Map<String, J2clProperty> propertiesByName;
 
       DetermineInlinableProperties(Map<String, J2clProperty> allGetterSetters) {
@@ -441,7 +436,6 @@ public class J2clPropertyInlinerPass implements CompilerPass {
             FunctionInjector injector =
                 new FunctionInjector.Builder(compiler)
                     .assumeStrictThis(true)
-                    .assumeMinimumCapture(true)
                     .build();
             Node functionCall = IR.call(IR.name("inlined_j2cl_getter"));
             n.replaceWith(functionCall);
@@ -462,7 +456,6 @@ public class J2clPropertyInlinerPass implements CompilerPass {
               FunctionInjector injector =
                   new FunctionInjector.Builder(compiler)
                       .assumeStrictThis(true)
-                      .assumeMinimumCapture(true)
                       .build();
               assignmentValue.detach();
               Node functionCall = IR.call(IR.name("inlined_j2cl_setter"), assignmentValue);

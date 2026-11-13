@@ -19,6 +19,7 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static java.util.Comparator.comparing;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.javascript.jscomp.AbstractCompiler;
 import com.google.javascript.jscomp.CompilerPass;
@@ -26,6 +27,7 @@ import com.google.javascript.jscomp.DiagnosticType;
 import com.google.javascript.jscomp.JSError;
 import com.google.javascript.jscomp.NodeTraversal;
 import com.google.javascript.jscomp.NodeUtil;
+import com.google.javascript.jscomp.RewriteCallerCodeLocation;
 import com.google.javascript.jscomp.Scope;
 import com.google.javascript.jscomp.Var;
 import com.google.javascript.rhino.IR;
@@ -35,7 +37,7 @@ import com.google.javascript.rhino.QualifiedName;
 import com.google.javascript.rhino.jstype.JSType.Nullability;
 import java.util.Comparator;
 import java.util.List;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The goal of this pass is to shrink the AST, preserving only typing, not behavior.
@@ -63,9 +65,9 @@ public class ConvertToTypedInterface implements CompilerPass {
   static final DiagnosticType GOOG_SCOPE_HIDDEN_TYPE =
       DiagnosticType.warning(
           "JSC_GOOG_SCOPE_HIDDEN_TYPE",
-          "Please do not use goog.scope to hide declarations.\n"
-              + "It is preferable to either create an @private namespaced declaration, or migrate "
-              + "to goog.module.");
+          "Found a goog.scope local type declaration.\n"
+              + "If you can't yet migrate this file to goog.module, use a /** @private */"
+              + " declaration within the goog.provide namespace.");
 
   private static final ImmutableSet<String> CALLS_TO_PRESERVE =
       ImmutableSet.of(
@@ -89,7 +91,9 @@ public class ConvertToTypedInterface implements CompilerPass {
   private static void maybeReport(
       AbstractCompiler compiler, Node node, DiagnosticType diagnostic, String... fillers) {
     String sourceName = NodeUtil.getSourceName(node);
-    if (sourceName.endsWith("_test.js") || sourceName.endsWith("_test.closure.js")) {
+    if (sourceName.endsWith("_test.js")
+        || sourceName.endsWith("_test.closure.js")
+        || sourceName.endsWith("_test.tsx.cl.js")) {
       // Allow _test.js files and their tsickle generated
       // equivalents to avoid emitting errors at .i.js generation time.
       // We expect these files to not be consumed by any other downstream libraries.
@@ -119,7 +123,8 @@ public class ConvertToTypedInterface implements CompilerPass {
 
   @Override
   public void process(Node externs, Node root) {
-    for (Node script = root.getFirstChild(); script != null; script = script.getNext()) {
+    for (Node script = root.getFirstChild(), next; script != null; script = next) {
+      next = script.getNext();
       processFile(script);
     }
   }
@@ -129,16 +134,28 @@ public class ConvertToTypedInterface implements CompilerPass {
     String sourceFileName = scriptNode.getSourceFileName();
     if (AbstractCompiler.isFillFileName(sourceFileName)) {
       scriptNode.detach();
+      compiler.reportChangeToChangeScope(scriptNode);
+      scriptNode.setDeleted(true);
       return;
     }
-    FileInfo currentFile = new FileInfo();
+
+    JSDocInfo scriptJsDoc = scriptNode.getJSDocInfo();
+    if (scriptJsDoc != null && scriptJsDoc.isClosureUnawareCode()) {
+      // If we are generating type summary files, then those files won't contain the method content
+      // from within the closure-unaware section, and the entire file effectively becomes
+      // closure-aware again (as it is generated code that describes a module shape).
+      JSDocInfo.Builder scriptJsDocBuilder = scriptJsDoc.toBuilder();
+      scriptJsDocBuilder.removeClosureUnawareCode();
+      scriptNode.setJSDocInfo(scriptJsDocBuilder.build());
+    }
+
+    FileInfo currentFile = new FileInfo(sourceFileName);
     NodeTraversal.traverse(compiler, scriptNode, new RemoveNonDeclarations());
     NodeTraversal.traverse(compiler, scriptNode, new PropagateConstJsdoc(currentFile));
     new SimplifyDeclarations(compiler, currentFile).simplifyAll();
   }
 
-  @Nullable
-  private static Var findNameDeclaration(Scope scope, Node rhs) {
+  private static @Nullable Var findNameDeclaration(Scope scope, Node rhs) {
     if (!rhs.isName()) {
       return null;
     }
@@ -162,6 +179,13 @@ public class ConvertToTypedInterface implements CompilerPass {
             }
           }
           return true;
+        case MEMBER_FIELD_DEF:
+          if (ClassUtil.isMemberFieldDefInsideClassWithName(n)) {
+            return true;
+          }
+          // We will remove fields in anonymous classes
+          NodeUtil.deleteNode(n, t.getCompiler());
+          return false;
         case EXPR_RESULT:
           Node expr = n.getFirstChild();
           switch (expr.getToken()) {
@@ -174,30 +198,41 @@ public class ConvertToTypedInterface implements CompilerPass {
               NodeUtil.deleteNode(n, t.getCompiler());
               return false;
             case ASSIGN:
-              Node lhs = expr.getFirstChild();
-              if (!lhs.isQualifiedName()
-                  || (lhs.isName() && !t.inGlobalScope() && !t.inModuleScope())
-                  || (!ClassUtil.isThisProp(lhs)
-                      && !t.inGlobalHoistScope()
-                      && !t.inModuleHoistScope())) {
-                NodeUtil.deleteNode(n, t.getCompiler());
-                return false;
+              if (shouldPreserveAssignment(expr, t)) {
+                return true;
               }
-              return true;
+              NodeUtil.deleteNode(n, t.getCompiler());
+              return false;
             case GETPROP:
               if (!expr.isQualifiedName() || expr.getJSDocInfo() == null) {
                 NodeUtil.deleteNode(n, t.getCompiler());
                 return false;
               }
               return true;
+            case GETELEM:
+              if (isSymbolProp(expr.getSecondChild()) && expr.getJSDocInfo() != null) {
+                return true;
+              }
+
+              NodeUtil.deleteNode(n, t.getCompiler());
+              return false;
             default:
               NodeUtil.deleteNode(n, t.getCompiler());
               return false;
           }
         case COMPUTED_PROP:
+          if (ClassUtil.isComputedMemberInsideClassWithName(n)) {
+            return true;
+          }
           if (!NodeUtil.isLhsByDestructuring(n.getSecondChild())) {
             NodeUtil.deleteNode(n, t.getCompiler());
           }
+          return false;
+        case COMPUTED_FIELD_DEF:
+          if (ClassUtil.isComputedMemberInsideClassWithName(n)) {
+            return true;
+          }
+          NodeUtil.deleteNode(n, t.getCompiler());
           return false;
         case THROW:
         case RETURN:
@@ -265,39 +300,41 @@ public class ConvertToTypedInterface implements CompilerPass {
     @Override
     public void visit(NodeTraversal t, Node n, Node parent) {
       switch (n.getToken()) {
-        case TRY:
-        case LABEL:
-        case DEFAULT_CASE:
-        case CASE:
-        case DO:
-        case WHILE:
-        case FOR:
-        case FOR_IN:
-        case FOR_OF:
-        case FOR_AWAIT_OF:
-        case IF:
-        case SWITCH:
+        case TRY, LABEL, DEFAULT_CASE, CASE, DO, WHILE, FOR, FOR_IN, FOR_OF, FOR_AWAIT_OF, IF -> {
           if (n.hasParent()) {
             Node children = n.removeChildren();
             parent.addChildrenAfter(children, n);
-            NodeUtil.removeChild(parent, n);
+            // We don't need the special valid-AST-preserving behavior of `NodeUtil.removeChild()`
+            // here. We always want to remove exactly and only `n`, so we use `n.detach()`.
+            //
+            // Also, the shouldTraverse() method intentionally puts the AST in an invalid state
+            // by moving children to parents where they are not valid temporarily.
+            // `NodeUtil.removeChild()` would throw an exception here if it noticed the invalid AST
+            // state.
+            n.detach();
             t.reportCodeChange();
           }
-          break;
-        case VAR:
-        case LET:
-        case CONST:
-          splitNameDeclarationsAndRemoveDestructuring(n, t);
-          break;
-        case BLOCK:
+        }
+        case SWITCH -> {
+          // shouldTraverse() removed the switch condition already, so we just need to handle the
+          // cases.
+          if (n.hasParent()) {
+            checkState(n.hasOneChild(), "malfrmed sWITCH %s", n.toStringTree());
+            Node children = n.getFirstChild().removeChildren();
+            parent.addChildrenAfter(children, n);
+            n.detach();
+            t.reportCodeChange();
+          }
+        }
+        case VAR, LET, CONST -> splitNameDeclarationsAndRemoveDestructuring(n, t);
+        case BLOCK -> {
           if (!parent.isFunction()) {
             parent.addChildrenAfter(n.removeChildren(), n);
             n.detach();
             t.reportCodeChange(parent);
           }
-          break;
-        default:
-          break;
+        }
+        default -> {}
       }
     }
 
@@ -348,13 +385,16 @@ public class ConvertToTypedInterface implements CompilerPass {
     @Override
     protected void processConstWithRhs(NodeTraversal t, Node nameNode) {
       checkArgument(
-          nameNode.isQualifiedName() || nameNode.isStringKey() || nameNode.isDestructuringLhs(),
+          nameNode.isQualifiedName()
+              || nameNode.isStringKey()
+              || nameNode.isDestructuringLhs()
+              || nameNode.isMemberFieldDef(),
           nameNode);
       Node jsdocNode = NodeUtil.getBestJSDocInfoNode(nameNode);
       JSDocInfo originalJsdoc = jsdocNode.getJSDocInfo();
       Node rhs = NodeUtil.getRValueOfLValue(nameNode);
       JSDocInfo newJsdoc = JsdocUtil.getJSDocForRhs(rhs, originalJsdoc);
-      if (newJsdoc == null && ClassUtil.isThisProp(nameNode)) {
+      if (newJsdoc == null && ClassUtil.isThisPropInsideClassWithName(nameNode)) {
         Var decl = findNameDeclaration(t.getScope(), rhs);
         newJsdoc = JsdocUtil.getJSDocForName(decl, originalJsdoc);
       }
@@ -426,9 +466,8 @@ public class ConvertToTypedInterface implements CompilerPass {
       removeDuplicateDeclarations();
 
       // Simplify all names in the top-level scope.
-      @SuppressWarnings("StreamToIterable")
-      Iterable<String> seenNames =
-          currentFile.getDeclarations().keySet().stream().sorted(SHORT_TO_LONG)::iterator;
+      ImmutableList<String> seenNames =
+          ImmutableList.sortedCopyOf(SHORT_TO_LONG, currentFile.getDeclarations().keySet());
 
       for (String name : seenNames) {
         for (PotentialDeclaration decl : currentFile.getDeclarations().get(name)) {
@@ -453,6 +492,7 @@ public class ConvertToTypedInterface implements CompilerPass {
         processClass(decl.getRhs());
       }
       setUndeclaredToUnusableType(decl);
+      elidePrivateMemberType(decl);
       decl.simplify(compiler);
     }
 
@@ -460,10 +500,30 @@ public class ConvertToTypedInterface implements CompilerPass {
       checkArgument(isClass(n));
       for (Node member = n.getLastChild().getFirstChild(); member != null; ) {
         Node next = member.getNext();
-        if (member.isEmpty()) {
-          NodeUtil.deleteNode(member, compiler);
-        } else {
-          processFunction(member.getLastChild());
+        switch (member.getToken()) {
+          case MEMBER_FIELD_DEF, COMPUTED_FIELD_DEF -> {
+            // MEMBER_FIELD_DEF's are handled in ProcessConstJsdocCallback which is called in the
+            // traversal by its subclass PropogateConstJsdoc.
+            // If no jsdoc is present on the MEMBER_FIELD_DEF, we will be add a Jsdoc in
+            // `setUndeclaredToUnusableType()`.
+            // No further simplification is needed for MEMBER_FIELD_DEF's when we call
+            // `simplifyAll()` so we will break.
+          }
+          case EMPTY ->
+              // a lonely `;` in a class body can just be deleted.
+              NodeUtil.deleteNode(member, compiler);
+          case MEMBER_FUNCTION_DEF, GETTER_DEF, SETTER_DEF ->
+              processFunction(member.getLastChild());
+          case COMPUTED_PROP -> {
+            checkState(
+                member.getSecondChild().isFunction(),
+                "Non-function computed class member: %s",
+                member);
+            processFunction(member.getSecondChild());
+          }
+          default ->
+              throw new AssertionError(
+                  member.getToken() + " should not be handled by processClass");
         }
         member = next;
       }
@@ -479,6 +539,11 @@ public class ConvertToTypedInterface implements CompilerPass {
       for (Node arg = paramList.getFirstChild(); arg != null; arg = arg.getNext()) {
         if (arg.isDefaultValue()) {
           Node rhs = arg.getLastChild();
+          if (rhs.isCall()
+              && RewriteCallerCodeLocation.GOOG_CALLER_LOCATION_QUALIFIED_NAME.matches(
+                  rhs.getFirstChild())) {
+            continue;
+          }
           rhs.replaceWith(NodeUtil.newUndefinedNode(rhs));
           compiler.reportChangeToEnclosingScope(arg);
         }
@@ -486,7 +551,7 @@ public class ConvertToTypedInterface implements CompilerPass {
     }
 
     private static boolean isClass(Node n) {
-      return n.isClass() || NodeUtil.isCallTo(n, "goog.defineClass");
+      return n.isClass();
     }
 
     private static String rootName(String qualifiedName) {
@@ -498,14 +563,14 @@ public class ConvertToTypedInterface implements CompilerPass {
     }
 
     private boolean shouldRemove(String name, PotentialDeclaration decl) {
+      if (decl.isDetached()) {
+        return true;
+      }
       if (rootName(name).startsWith("$jscomp")) {
-        if (decl.isDetached()) {
-          return true;
-        }
         // These are created by goog.scope processing, but clash with each other
         // and should not be depended on.
-        if (decl.getRhs() != null && decl.getRhs().isClass()
-            || decl.getJsDoc() != null && decl.getJsDoc().containsTypeDefinition()) {
+        if ((decl.getRhs() != null && decl.getRhs().isClass())
+            || (decl.getJsDoc() != null && decl.getJsDoc().containsTypeDefinition())) {
           maybeReport(compiler, decl.getLhs(), GOOG_SCOPE_HIDDEN_TYPE);
         }
         return true;
@@ -513,6 +578,7 @@ public class ConvertToTypedInterface implements CompilerPass {
       // This looks like an update rather than a declaration in this file.
       return !name.startsWith("this.")
           && !decl.isDefiniteDeclaration(compiler)
+          && !decl.getLhs().isMemberFieldDef()
           && !currentFile.isPrefixProvided(name)
           && !currentFile.isStrictPrefixDeclared(name);
     }
@@ -530,5 +596,60 @@ public class ConvertToTypedInterface implements CompilerPass {
       Node jsdocNode = NodeUtil.getBestJSDocInfoNode(nameNode);
       jsdocNode.setJSDocInfo(JsdocUtil.getUnusableTypeJSDoc(jsdoc));
     }
+
+    private void elidePrivateMemberType(PotentialDeclaration decl) {
+      if (shouldElidePrivateMemberType(decl)) {
+        JSDocInfo jsdoc = decl.getJsDoc();
+        Node jsdocNode = NodeUtil.getBestJSDocInfoNode(decl.getLhs());
+        jsdocNode.setJSDocInfo(JsdocUtil.replaceAnnotatedTypesWithUnusableType(jsdoc));
+      }
+    }
+
+    private boolean shouldElidePrivateMemberType(PotentialDeclaration decl) {
+      // TODO: b/465855752 - roll out elison for JS files as well after depot cleanup.
+      if (!currentFile.isFromTypeScript()) {
+        return false;
+      }
+      JSDocInfo jsdoc = decl.getJsDoc();
+      if (jsdoc == null || jsdoc.getVisibility() != JSDocInfo.Visibility.PRIVATE) {
+        return false;
+      }
+      // Preserve JSDoc declaring a new type name, to avoid loosening types of other public members.
+      if (jsdoc.isConstructorOrInterface()
+          || jsdoc.hasEnumParameterType()
+          || jsdoc.hasTypedefType()) {
+        return false;
+      }
+      // Simple name declarations marked @private are not really treated as private if exported from
+      // a goog.module. (Ultimately we should probably ban marking a local name @private so that we
+      // can drop this special case.)
+      if (decl.getLhs().isName()) {
+        return false;
+      }
+      return JsdocUtil.hasAnnotatedType(jsdoc);
+    }
+  }
+
+  static boolean isSymbolProp(Node lhs) {
+    return lhs.isGetProp() && lhs.getFirstChild().matchesName("Symbol");
+  }
+
+  private static boolean shouldPreserveAssignment(Node expr, NodeTraversal t) {
+    Node lhs = expr.getFirstChild();
+    // Ignore assignments in function bodies, unless they're also a constructor with a this. prop.
+    if (!t.inGlobalHoistScope() && !t.inModuleHoistScope()) {
+      return ClassUtil.isThisPropInsideClassWithName(lhs);
+    }
+
+    // Well-known symbol properties, like Foo.prototype[Symbol.iterator] = function() {};
+    if (lhs.isGetElem() && isSymbolProp(lhs.getSecondChild())) {
+      return lhs.getFirstChild().isQualifiedName();
+    }
+    // Assignments to names don't have global typechecking side-effects even within the 'hoist
+    // scope'
+    if (lhs.isName()) {
+      return t.inGlobalScope() || t.inModuleScope();
+    }
+    return lhs.isQualifiedName();
   }
 }

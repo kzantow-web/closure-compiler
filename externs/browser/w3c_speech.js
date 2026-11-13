@@ -147,6 +147,26 @@ SpeechRecognition.prototype.onstart;
 /** @type {?function(!Event)} */
 SpeechRecognition.prototype.onend;
 
+/**
+ * @typedef {string}
+ * Valid values: 'aborted', 'audio-capture', 'language-not-supported', 'network',
+ * 'no-speech', 'not-allowed', 'phrases-not-supported', 'service-not-allowed'.
+ * @see https://wicg.github.io/speech-api/#enumdef-speechrecognitionerrorcode
+ */
+var SpeechRecognitionErrorCode;
+
+/**
+ * @record
+ * @extends {EventInit}
+ * @see https://wicg.github.io/speech-api/#dictdef-speechrecognitionerroreventinit
+ */
+function SpeechRecognitionErrorEventInit() {}
+
+/** @type {!SpeechRecognitionErrorCode} */
+SpeechRecognitionErrorEventInit.prototype.error;
+
+/** @type {string|undefined} */
+SpeechRecognitionErrorEventInit.prototype.message;
 
 /**
  * @constructor
@@ -175,8 +195,13 @@ SpeechRecognitionAlternative.prototype.confidence;
 
 /**
  * @constructor
+ * @implements {Iterable<!SpeechRecognitionAlternative>}
+ * @see https://wicg.github.io/speech-api/#speechrecognitionresult
  */
 function SpeechRecognitionResult() {}
+
+/** @override */
+SpeechRecognitionResult.prototype[Symbol.iterator] = function() {};
 
 /**
  * @type {number}
@@ -196,8 +221,13 @@ SpeechRecognitionResult.prototype.isFinal;
 
 /**
  * @constructor
+ * @implements {Iterable<!SpeechRecognitionResult>}
+ * @see https://wicg.github.io/speech-api/#speechrecognitionresultlist
  */
 function SpeechRecognitionResultList() {}
+
+/** @override */
+SpeechRecognitionResultList.prototype[Symbol.iterator] = function() {};
 
 /**
  * @type {number}
@@ -211,10 +241,25 @@ SpeechRecognitionResultList.prototype.item = function(index) {};
 
 
 /**
+ * @record
+ * @extends {EventInit}
+ * @see https://wicg.github.io/speech-api/#dictdef-speechrecognitioneventinit
+ */
+function SpeechRecognitionEventInit() {}
+
+/** @type {number|undefined} */
+SpeechRecognitionEventInit.prototype.resultIndex;
+
+/** @type {!SpeechRecognitionResultList} */
+SpeechRecognitionEventInit.prototype.results;
+
+/**
  * @constructor
  * @extends {Event}
+ * @param {string} type
+ * @param {!SpeechRecognitionEventInit} eventInitDict
  */
-function SpeechRecognitionEvent() {}
+function SpeechRecognitionEvent(type, eventInitDict) {}
 
 /** @type {number} */
 SpeechRecognitionEvent.prototype.resultIndex;
@@ -260,6 +305,11 @@ SpeechGrammarList.prototype.item = function(index) {};
  * @type {function(string, number)}
  */
 SpeechGrammarList.prototype.addFromUri = function(src, weight) {};
+
+/**
+ * @type {function(string, number)}
+ */
+SpeechGrammarList.prototype.addFromURI = function(src, weight) {};
 
 /**
  * @type {function(string, number)}
@@ -352,6 +402,16 @@ SpeechSynthesisUtterance.prototype.onend = function(event) {};
 SpeechSynthesisUtterance.prototype.onerror = function(event) {};
 
 /**
+ * @type {?function(!SpeechSynthesisEvent)}
+ */
+SpeechSynthesisUtterance.prototype.onboundary;
+
+/**
+ * @type {?function(!SpeechSynthesisEvent)}
+ */
+SpeechSynthesisUtterance.prototype.onmark;
+
+/**
  * @constructor
  */
 function SpeechSynthesisVoice() {}
@@ -400,6 +460,15 @@ SpeechSynthesis.prototype.pause;
 /** @type {function()} */
 SpeechSynthesis.prototype.resume;
 
+/** @type {boolean} */
+SpeechSynthesis.prototype.paused;
+
+/** @type {boolean} */
+SpeechSynthesis.prototype.pending;
+
+/** @type {boolean} */
+SpeechSynthesis.prototype.speaking;
+
 /**
  * @return {SpeechSynthesisVoiceList}
  */
@@ -410,3 +479,82 @@ SpeechSynthesis.prototype.getVoices = function() {};
  * @see https://dvcs.w3.org/hg/speech-api/raw-file/tip/speechapi-errata.html
  */
 SpeechSynthesis.prototype.onvoiceschanged = function(event) {};
+
+/**
+ * @record
+ * @extends {EventInit}
+ */
+function SpeechSynthesisEventInit() {}
+
+/** @type {number|undefined} */
+SpeechSynthesisEventInit.prototype.charIndex;
+
+/** @type {number|undefined} */
+SpeechSynthesisEventInit.prototype.charLength;
+
+/** @type {number|undefined} */
+SpeechSynthesisEventInit.prototype.elapsedTime;
+
+/** @type {string|undefined} */
+SpeechSynthesisEventInit.prototype.name;
+
+/** @type {!SpeechSynthesisUtterance} */
+SpeechSynthesisEventInit.prototype.utterance;
+
+/**
+ * @constructor
+ * @extends {Event}
+ * @param {string} type
+ * @param {!SpeechSynthesisEventInit=} eventInitDict
+ */
+function SpeechSynthesisEvent(type, eventInitDict) {}
+
+/** @type {number} */
+SpeechSynthesisEvent.prototype.charIndex;
+
+/** @type {number} */
+SpeechSynthesisEvent.prototype.charLength;
+
+/** @type {number} */
+SpeechSynthesisEvent.prototype.elapsedTime;
+
+/** @type {string} */
+SpeechSynthesisEvent.prototype.name;
+
+/** @type {!SpeechSynthesisUtterance} */
+SpeechSynthesisEvent.prototype.utterance;
+
+/**
+ * @record
+ * @extends {SpeechSynthesisEventInit}
+ */
+function SpeechSynthesisErrorEventInit() {}
+
+/** @type {string} */
+SpeechSynthesisErrorEventInit.prototype.error;
+
+/**
+ * @constructor
+ * @extends {SpeechSynthesisEvent}
+ * @param {string} type
+ * @param {!SpeechSynthesisErrorEventInit=} eventInitDict
+ */
+function SpeechSynthesisErrorEvent(type, eventInitDict) {}
+
+/** @type {string} */
+SpeechSynthesisErrorEvent.prototype.error;
+
+/**
+ * @constructor
+ * @extends {Event}
+ * @param {string} type
+ * @param {!SpeechRecognitionErrorEventInit} eventInitDict
+ * @see https://wicg.github.io/speech-api/#speechrecognitionerrorevent
+ */
+function SpeechRecognitionErrorEvent(type, eventInitDict) {}
+
+/** @type {!SpeechRecognitionErrorCode} */
+SpeechRecognitionErrorEvent.prototype.error;
+
+/** @type {string} */
+SpeechRecognitionErrorEvent.prototype.message;

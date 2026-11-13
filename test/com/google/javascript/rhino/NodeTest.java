@@ -39,17 +39,18 @@
 package com.google.javascript.rhino;
 
 import static com.google.common.truth.Truth.assertThat;
-import static com.google.javascript.rhino.testing.Asserts.assertThrows;
 import static com.google.javascript.rhino.testing.NodeSubject.assertNode;
+import static org.junit.Assert.assertThrows;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.javascript.jscomp.colors.StandardColors;
 import com.google.javascript.jscomp.serialization.NodeProperty;
+import com.google.javascript.rhino.Node.SideEffectFlags;
 import com.google.javascript.rhino.jstype.JSTypeNative;
 import com.google.javascript.rhino.jstype.JSTypeRegistry;
 import com.google.javascript.rhino.testing.TestErrorReporter;
 import java.math.BigInteger;
-import java.util.EnumSet;
 import java.util.function.Consumer;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -73,6 +74,34 @@ public class NodeTest {
     n.validateProperties(violationMessageConsumer);
 
     return listBuilder.build();
+  }
+
+  @Test
+  public void testSideEffectFlagsSerialization() {
+    // Test each individual flag
+    checkSideEffectFlagsRoundTrip(SideEffectFlags.MUTATES_GLOBAL_STATE);
+    checkSideEffectFlagsRoundTrip(SideEffectFlags.MUTATES_THIS);
+    checkSideEffectFlagsRoundTrip(SideEffectFlags.MUTATES_ARGUMENTS);
+    checkSideEffectFlagsRoundTrip(SideEffectFlags.THROWS);
+    // Test an arbitrary combination of 2 flags
+    checkSideEffectFlagsRoundTrip(SideEffectFlags.THROWS | SideEffectFlags.MUTATES_THIS);
+  }
+
+  public void checkSideEffectFlagsRoundTrip(int testFlags) {
+    final Node original = IR.call(IR.name("f"));
+    // serialization only works for nodes that actually have a source file,
+    // because in actual execution they always must have that.
+    original.setSourceFileForTesting("sourcefile");
+
+    // Simulate the situation where we've deserialized the node itself, but not its non-source-file
+    // properties yet, by cloning the orignal node before adding the side effect flags to it.
+    final Node restored = original.cloneNode();
+
+    original.setSideEffectFlags(testFlags);
+    final long serializedProperties = original.serializeProperties();
+
+    restored.deserializeProperties(serializedProperties, false);
+    assertThat(restored.getSideEffectFlags()).isEqualTo(testFlags);
   }
 
   @Test
@@ -197,6 +226,17 @@ public class NodeTest {
   }
 
   @Test
+  public void isEquivalentToConsidersDirectEval() {
+    Node directEvalCall = IR.call(IR.name("eval"));
+    directEvalCall.getFirstChild().putBooleanProp(Node.DIRECT_EVAL, true);
+
+    Node indirectEvalCall = IR.call(IR.name("eval"));
+    indirectEvalCall.getFirstChild().putBooleanProp(Node.DIRECT_EVAL, false);
+
+    assertNode(directEvalCall).isNotEquivalentTo(indirectEvalCall);
+  }
+
+  @Test
   public void isEquivalentToForFunctionsConsidersKindOfFunction() {
     Node normalFunction = IR.function(IR.name(""), IR.paramList(), IR.block());
     assertNode(normalFunction).isEquivalentTo(normalFunction.cloneTree());
@@ -269,6 +309,59 @@ public class NodeTest {
   public void testIsEquivalentToNumber() {
     assertThat(Node.newNumber(1).isEquivalentTo(Node.newNumber(1))).isTrue();
     assertThat(Node.newNumber(1).isEquivalentTo(Node.newNumber(2))).isFalse();
+  }
+
+  @Test
+  public void isEquivalentToConsidersPresenceOfClosureUnawareShadow() {
+    Node nameShadow1 = IR.name("x");
+    Node nameShadow2 = IR.name("x");
+    Node nameNoShadow = IR.name("x");
+
+    nameShadow1.setClosureUnawareShadow(IR.root());
+    nameShadow2.setClosureUnawareShadow(IR.root());
+
+    assertThat(nameShadow1.isEquivalentTo(nameShadow2)).isTrue();
+    assertThat(nameShadow1.isEquivalentTo(nameNoShadow)).isFalse();
+    assertThat(nameNoShadow.isEquivalentTo(nameShadow1)).isFalse();
+  }
+
+  @Test
+  public void isEquivalentToConsidersPresenceOfClosureUnawareShadow_recursively() {
+    Node nameShadow1a = IR.name("x");
+    Node nameShadow1b = IR.name("x");
+    Node nameShadow2 = IR.name("x");
+
+    Node root1Shared = IR.root(IR.script(IR.block()));
+    Node root2 = IR.root();
+
+    nameShadow1a.setClosureUnawareShadow(root1Shared);
+    nameShadow1b.setClosureUnawareShadow(root1Shared.cloneTree());
+    nameShadow2.setClosureUnawareShadow(root2);
+
+    assertThat(nameShadow1a.isEquivalentTo(nameShadow1b)).isTrue();
+    assertThat(nameShadow1a.isEquivalentTo(nameShadow2)).isFalse();
+  }
+
+  @Test
+  public void
+      testIsEquivalentTo_doesNotConsiderPresenceOfClosureUnawareShadow_inDeepNoShadowMode() {
+    Node nameShadow1 = IR.name("x");
+    Node nameShadow2 = IR.name("x");
+
+    Node root1 = IR.root(IR.script(IR.block()));
+    Node root2 = IR.root();
+
+    nameShadow1.setClosureUnawareShadow(root1);
+    nameShadow2.setClosureUnawareShadow(root2);
+
+    assertThat(
+            nameShadow1.isEquivalentTo(
+                nameShadow2,
+                Node.RecursionMode.DEEP_NO_SHADOW,
+                Node.TypeComparison.IGNORE,
+                Node.JsDocComparison.IGNORE,
+                Node.SideEffectComparison.COMPARE))
+        .isTrue();
   }
 
   @Test
@@ -684,39 +777,76 @@ public class NodeTest {
     assertThat(nodeClone.getBooleanProp(Node.IS_CONSTANT_NAME)).isTrue();
   }
 
+  private long bitsetFromNodeProperties(ImmutableSet<NodeProperty> props) {
+    long bitset = 0;
+    for (NodeProperty prop : props) {
+      bitset = Node.setNodePropertyBit(bitset, prop);
+    }
+    return bitset;
+  }
+
   @Test
   public void testSerializeProperties() {
     Node node = IR.function(IR.name(""), IR.paramList(), IR.block());
     node.setIsAsyncFunction(true);
     node.setIsGeneratorFunction(true);
-    EnumSet<NodeProperty> result = node.serializeProperties();
-    assertThat(result).containsExactly(NodeProperty.GENERATOR_FN, NodeProperty.ASYNC_FN);
+    long result = node.serializeProperties();
+
+    assertThat(result)
+        .isEqualTo(
+            bitsetFromNodeProperties(
+                ImmutableSet.of(NodeProperty.GENERATOR_FN, NodeProperty.ASYNC_FN)));
   }
 
   @Test
   public void testSerializeProperties_isDeclaredConstant() {
     Node node = new Node(Token.NAME);
     node.setDeclaredConstantVar(true);
-    EnumSet<NodeProperty> result = node.serializeProperties();
-    assertThat(result).containsExactly(NodeProperty.IS_DECLARED_CONSTANT);
+    long result = node.serializeProperties();
+    assertThat(result)
+        .isEqualTo(bitsetFromNodeProperties(ImmutableSet.of(NodeProperty.IS_DECLARED_CONSTANT)));
   }
 
   @Test
   public void testSerializeProperties_isInferredConstant() {
     Node node = new Node(Token.NAME);
     node.setInferredConstantVar(true);
-    EnumSet<NodeProperty> result = node.serializeProperties();
-    assertThat(result).containsExactly(NodeProperty.IS_INFERRED_CONSTANT);
+    long result = node.serializeProperties();
+    assertThat(result)
+        .isEqualTo(bitsetFromNodeProperties(ImmutableSet.of(NodeProperty.IS_INFERRED_CONSTANT)));
   }
 
   @Test
   public void testSerializeProperties_untranslatableRhinoProp() {
     Node node = getCall("A");
-    node.setSideEffectFlags(2);
-    EnumSet<NodeProperty> result = node.serializeProperties();
-    // Rhino node prop SIDE_EFFECT_FLAGS does not have a corresponding NodeProperty
-    assertThat(node.getSideEffectFlags()).isEqualTo(2);
-    assertThat(result).isEmpty();
+    node.setUseStrict(true);
+    long result = node.serializeProperties();
+    // Rhino node prop USE_STRICT does not have a corresponding NodeProperty
+    assertThat(node.isUseStrict()).isTrue();
+    assertThat(result).isEqualTo(0);
+  }
+
+  @Test
+  public void testSerializeProperties_privateIdentifier() {
+    Node node = Node.newString(Token.NAME, "#field");
+    node.setPrivateIdentifier();
+    long result = node.serializeProperties();
+    assertThat(result)
+        .isEqualTo(bitsetFromNodeProperties(ImmutableSet.of(NodeProperty.PRIVATE_IDENTIFIER)));
+  }
+
+  @Test
+  public void testSerializeProperties_privateIdentifierRoundTrip() {
+    Node original = Node.newString(Token.NAME, "#field");
+    original.setSourceFileForTesting("sourcefile");
+    Node restored = original.cloneNode(); // clone BEFORE setPrivateIdentifier
+
+    assertThat(restored.isPrivateIdentifier()).isFalse();
+
+    original.setPrivateIdentifier();
+    restored.deserializeProperties(original.serializeProperties(), false);
+
+    assertThat(restored.isPrivateIdentifier()).isTrue();
   }
 
   @Test
@@ -725,9 +855,10 @@ public class NodeTest {
     JSTypeRegistry registry = new JSTypeRegistry(testErrorReporter);
     Node node = Node.newString(Token.NAME, "f");
     node.setJSTypeBeforeCast(registry.getNativeType(JSTypeNative.NUMBER_TYPE));
-    EnumSet<NodeProperty> result = node.serializeProperties();
+    long result = node.serializeProperties();
     // Special case: Rhino node prop TYPE_BEFORE_CAST is converted to NodeProperty.COLOR_FROM_CAST
-    assertThat(result).containsExactly(NodeProperty.COLOR_FROM_CAST);
+    assertThat(result)
+        .isEqualTo(bitsetFromNodeProperties(ImmutableSet.of(NodeProperty.COLOR_FROM_CAST)));
   }
 
   @Test
@@ -916,5 +1047,106 @@ public class NodeTest {
 
   private static Node getCall(String name1) {
     return new Node(Token.CALL, getVarRef(name1));
+  }
+
+  @Test
+  public void testValidateMemoryGuarantees_checksForDifferentSourceFileInstances() {
+    Node b1 = IR.block();
+    Node b2 = IR.block();
+    Node other = IR.block();
+
+    b1.setSourceFileForTesting("file.js");
+    b2.setStaticSourceFileFrom(b1);
+    other.setStaticSourceFile(b1.getStaticSourceFile());
+
+    assertThat(Node.validateMemorySensitivePropertyGuarantees(b1, false, b2, false)).isTrue();
+    assertThat(Node.validateMemorySensitivePropertyGuarantees(b1, false, other, false)).isFalse();
+  }
+
+  @Test
+  public void testIsPrivateName() {
+    assertThat(Node.isPrivateName("#x")).isTrue();
+    assertThat(Node.isPrivateName("x")).isFalse();
+    assertThat(Node.isPrivateName("")).isFalse();
+  }
+
+  @Test
+  public void testIsPos() {
+    assertThat(new Node(Token.POS).isPos()).isTrue();
+    assertThat(new Node(Token.NEG).isPos()).isFalse();
+    assertThat(Node.newNumber(1.0).isPos()).isFalse();
+  }
+
+  @Test
+  public void testReplaceWithPropagatesSrcrefIfMissing() {
+    Node parent = new Node(Token.BLOCK);
+    Node target = new Node(Token.NAME);
+    target.setLinenoCharno(10, 5);
+    target.setSourceFileForTesting("target.js");
+    parent.addChildToBack(target);
+
+    // Case (a): replacement has no source info
+    Node replacement1 = new Node(Token.NAME);
+    target.replaceWith(replacement1);
+    assertThat(replacement1.getLineno()).isEqualTo(10);
+    assertThat(replacement1.getCharno()).isEqualTo(5);
+    assertThat(replacement1.getSourceFileName()).isEqualTo("target.js");
+
+    // Case (b): replacement already has source info
+    Node replacement2 = new Node(Token.NAME);
+    replacement2.setLinenoCharno(20, 8);
+    replacement2.setSourceFileForTesting("replacement.js");
+    replacement1.replaceWith(replacement2);
+    assertThat(replacement2.getLineno()).isEqualTo(20);
+    assertThat(replacement2.getCharno()).isEqualTo(8);
+    assertThat(replacement2.getSourceFileName()).isEqualTo("replacement.js");
+
+    // Case (c): child of replacement has no source info
+    Node replacement3 = new Node(Token.NAME);
+    Node child = new Node(Token.NAME);
+    replacement3.addChildToBack(child);
+    replacement2.replaceWith(replacement3);
+    assertThat(replacement3.getLineno()).isEqualTo(20);
+    assertThat(replacement3.getCharno()).isEqualTo(8);
+    assertThat(replacement3.getSourceFileName()).isEqualTo("replacement.js");
+    assertThat(child.getLineno()).isEqualTo(-1);
+    assertThat(child.getCharno()).isEqualTo(-1);
+    assertThat(child.getSourceFileName()).isNull();
+  }
+
+  @Test
+  public void testObjectValuedProps() {
+    Node n = new Node(Token.NAME);
+
+    Object reflected = new Object();
+    n.setReflectedObject(reflected);
+    assertThat(n.getReflectedObject()).isSameInstanceAs(reflected);
+
+    Node genericType = new Node(Token.NAME);
+    n.setGenericType(genericType);
+    assertThat(n.getGenericType()).isSameInstanceAs(genericType);
+
+    Node implementsNode = new Node(Token.NAME);
+    n.setImplements(implementsNode);
+    assertThat(n.getImplements()).isSameInstanceAs(implementsNode);
+
+    n.setConstructSignature(true);
+    assertThat(n.getConstructSignature()).isTrue();
+    n.setConstructSignature(false);
+    assertThat(n.getConstructSignature()).isFalse();
+
+    JSDocInfo.Visibility access = JSDocInfo.Visibility.PRIVATE;
+    n.setAccessModifier(access);
+    assertThat(n.getAccessModifier()).isEqualTo(access);
+
+    Object features = new Object();
+    n.setFeatureSet(features);
+    assertThat(n.getFeatureSet()).isSameInstanceAs(features);
+
+    Node evalNode = IR.name("eval");
+    evalNode.putBooleanProp(Node.DIRECT_EVAL, true);
+    assertThat(evalNode.getBooleanProp(Node.DIRECT_EVAL)).isTrue();
+    evalNode.removeDirectEvalProp();
+    assertThat(evalNode.getBooleanProp(Node.DIRECT_EVAL)).isFalse();
   }
 }

@@ -30,6 +30,7 @@ import com.google.javascript.rhino.QualifiedName;
 import com.google.javascript.rhino.Token;
 import java.util.ArrayList;
 import java.util.List;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Converts ES6 code to valid ES5 code. This class does most of the transpilation, and
@@ -47,16 +48,14 @@ public final class LateEs6ToEs3Converter implements NodeTraversal.Callback, Comp
   private final Es6TemplateLiterals templateLiteralConverter;
   private static final FeatureSet transpiledFeatures =
       FeatureSet.BARE_MINIMUM.with(
-          Feature.COMPUTED_PROPERTIES,
-          Feature.MEMBER_DECLARATIONS,
-          Feature.TEMPLATE_LITERALS);
+          Feature.COMPUTED_PROPERTIES, Feature.MEMBER_DECLARATIONS, Feature.TEMPLATE_LITERALS);
 
   // We want to insert the call to `var tagFnFirstArg = $jscomp.createTemplateTagFirstArg...` just
   // before this node. For the first script, this node is right after the runtime injected function
   // definition as injecting to the top of the script causes runtime errors
   // https://github.com/google/closure-compiler/issues/3589. For the subsequent script(s), the call
   // is injected to the top of that script.
-  private Node templateLitInsertionPoint = null;
+  private @Nullable Node templateLitInsertionPoint = null;
 
   private static final String FRESH_COMP_PROP_VAR = "$jscomp$compprop";
 
@@ -69,39 +68,34 @@ public final class LateEs6ToEs3Converter implements NodeTraversal.Callback, Comp
   @Override
   public void process(Node externs, Node root) {
     TranspilationPasses.processTranspile(compiler, root, transpiledFeatures, this);
-    TranspilationPasses.maybeMarkFeaturesAsTranspiledAway(compiler, transpiledFeatures);
+    TranspilationPasses.maybeMarkFeaturesAsTranspiledAway(compiler, root, transpiledFeatures);
   }
 
   @Override
   public boolean shouldTraverse(NodeTraversal t, Node n, Node parent) {
-    switch (n.getToken()) {
-      case SCRIPT:
-        // For all scripts, initialize the injection point to be top of the script
-        templateLitInsertionPoint = n.getFirstChild();
-        break;
-      case GETTER_DEF:
-      case SETTER_DEF:
-        if (FeatureSet.ES3.contains(compiler.getOptions().getOutputFeatureSet())) {
-          Es6ToEs3Util.cannotConvert(
-              compiler, n, "ES5 getters/setters (consider using --language_out=ES5)");
-          return false;
-        }
-        break;
-      case FUNCTION:
-        if (n.isAsyncFunction()) {
-          throw new IllegalStateException("async functions should have already been converted");
-        }
-        break;
-      default:
-        break;
+    if (n.isScript()) {
+      templateLitInsertionPoint = findTemplateLitInsertionPoint(n);
     }
     return true;
+  }
+
+  private static Node findTemplateLitInsertionPoint(Node script) {
+    if (script.getIsInClosureUnawareSubtree()) {
+      // For all closure-unaware scripts, initialize the injection point within the closure
+      // aware function.
+      Node closureUnawareBlock = NodeUtil.findClosureUnawareScriptRoot(script);
+      return NodeUtil.getInsertionPointAfterAllInnerFunctionDeclarations(closureUnawareBlock);
+    }
+    // For all other scripts, initialize the injection point to be top of the script. The spec
+    // requires a single unique array per template literal, so for a template literal in a function
+    // e.g. it would be incorrect to initialize a new array per every function call.
+    return script.getFirstChild();
   }
 
   @Override
   public void visit(NodeTraversal t, Node n, Node parent) {
     switch (n.getToken()) {
-      case ASSIGN:
+      case ASSIGN -> {
         // Find whether this script contains the `$jscomp.createTemplateTagFirstArgWithRaw =
         // function(..) {..}` node. If yes, update the templateLitInsertionPoint.
         Node lhs = n.getFirstChild();
@@ -114,25 +108,21 @@ public final class LateEs6ToEs3Converter implements NodeTraversal.Callback, Comp
             templateLitInsertionPoint = n.getParent().getNext();
           }
         }
-        break;
-      case OBJECTLIT:
-        visitObject(n);
-        break;
-      case MEMBER_FUNCTION_DEF:
+      }
+      case OBJECTLIT -> visitObject(t, n);
+      case MEMBER_FUNCTION_DEF -> {
         if (parent.isObjectLit()) {
           visitMemberFunctionDefInObjectLit(n);
         }
-        break;
-      case TAGGED_TEMPLATELIT:
-        templateLiteralConverter.visitTaggedTemplateLiteral(t, n, templateLitInsertionPoint);
-        break;
-      case TEMPLATELIT:
+      }
+      case TAGGED_TEMPLATELIT ->
+          templateLiteralConverter.visitTaggedTemplateLiteral(t, n, templateLitInsertionPoint);
+      case TEMPLATELIT -> {
         if (!parent.isTaggedTemplateLit()) {
           templateLiteralConverter.visitTemplateLiteral(t, n);
         }
-        break;
-      default:
-        break;
+      }
+      default -> {}
     }
   }
 
@@ -150,30 +140,32 @@ public final class LateEs6ToEs3Converter implements NodeTraversal.Callback, Comp
     compiler.reportChangeToEnclosingScope(stringKey);
   }
 
-  private void visitObject(Node obj) {
+  private void visitObject(NodeTraversal t, Node obj) {
     for (Node child = obj.getFirstChild(); child != null; child = child.getNext()) {
       if (child.isComputedProp()) {
-        visitObjectWithComputedProperty(obj);
+        visitObjectWithComputedProperty(t, obj);
         return;
       }
     }
   }
 
   /**
-   * Transpiles an object node with computed property,
-   * and add type information to the new nodes if this pass ran after type checking.
-   * For example,<pre>   {@code
-   *   var obj = {a: 1, [i++]: 2}
-   *   is transpiled to
-   *   var $jscomp$compprop0 = {};
-   *   var obj = ($jscomp$compprop0.a = 1, ($jscomp$compprop0[i++] = 2, $jscomp$compprop0));
+   * Transpiles an object node with computed property, and add type information to the new nodes if
+   * this pass ran after type checking. For example,
+   *
+   * <pre>{@code
+   * var obj = {a: 1, [i++]: 2}
+   * is transpiled to
+   * var $jscomp$compprop0 = {};
+   * var obj = ($jscomp$compprop0.a = 1, ($jscomp$compprop0[i++] = 2, $jscomp$compprop0));
    * }</pre>
-   * Note that when adding type information to the nodes, the NAME node $jscomp$compprop0
-   * would always be assigned the type of the entire object (in the above example {a: number}).
-   * This is because we do not have sufficient type information during transpilation to know,
-   * for example, $jscomp$compprop0 has type Object{} in the expression $jscomp$compprop0.a = 1
+   *
+   * Note that when adding type information to the nodes, the NAME node $jscomp$compprop0 would
+   * always be assigned the type of the entire object (in the above example {a: number}). This is
+   * because we do not have sufficient type information during transpilation to know, for example,
+   * $jscomp$compprop0 has type Object{} in the expression $jscomp$compprop0.a = 1
    */
-  private void visitObjectWithComputedProperty(Node obj) {
+  private void visitObjectWithComputedProperty(NodeTraversal t, Node obj) {
     checkArgument(obj.isObjectLit());
     List<Node> props = new ArrayList<>();
     Node currElement = obj.getFirstChild();
@@ -182,8 +174,13 @@ public final class LateEs6ToEs3Converter implements NodeTraversal.Callback, Comp
     while (currElement != null) {
       if (currElement.getBooleanProp(Node.COMPUTED_PROP_GETTER)
           || currElement.getBooleanProp(Node.COMPUTED_PROP_SETTER)) {
-        Es6ToEs3Util.cannotConvertYet(
-            compiler, currElement, "computed getter/setter in an object literal");
+        compiler.report(
+            JSError.make(
+                currElement,
+                ReportUntranspilableFeatures.UNTRANSPILABLE_FEATURE_PRESENT,
+                "computed getter/setter in an object literal",
+                "ES2015",
+                ""));
         return;
       } else if (currElement.isGetterDef() || currElement.isSetterDef()) {
         currElement = currElement.getNext();
@@ -195,7 +192,7 @@ public final class LateEs6ToEs3Converter implements NodeTraversal.Callback, Comp
       }
     }
 
-    String objName = FRESH_COMP_PROP_VAR + compiler.getUniqueNameIdSupplier().get();
+    String objName = FRESH_COMP_PROP_VAR + compiler.getUniqueIdSupplier().getUniqueId(t.getInput());
 
     props = Lists.reverse(props);
     Node result = astFactory.createName(objName, objectType);
@@ -212,7 +209,7 @@ public final class LateEs6ToEs3Converter implements NodeTraversal.Callback, Comp
                 result);
       } else {
         Node val = propdef.removeFirstChild();
-        boolean isQuotedAccess = propdef.isQuotedString();
+        boolean isQuotedAccess = propdef.isQuotedStringKey();
 
         propdef.setToken(Token.STRINGLIT);
         propdef.setColor(StandardColors.STRING);
@@ -232,12 +229,31 @@ public final class LateEs6ToEs3Converter implements NodeTraversal.Callback, Comp
       statement = statement.getParent();
     }
 
-    result.srcrefTreeIfMissing(obj);
-    obj.replaceWith(result);
+    boolean isInsideLoopHeader = NodeUtil.isLoopStructure(statement);
 
-    Node var = IR.var(astFactory.createName(objName, objectType), obj);
-    var.srcrefTreeIfMissing(statement);
-    var.insertBefore(statement);
-    compiler.reportChangeToEnclosingScope(var);
+    if (isInsideLoopHeader) {
+      Node placeholder = IR.empty();
+      obj.replaceWith(placeholder);
+
+      Node assignEmptyObj =
+          astFactory.createAssign(astFactory.createName(objName, objectType), obj);
+      result = astFactory.createComma(assignEmptyObj, result);
+      result.srcrefTreeIfMissing(obj);
+
+      placeholder.replaceWith(result);
+
+      Node var = IR.var(astFactory.createName(objName, objectType));
+      var.srcrefTreeIfMissing(statement);
+      var.insertBefore(statement);
+      compiler.reportChangeToEnclosingScope(var);
+    } else {
+      result.srcrefTreeIfMissing(obj);
+      obj.replaceWith(result);
+
+      Node var = IR.var(astFactory.createName(objName, objectType), obj);
+      var.srcrefTreeIfMissing(statement);
+      var.insertBefore(statement);
+      compiler.reportChangeToEnclosingScope(var);
+    }
   }
 }

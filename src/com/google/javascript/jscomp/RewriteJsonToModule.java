@@ -22,7 +22,7 @@ import com.google.javascript.jscomp.deps.ModuleLoader;
 import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.Node;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -49,7 +49,7 @@ public class RewriteJsonToModule extends NodeTraversal.AbstractPostOrderCallback
    */
   public RewriteJsonToModule(AbstractCompiler compiler) {
     this.compiler = compiler;
-    this.packageJsonMainEntries = new HashMap<>();
+    this.packageJsonMainEntries = new LinkedHashMap<>();
   }
 
   public ImmutableMap<String, String> getPackageJsonMainEntries() {
@@ -69,38 +69,26 @@ public class RewriteJsonToModule extends NodeTraversal.AbstractPostOrderCallback
   @Override
   public void visit(NodeTraversal t, Node n, Node parent) {
     switch (n.getToken()) {
-      case SCRIPT:
+      case SCRIPT -> {
         if (!n.hasOneChild()) {
           compiler.report(JSError.make(n, JSON_UNEXPECTED_TOKEN));
         } else {
           visitScript(t, n);
         }
         return;
-
-      case OBJECTLIT:
-      case ARRAYLIT:
-      case NUMBER:
-      case TRUE:
-      case FALSE:
-      case NULL:
-      case STRINGLIT:
-        break;
-
-      case STRING_KEY:
-        if (!n.isQuotedString() || !n.hasOneChild()) {
+      }
+      case OBJECTLIT, ARRAYLIT, NUMBER, TRUE, FALSE, NULL, STRINGLIT -> {}
+      case STRING_KEY -> {
+        if (!n.isQuotedStringKey() || !n.hasOneChild()) {
           compiler.report(JSError.make(n, JSON_UNEXPECTED_TOKEN));
         }
-        break;
-
-      case EXPR_RESULT:
+      }
+      case EXPR_RESULT -> {
         if (!parent.isScript()) {
           compiler.report(JSError.make(n, JSON_UNEXPECTED_TOKEN));
         }
-        break;
-
-      default:
-        compiler.report(JSError.make(n, JSON_UNEXPECTED_TOKEN));
-        break;
+      }
+      default -> compiler.report(JSError.make(n, JSON_UNEXPECTED_TOKEN));
     }
 
     if (n.getLineno() == 1) {

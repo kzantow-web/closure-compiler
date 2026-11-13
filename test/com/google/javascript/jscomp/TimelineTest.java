@@ -17,6 +17,8 @@ package com.google.javascript.jscomp;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.javascript.rhino.IR;
+import com.google.javascript.rhino.Node;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -40,8 +42,8 @@ public class TimelineTest {
 
     @Override
     public boolean equals(Object obj) {
-      if (obj instanceof Event) {
-        return ((Event) obj).hashcode == hashcode;
+      if (obj instanceof Event event) {
+        return event.hashcode == hashcode;
       }
       return false;
     }
@@ -148,8 +150,8 @@ public class TimelineTest {
     timeline.add(ateBerries);
     timeline.add(ateGrapes);
 
-    assertThat(timeline.getSince("Monday")).containsExactly(ateBerries).inOrder();
-    assertThat(timeline.getSince("Monday")).containsExactly(ateGrapes).inOrder();
+    assertThat(timeline.getSince("Monday")).containsExactly(ateBerries);
+    assertThat(timeline.getSince("Monday")).containsExactly(ateGrapes);
   }
 
   @Test
@@ -170,5 +172,24 @@ public class TimelineTest {
 
     assertThat(timeline.getSince("Monday")).containsExactly(ATE_GREEN_EGGS, ATE_HAM).inOrder();
     assertThat(timeline.getSince("Thursday")).containsExactly(ATE_HAM);
+  }
+
+  @Test
+  public void testChangeTrackerDeletedFunctionRemovedFromTimeline() {
+    ChangeTracker changeTracker = new ChangeTracker();
+    Node function = IR.function(IR.name("foo"), IR.paramList(), IR.block());
+    IR.root(IR.script(function));
+
+    // Establish baseline
+    var unused = changeTracker.getChangedScopeNodesForPass("PassName");
+
+    changeTracker.reportChangeToChangeScope(function);
+    function.detach();
+    changeTracker.reportFunctionDeleted(function);
+
+    // This should be ignored because the function is marked as deleted.
+    changeTracker.reportChangeToChangeScope(function);
+
+    assertThat(changeTracker.getChangedScopeNodesForPass("PassName")).isEmpty();
   }
 }

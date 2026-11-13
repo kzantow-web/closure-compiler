@@ -20,12 +20,14 @@ import static com.google.common.base.Strings.nullToEmpty;
 import com.google.common.base.Joiner;
 import com.google.javascript.jscomp.CompilerOptions.LanguageMode;
 import com.google.javascript.jscomp.PolyfillUsageFinder.Polyfills;
-import com.google.javascript.jscomp.testing.NoninjectingCompiler;
-import com.google.javascript.rhino.Node;
+import com.google.javascript.jscomp.js.RuntimeJsLibManager;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import org.jspecify.annotations.Nullable;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -40,12 +42,15 @@ public final class RewritePolyfillsTest extends CompilerTestCase {
   private static final LanguageMode ES5 = LanguageMode.ECMASCRIPT5_STRICT;
   private static final LanguageMode ES3 = LanguageMode.ECMASCRIPT3;
 
-  private final Map<String, String> injectableLibraries = new HashMap<>();
+  private final Map<String, String> injectableLibraries = new LinkedHashMap<>();
+  private final Set<String> injectBeforePass = new LinkedHashSet<>();
   private final List<String> polyfillTable = new ArrayList<>();
   private boolean isolatePolyfills = false;
   private boolean injectPolyfills = true;
+  private LanguageMode injectPolyfillsNewerThan = null;
+  private boolean disambiguateProperties = false;
 
-  private void addLibrary(String name, String from, String to, String library) {
+  private void addLibrary(String name, String from, String to, @Nullable String library) {
     if (library != null) {
       injectableLibraries.put(
           library,
@@ -59,56 +64,45 @@ public final class RewritePolyfillsTest extends CompilerTestCase {
   public void setUp() throws Exception {
     super.setUp();
     injectableLibraries.clear();
+    injectBeforePass.clear();
     polyfillTable.clear();
+    injectPolyfillsNewerThan = null;
     setLanguageOut(LanguageMode.ECMASCRIPT5);
+    disambiguateProperties = false;
   }
 
   @Override
   protected CompilerPass getProcessor(Compiler compiler) {
     return new RewritePolyfills(
         compiler,
+        createRuntimeJsLibManager(compiler),
         Polyfills.fromTable(Joiner.on("\n").join(polyfillTable)),
         injectPolyfills,
-        isolatePolyfills);
+        isolatePolyfills,
+        injectPolyfillsNewerThan,
+        disambiguateProperties);
   }
 
   @Override
   protected CompilerOptions getOptions() {
     CompilerOptions options = super.getOptions();
     options.setWarningLevel(DiagnosticGroups.MISSING_POLYFILL, CheckLevel.WARNING);
+    options.setRuntimeLibraryMode(RuntimeJsLibManager.RuntimeLibraryMode.RECORD_ONLY);
     return options;
   }
 
-  @Override
-  protected Compiler createCompiler() {
-    return new NoninjectingCompiler() {
-      Node lastInjected = null;
-
-      @Override
-      public Node ensureLibraryInjected(String library, boolean force) {
-        if (getInjected().contains(library)) {
-          // already injected
-          return lastInjected;
-        } else {
-          // super method just records library in `injected`
-          super.ensureLibraryInjected(library, force);
-          Node parent = getNodeForCodeInsertion(null);
-          Node ast = parseSyntheticCode(library, injectableLibraries.get(library));
-          Node lastChild = ast.getLastChild();
-          Node firstChild = ast.removeChildren();
-          // Any newly added functions must be marked as changed.
-          for (Node child = firstChild; child != null; child = child.getNext()) {
-            NodeUtil.markNewScopesChanged(child, this);
-          }
-          if (lastInjected == null) {
-            parent.addChildrenToFront(firstChild);
-          } else {
-            parent.addChildrenAfter(firstChild, lastInjected);
-          }
-          return lastInjected = lastChild;
-        }
-      }
-    };
+  private RuntimeJsLibManager createRuntimeJsLibManager(Compiler compiler) {
+    RuntimeJsLibManager runtimeLibs =
+        RuntimeJsLibManager.create(
+            RuntimeJsLibManager.RuntimeLibraryMode.INJECT,
+            // stub out the resource parsing
+            (resource, path) -> compiler.parseTestCode(injectableLibraries.get(resource)),
+            compiler.getChangeTracker(),
+            () -> compiler.getNodeForCodeInsertion(null));
+    for (String toInject : injectBeforePass) {
+      runtimeLibs.ensureLibraryInjected(toInject, /* force= */ false);
+    }
+    return runtimeLibs;
   }
 
   private String addLibraries(String code, String[] libraries) {
@@ -394,8 +388,10 @@ public final class RewritePolyfillsTest extends CompilerTestCase {
 
     setLanguage(ES6, ES5);
     testInjects(
-        "var string = {}; string.endsWith = function() {}; "
-            + "string.foo = function(string) { return string.endsWith('x'); };",
+        """
+        var string = {}; string.endsWith = function() {};
+        string.foo = function(string) { return string.endsWith('x'); };
+        """,
         "es6/string/endswith");
   }
 
@@ -415,8 +411,10 @@ public final class RewritePolyfillsTest extends CompilerTestCase {
     testInjects(
         "var string = {endsWith: function() {}}; string.endsWith('x');", "es6/string/endswith");
     testInjects(
-        "var string = {}; string.endsWith = function() {}; "
-            + "string.foo = function() { return string.endsWith('x'); };",
+        """
+        var string = {}; string.endsWith = function() {};
+        string.foo = function() { return string.endsWith('x'); };
+        """,
         "es6/string/endswith");
   }
 
@@ -497,27 +495,28 @@ public final class RewritePolyfillsTest extends CompilerTestCase {
     // Put two polyfill statements in the same library.
     injectableLibraries.put(
         "es6/set",
-        lines(
-            "$jscomp.polyfill('Set', function() {}, 'es6', 'es3');",
-            "$jscomp.polyfill('Map', function() {}, 'es5', 'es3');"));
+        """
+        $jscomp.polyfill('Set', function() {}, 'es6', 'es3');
+        $jscomp.polyfill('Map', function() {}, 'es5', 'es3');
+        """);
     polyfillTable.add("Set es6 es3 es6/set");
 
     setLanguage(ES6, ES5);
     test(
         "var set = new Set();",
-        lines(
-            "", //
-            "$jscomp.polyfill('Set', function() {}, 'es6', 'es3');",
-            "var set = new Set();"));
+        """
+        $jscomp.polyfill('Set', function() {}, 'es6', 'es3');
+        var set = new Set();
+        """);
 
     setLanguage(ES6, ES3);
     test(
         "var set = new Set();",
-        lines(
-            "$jscomp.polyfill('Set', function() {}, 'es6', 'es3');",
-            "$jscomp.polyfill('Map', function() {}, 'es5', 'es3');",
-            "var set = new Set();",
-            ""));
+        """
+        $jscomp.polyfill('Set', function() {}, 'es6', 'es3');
+        $jscomp.polyfill('Map', function() {}, 'es5', 'es3');
+        var set = new Set();
+        """);
   }
 
   @Test
@@ -553,21 +552,23 @@ public final class RewritePolyfillsTest extends CompilerTestCase {
     // Put two polyfill statements in the same library.
     injectableLibraries.put(
         "es6/set",
-        lines(
-            "$jscomp.polyfill('Set', function() {}, 'es6', 'es3');",
-            // pretend Map isn't needed for ES5
-            "$jscomp.polyfill('Map', function() {}, 'es5', 'es3');"));
+        """
+        $jscomp.polyfill('Set', function() {}, 'es6', 'es3');
+        // pretend Map isn't needed for ES5
+        $jscomp.polyfill('Map', function() {}, 'es5', 'es3');
+        """);
     polyfillTable.add("Set es6 es3 es6/set");
 
     // simulate injection of Map by a prior-run pass
-    ensureLibraryInjected("es6/set");
+    injectBeforePass.add("es6/set");
     setLanguage(ES6, ES5);
     test(
         "var set = new Set();",
-        lines(
-            "", // Map gets removed even though not added by RewritePolyfills
-            "$jscomp.polyfill('Set', function() {}, 'es6', 'es3');",
-            "var set = new Set();"));
+        """
+         // Map gets removed even though not added by RewritePolyfills
+        $jscomp.polyfill('Set', function() {}, 'es6', 'es3');
+        var set = new Set();
+        """);
   }
 
   @Test
@@ -588,5 +589,239 @@ public final class RewritePolyfillsTest extends CompilerTestCase {
 
     allowExternsChanges();
     testSame("'x'.endsWith('y');");
+  }
+
+  @Test
+  public void testForceInject_es5_addsES6AndES8() {
+    injectPolyfillsNewerThan = LanguageMode.ECMASCRIPT5;
+    addLibrary("String.prototype.endsWith", "es6", "es5", "es6/string/endswith");
+    addLibrary("Object.values", "es8", "es3", "es6/object/values");
+
+    testInjects("", "es6/string/endswith", "es6/object/values");
+  }
+
+  @Test
+  public void testForceInject_es2015_addsES8Polyfill() {
+    injectPolyfillsNewerThan = LanguageMode.ECMASCRIPT5;
+    addLibrary("Object.values", "es8", "es3", "es6/object/values");
+
+    testInjects("", "es6/object/values");
+  }
+
+  @Test
+  public void testForceInject_es2015_skipsEs2015Polyfills() {
+    injectPolyfillsNewerThan = LanguageMode.ECMASCRIPT_2015;
+    addLibrary("String.prototype.endsWith", "es6", "es5", "es6/string/endswith");
+
+    testDoesNotInject("");
+  }
+
+  @Test
+  public void testIteratorPolyfill() {
+    addLibrary("Iterator", "es_next", "es3", "es6/iterator");
+    addLibrary("Iterator.from", "es_next", "es3", "es6/iterator/from");
+    addLibrary("Iterator.prototype.drop", "es_next", "es3", "es6/iterator/drop");
+    addLibrary("Iterator.prototype.every", "es_next", "es3", "es6/iterator/every");
+    addLibrary("Iterator.prototype.filter", "es_next", "es3", "es6/iterator/filter");
+    addLibrary("Iterator.prototype.find", "es_next", "es3", "es6/iterator/find");
+    addLibrary("Iterator.prototype.flatMap", "es_next", "es3", "es6/iterator/flatmap");
+    addLibrary("Iterator.prototype.forEach", "es_next", "es3", "es6/iterator/foreach");
+    addLibrary("Iterator.prototype.map", "es_next", "es3", "es6/iterator/map");
+    addLibrary("Iterator.prototype.reduce", "es_next", "es3", "es6/iterator/reduce");
+    addLibrary("Iterator.prototype.some", "es_next", "es3", "es6/iterator/some");
+    addLibrary("Iterator.prototype.take", "es_next", "es3", "es6/iterator/take");
+    addLibrary("Iterator.prototype.toArray", "es_next", "es3", "es6/iterator/toarray");
+
+    setLanguage(ES_2020, ES3);
+    testInjects("Iterator;", "es6/iterator");
+    testInjects("class MyIter extends Iterator {}", "es6/iterator");
+    testInjects("Iterator.from(x);", "es6/iterator", "es6/iterator/from");
+    testInjects("x.drop(1);", "es6/iterator/drop");
+    testInjects("x.every(fn);", "es6/iterator/every");
+    testInjects("x.filter(fn);", "es6/iterator/filter");
+    testInjects("x.find(fn);", "es6/iterator/find");
+    testInjects("x.flatMap(fn);", "es6/iterator/flatmap");
+    testInjects("x.forEach(fn);", "es6/iterator/foreach");
+    testInjects("x.map(fn);", "es6/iterator/map");
+    testInjects("x.reduce(fn, 0);", "es6/iterator/reduce");
+    testInjects("x.some(fn);", "es6/iterator/some");
+    testInjects("x.take(1);", "es6/iterator/take");
+    testInjects("x.toArray();", "es6/iterator/toarray");
+    testDoesNotInject("");
+  }
+
+  @Test
+  public void testIteratorPolyfill_typedReceiver() {
+    this.disambiguateProperties = true;
+    addLibrary("Iterator", "es_next", "es3", "es6/iterator");
+    addLibrary("Iterator.prototype.drop", "es_next", "es3", "es6/iterator/drop");
+    addLibrary("Iterator.prototype.every", "es_next", "es3", "es6/iterator/every");
+    addLibrary("Iterator.prototype.filter", "es_next", "es3", "es6/iterator/filter");
+    addLibrary("Iterator.prototype.find", "es_next", "es3", "es6/iterator/find");
+    addLibrary("Iterator.prototype.flatMap", "es_next", "es3", "es6/iterator/flatmap");
+    addLibrary("Iterator.prototype.map", "es_next", "es3", "es6/iterator/map");
+    addLibrary("Iterator.prototype.some", "es_next", "es3", "es6/iterator/some");
+    addLibrary("Iterator.prototype.take", "es_next", "es3", "es6/iterator/take");
+    addLibrary("Iterator.prototype.toArray", "es_next", "es3", "es6/iterator/toarray");
+
+    setLanguage(ES_2020, ES3);
+    enableTypeCheck();
+    replaceTypesWithColors();
+    disableCompareJsDoc();
+    ignoreWarnings(TypeCheck.INEXISTENT_PROPERTY);
+    ignoreWarnings(TypeCheck.POSSIBLE_INEXISTENT_PROPERTY);
+    ignoreWarnings(TypeValidator.TYPE_MISMATCH_WARNING);
+
+    // 1. Receiver is a concrete class (Array) disjoint from Iterator: DO NOT inject
+    testDoesNotInject("const arr = [1, 2, 3]; arr.toArray();");
+    testDoesNotInject(
+        "const arr = [1, 2, 3]; arr.some(fn); arr.every(fn); arr.find(fn); arr.map(fn);"
+            + " arr.filter(fn); arr.flatMap(fn); arr.take(1); arr.drop(1);");
+
+    // 2. Receiver is a union of concrete classes disjoint from Iterator: DO NOT inject
+    testDoesNotInject(
+        """
+        class Foo {}
+        class Bar {}
+        /** @type {!Foo|!Bar} */ let col;
+        col.toArray();
+        """);
+
+    // 3. Receiver is an unrelated custom class: DO NOT inject
+    testDoesNotInject(
+        """
+        class Foo { toArray() {} }
+        const f = new Foo();
+        f.toArray();
+        """);
+
+    // 4. Receiver is an Iterator: DO inject
+    testInjects(
+        "/** @type {!Iterator<number>} */ let iter; iter.toArray();", "es6/iterator/toarray");
+
+    // 5. Receiver is a subclass of Iterator: DO inject
+    testInjects(
+        """
+        class MyIterator extends Iterator {}
+        const iter = new MyIterator();
+        iter.toArray();
+        """,
+        "es6/iterator",
+        "es6/iterator/toarray");
+
+    // 6. Receiver is unknown (? or any): DO inject
+    testInjects("/** @type {?} */ let x; x.toArray();", "es6/iterator/toarray");
+
+    // 7. Receiver is Object (top object): DO inject
+    testInjects("/** @type {!Object} */ let obj; obj.toArray();", "es6/iterator/toarray");
+
+    // 8. Receiver is a union containing an unknown/potential Iterator: DO inject
+    testInjects(
+        """
+        /** @type {!Array<number>|!Iterator<number>} */ let u;
+        u.toArray();
+        """,
+        "es6/iterator/toarray");
+
+    // 9. Receiver is nullable Array with optional chaining: DO NOT inject
+    testDoesNotInject("/** @type {?Array<number>} */ let arr; arr?.toArray();");
+
+    // 10. Receiver is a primitive (e.g. number): DO NOT inject
+    testDoesNotInject("let n = 42; n.toArray();");
+
+    // 11. Receiver is a structural interface (@record): DO inject
+    testInjects(
+        """
+        /** @record */
+        function Structural() {}
+        /** @type {function(): void} */
+        Structural.prototype.toArray;
+        /** @type {!Structural} */ let s;
+        s.toArray();
+        """,
+        "es6/iterator/toarray");
+
+    // 12. Receiver is an anonymous record / structural interface: DO inject
+    testInjects(
+        """
+        /** @type {{toArray: function()}} */
+        let s;
+        s.toArray();
+        """,
+        "es6/iterator/toarray");
+
+    // 13. Receiver is an Array even if marked invalidating via type mismatch: DO NOT inject
+    testDoesNotInject(
+        """
+        /** @type {string} */ const s = [1, 2];
+        const arr = [1, 2, 3];
+        arr.toArray();
+        """);
+
+    // 14. Receiver is a Generator: DO inject (generators inherit from %IteratorPrototype% at
+    // runtime)
+    testInjects(
+        """
+        function* gen() {}
+        gen().toArray();
+        """,
+        "es6/iterator/toarray");
+
+    // 15. Receiver is an IteratorIterable (supertype of Iterator): DO inject
+    testInjects(
+        """
+        const arr = [1, 2, 3];
+        arr.values().toArray();
+        """,
+        "es6/iterator/toarray");
+    testInjects(
+        """
+        const map = new Map();
+        map.keys().toArray();
+        """,
+        "es6/iterator/toarray");
+
+    // 16. Receiver is an Iterable (supertype of Iterator via interface ancestor): DO inject
+    testInjects("/** @type {!Iterable<number>} */ let it; it.toArray();", "es6/iterator/toarray");
+
+    // 17. Receiver is Iterator.prototype (prototype object color): DO inject
+    testInjects(
+        """
+        const arr = [1, 2, 3];
+        Iterator.prototype.toArray.call(arr);
+        """,
+        "es6/iterator",
+        "es6/iterator/toarray");
+
+    // 18. Receiver is super: DO inject
+    testInjects(
+        """
+        class MyIter extends Iterator {
+          toArray() {
+            return super.toArray();
+          }
+        }
+        """,
+        "es6/iterator",
+        "es6/iterator/toarray");
+  }
+
+  @Test
+  public void testIteratorPolyfill_typedReceiver_disambiguatePropertiesDisabled_injects() {
+    this.disambiguateProperties = false;
+    addLibrary("Iterator", "es_next", "es3", "es6/iterator");
+    addLibrary("Iterator.prototype.toArray", "es_next", "es3", "es6/iterator/toarray");
+
+    setLanguage(ES_2020, ES3);
+    enableTypeCheck();
+    replaceTypesWithColors();
+    disableCompareJsDoc();
+    ignoreWarnings(TypeCheck.INEXISTENT_PROPERTY);
+    ignoreWarnings(TypeCheck.POSSIBLE_INEXISTENT_PROPERTY);
+    ignoreWarnings(TypeValidator.TYPE_MISMATCH_WARNING);
+
+    // When disambiguateProperties is disabled, even though optimization colors are present on the
+    // AST, we do not prune polyfills based on type disjointness:
+    testInjects("const arr = [1, 2, 3]; arr.toArray();", "es6/iterator/toarray");
   }
 }

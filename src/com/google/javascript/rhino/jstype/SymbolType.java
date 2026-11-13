@@ -49,7 +49,7 @@ import com.google.javascript.jscomp.base.Tri;
  *
  * @author johnlenz@google.com (John Lenz)
  */
-public final class SymbolType extends ValueType {
+public class SymbolType extends ValueType {
   SymbolType(JSTypeRegistry registry) {
     super(registry);
   }
@@ -115,6 +115,6 @@ public final class SymbolType extends ValueType {
 
   @Override
   public <T> T visit(Visitor<T> visitor) {
-    return visitor.caseSymbolType();
+    return visitor.caseSymbolType(this);
   }
 }

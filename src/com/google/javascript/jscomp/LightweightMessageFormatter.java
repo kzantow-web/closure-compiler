@@ -16,21 +16,20 @@
 package com.google.javascript.jscomp;
 
 import static com.google.common.base.Preconditions.checkNotNull;
-import static com.google.common.base.Preconditions.checkState;
 import static com.google.javascript.jscomp.SourceExcerptProvider.SourceExcerpt.FULL;
 import static com.google.javascript.jscomp.SourceExcerptProvider.SourceExcerpt.LINE;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
 
 import com.google.common.base.Splitter;
-import com.google.common.base.Strings;
 import com.google.debugging.sourcemap.proto.Mapping.OriginalMapping;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.javascript.jscomp.SourceExcerptProvider.ExcerptFormatter;
 import com.google.javascript.jscomp.SourceExcerptProvider.SourceExcerpt;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.TokenUtil;
 import java.util.List;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Lightweight message formatter. The format of messages this formatter
@@ -66,11 +65,13 @@ public final class LightweightMessageFormatter extends AbstractMessageFormatter 
     return new LightweightMessageFormatter();
   }
 
+  @CanIgnoreReturnValue
   public LightweightMessageFormatter setIncludeLocation(boolean includeLocation) {
     this.includeLocation = includeLocation;
     return this;
   }
 
+  @CanIgnoreReturnValue
   public LightweightMessageFormatter setIncludeLevel(boolean includeLevel) {
     this.includeLevel = includeLevel;
     return this;
@@ -88,9 +89,9 @@ public final class LightweightMessageFormatter extends AbstractMessageFormatter 
 
   private String format(JSError error, boolean warning) {
     SourceExcerptProvider source = getSource();
-    String sourceName = error.getSourceName();
+    String sourceName = error.sourceName();
     int lineNumber = error.getLineNumber();
-    int charno = error.getCharno();
+    int charno = error.charno();
 
     // Format the non-reverse-mapped position.
     StringBuilder b = new StringBuilder();
@@ -99,8 +100,7 @@ public final class LightweightMessageFormatter extends AbstractMessageFormatter 
     OriginalMapping mapping =
         source == null
             ? null
-            : source.getSourceMapping(
-                error.getSourceName(), error.getLineNumber(), error.getCharno());
+            : source.getSourceMapping(error.sourceName(), error.getLineNumber(), error.charno());
 
     // Check if we can reverse-map the source.
     if (includeLocation) {
@@ -120,11 +120,11 @@ public final class LightweightMessageFormatter extends AbstractMessageFormatter 
     if (includeLevel) {
       boldLine.append(getLevelName(warning ? CheckLevel.WARNING : CheckLevel.ERROR));
       boldLine.append(" - [");
-      boldLine.append(error.getType().key);
+      boldLine.append(error.type().key);
       boldLine.append("] ");
     }
 
-    boldLine.append(error.getDescription());
+    boldLine.append(error.description());
 
     b.append(maybeEmbolden(boldLine.toString()));
     b.append('\n');
@@ -144,42 +144,81 @@ public final class LightweightMessageFormatter extends AbstractMessageFormatter 
 
   String getExcerptWithPosition(JSError error) {
     return getExcerptWithPosition(
-        error, error.getSourceName(), error.getLineNumber(), error.getCharno(), defaultFormat);
+        error,
+        error.sourceName(),
+        error.getLineNumber(),
+        error.charno(),
+        error.length(),
+        defaultFormat);
   }
 
   private String getExcerptWithPosition(
       JSError error, String sourceName, int lineNumber, int charno, SourceExcerpt format) {
+    int nodeLength = error.length();
+    return getExcerptWithPosition(error, sourceName, lineNumber, charno, nodeLength, format);
+  }
+
+  private String getExcerptWithPosition(
+      JSError error,
+      String sourceName,
+      int lineNumber,
+      int charno,
+      int length,
+      SourceExcerpt format) {
     StringBuilder b = new StringBuilder();
 
     SourceExcerptProvider source = getSource();
-    int nodeLength = error.getNodeLength();
-    int length = charno >= 0 && nodeLength >= 0 ? charno + nodeLength : -1;
+    int cookedLength = charno >= 0 && length >= 0 ? charno + length : -1;
 
     String sourceExcerpt =
         source == null
             ? null
-            : format.get(source, sourceName, lineNumber, length, excerptFormatter);
+            : format.get(source, sourceName, lineNumber, cookedLength, excerptFormatter);
 
-    if (sourceExcerpt != null) {
-      if (format.equals(FULL)) {
-        if (0 <= charno) {
-          padMultipleLines(error, charno, sourceExcerpt, b, error.getNode());
-        } else {
-          b.append(sourceExcerpt);
-          b.append('\n');
+    if (sourceExcerpt == null) {
+      return "";
+    }
+
+    boolean success = padSourceExcerpt(error, sourceExcerpt, charno, length, format, b);
+    if (success) {
+      return b.toString();
+    }
+    String message =
+        "Source excerpt could not be formatted. This may indicate a bug in the compiler.";
+    return message;
+  }
+
+  private boolean padSourceExcerpt(
+      JSError error,
+      String sourceExcerpt,
+      int charno,
+      int length,
+      SourceExcerpt format,
+      StringBuilder b) {
+    if (format.equals(FULL)) {
+      if (charno >= 0) {
+        boolean success = padMultipleLines(charno, sourceExcerpt, b, error.node());
+        if (!success) {
+          return false;
         }
       } else {
         b.append(sourceExcerpt);
         b.append('\n');
+      }
+    } else {
+      b.append(sourceExcerpt);
+      b.append('\n');
 
-        // charno == sourceExcerpt.length() means something is missing
-        // at the end of the line
-        if (format.equals(LINE) && 0 <= charno && charno <= sourceExcerpt.length()) {
-          padLine(charno, sourceExcerpt, b, error.getNodeLength(), error.getNode());
+      // charno == sourceExcerpt.length() means something is missing
+      // at the end of the line
+      if (format.equals(LINE) && 0 <= charno && charno <= sourceExcerpt.length()) {
+        boolean success = padLine(charno, sourceExcerpt, b, length, error.node());
+        if (!success) {
+          return false;
         }
       }
     }
-    return b.toString();
+    return true;
   }
 
   private static void appendPosition(
@@ -196,8 +235,26 @@ public final class LightweightMessageFormatter extends AbstractMessageFormatter 
     }
   }
 
-  private void padLine(
+  /**
+   * Appends the given excerpt, attempting to add "^^^^" highlighting to the parts of the excerpt
+   * covered by the given error node.
+   *
+   * @param charno the (positive) charno representing the index into the first line.
+   * @param sourceExcerpt the original source, possibly multiple lines separated by '\n'.
+   * @param errLength the length of the error node, or -1 if there is no error node.
+   * @param errorNode the error node, or null if there is no error node.
+   * @return true if the source excerpt was successfully added to the builder, false if some error
+   *     condition was encountered (and the builder's contents should be discarded).
+   */
+  private boolean padLine(
       int charno, String sourceExcerpt, StringBuilder b, int errLength, Node errorNode) {
+    // This can occur when somehow code is requesting to "pad" a line that is shorter than the
+    // starting charno where we will insert '^' characters.
+    // This typically indicates a bug somewhere else in the compiler, and by using checkState we
+    // will automatically report a user-"friendly" message that asks them to file a bug.
+    if (charno > sourceExcerpt.length()) {
+      return false;
+    }
     // Append leading whitespace
     for (int i = 0; i < charno; i++) {
       char c = sourceExcerpt.charAt(i);
@@ -216,6 +273,7 @@ public final class LightweightMessageFormatter extends AbstractMessageFormatter 
       }
     }
     b.append("\n");
+    return true;
   }
 
   /**
@@ -224,19 +282,19 @@ public final class LightweightMessageFormatter extends AbstractMessageFormatter 
    *
    * @param startCharno the (positive) charno representing the index into the first line.
    * @param sourceExcerpt the original source, possibly multiple lines separated by '\n'.
+   * @param b the StringBuilder to append to.
+   * @param errorNode the error node, or null if there is no error node. This is used to determine
+   *     what parts of the source excerpt to highlight.
+   * @return true if the source excerpt was successfully added to the builder, false if some error
+   *     condition was encountered (and the builder's contents should be discarded).
    */
-  private void padMultipleLines(
-      JSError error, int startCharno, String sourceExcerpt, StringBuilder b, Node errorNode) {
+  private boolean padMultipleLines(
+      int startCharno, String sourceExcerpt, StringBuilder b, Node errorNode) {
     if (errorNode == null) {
       b.append(sourceExcerpt);
       b.append("\n");
       int charWithLineNumberOffset = startCharno + sourceExcerpt.indexOf('|') + 2;
-      checkState(
-          charWithLineNumberOffset <= sourceExcerpt.length(),
-          "Cannot format source excerpt; unexpected start character for error:\n %s",
-          error);
-      padLine(charWithLineNumberOffset, sourceExcerpt, b, -1, errorNode);
-      return;
+      return padLine(charWithLineNumberOffset, sourceExcerpt, b, -1, null);
     }
     List<String> lines = Splitter.on('\n').splitToList(sourceExcerpt);
     boolean requiresTruncation = lines.size() > MAX_MULTILINE_ERROR_LENGTH;
@@ -258,17 +316,17 @@ public final class LightweightMessageFormatter extends AbstractMessageFormatter 
       if (shouldPrintLine) {
         b.append(line);
         b.append("\n");
-        checkState(
-            charWithLineNumberOffset <= sourceExcerpt.length(),
-            "Cannot format source excerpt; unexpected start character for error\n%s",
-            error);
-        padLine(charWithLineNumberOffset, line, b, remainingLength, errorNode);
+        boolean success = padLine(charWithLineNumberOffset, line, b, remainingLength, errorNode);
+        if (!success) {
+          return false;
+        }
       }
 
       // add 1 to represent the newline; subtract the offset of the "  5| ".
       remainingLength -= (line.length() + 1 - charWithLineNumberOffset);
       charno = 0;
     }
+    return true;
   }
 
   /**
@@ -289,7 +347,7 @@ public final class LightweightMessageFormatter extends AbstractMessageFormatter 
     }
 
     @Override
-    public String formatRegion(@Nullable Region region) {
+    public @Nullable String formatRegion(@Nullable Region region) {
       if (region == null) {
         return null;
       }
@@ -322,7 +380,7 @@ public final class LightweightMessageFormatter extends AbstractMessageFormatter 
 
         // nice spaces for the line number
         int spaces = numberLength - Integer.toString(lineNumber).length();
-        builder.append(Strings.repeat(" ", spaces));
+        builder.repeat(" ", spaces);
         builder.append(lineNumber);
         builder.append("| ");
 

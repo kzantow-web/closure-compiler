@@ -18,9 +18,10 @@ package com.google.javascript.jscomp.parsing.parser.trees;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.javascript.jscomp.parsing.parser.IdentifierToken;
 import com.google.javascript.jscomp.parsing.parser.util.SourceRange;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 public class FunctionDeclarationTree extends ParseTree {
 
@@ -31,9 +32,10 @@ public class FunctionDeclarationTree extends ParseTree {
     ARROW
   }
 
-  @Nullable public final IdentifierToken name;
+  public final @Nullable IdentifierToken name;
   public final FormalParameterListTree formalParameterList;
   public final ParseTree functionBody;
+  public final boolean isClassMember;
   public final boolean isStatic;
   public final boolean isGenerator;
   public final boolean isOptional;
@@ -48,6 +50,7 @@ public class FunctionDeclarationTree extends ParseTree {
     super(ParseTreeType.FUNCTION_DECLARATION, builder.location);
 
     this.name = builder.name;
+    this.isClassMember = builder.isClassMember;
     this.isStatic = builder.isStatic;
     this.isGenerator = builder.isGenerator;
     this.isOptional = builder.isOptional;
@@ -57,15 +60,14 @@ public class FunctionDeclarationTree extends ParseTree {
     this.isAsync = builder.isAsync;
   }
 
-  /**
-   * Builds a {@link FunctionDeclarationTree}.
-   */
+  /** Builds a {@link FunctionDeclarationTree}. */
   public static class Builder {
     private final Kind kind;
 
-    @Nullable private IdentifierToken name = null;
-    @Nullable private FormalParameterListTree formalParameterList = null;
-    @Nullable private ParseTree functionBody = null;
+    private @Nullable IdentifierToken name = null;
+    private @Nullable FormalParameterListTree formalParameterList = null;
+    private @Nullable ParseTree functionBody = null;
+    private boolean isClassMember = false;
     private boolean isStatic = false;
     private boolean isGenerator = false;
     private boolean isOptional = false;
@@ -79,35 +81,45 @@ public class FunctionDeclarationTree extends ParseTree {
     /**
      * Optional function name.
      *
-     * <p> Default is {@code null}.
+     * <p>Default is {@code null}.
      */
+    @CanIgnoreReturnValue
     public Builder setName(IdentifierToken name) {
       this.name = name;
       return this;
     }
 
-    /**
-     * Required parameter list.
-     */
+    /** Required parameter list. */
+    @CanIgnoreReturnValue
     public Builder setFormalParameterList(FormalParameterListTree formalParameterList) {
       this.formalParameterList = formalParameterList;
       return this;
     }
 
-    /**
-     * Required function body.
-     */
+    /** Required function body. */
+    @CanIgnoreReturnValue
     public Builder setFunctionBody(ParseTree functionBody) {
       this.functionBody = functionBody;
       return this;
     }
 
     /**
+     * Is the method an ES6 class member?
+     *
+     * <p>Default is {@code false}. Only relevant for class method member declarations.
+     */
+    @CanIgnoreReturnValue
+    public Builder setIsClassMember(boolean isClassMember) {
+      this.isClassMember = isClassMember;
+      return this;
+    }
+
+    /**
      * Is the method static?
      *
-     * <p> Default is {@code false}.
-     * Only relevant for method member declarations.
+     * <p>Default is {@code false}. Only relevant for class method member declarations.
      */
+    @CanIgnoreReturnValue
     public Builder setStatic(boolean isStatic) {
       this.isStatic = isStatic;
       return this;
@@ -116,8 +128,9 @@ public class FunctionDeclarationTree extends ParseTree {
     /**
      * Is this a generator function?
      *
-     * <p> Default is {@code false}.
+     * <p>Default is {@code false}.
      */
+    @CanIgnoreReturnValue
     public Builder setGenerator(boolean isGenerator) {
       this.isGenerator = isGenerator;
       return this;
@@ -126,8 +139,9 @@ public class FunctionDeclarationTree extends ParseTree {
     /**
      * Is this the declaration of an optional function parameter? Default is {@code false}.
      *
-     * <p> Only relevant for function declaration as a parameter to another function.
+     * <p>Only relevant for function declaration as a parameter to another function.
      */
+    @CanIgnoreReturnValue
     public Builder setOptional(boolean isOptional) {
       this.isOptional = isOptional;
       return this;
@@ -136,8 +150,9 @@ public class FunctionDeclarationTree extends ParseTree {
     /**
      * Is this an asynchronous function?
      *
-     * <p> Default is {@code false}.
+     * <p>Default is {@code false}.
      */
+    @CanIgnoreReturnValue
     public Builder setAsync(boolean isAsync) {
       this.isAsync = isAsync;
       return this;
@@ -146,8 +161,8 @@ public class FunctionDeclarationTree extends ParseTree {
     /**
      * Return a new {@link FunctionDeclarationTree}.
      *
-     * <p> The location is provided at this point because it cannot be correctly calculated
-     * until the whole function has been parsed.
+     * <p>The location is provided at this point because it cannot be correctly calculated until the
+     * whole function has been parsed.
      */
     public FunctionDeclarationTree build(SourceRange location) {
       this.location = location;

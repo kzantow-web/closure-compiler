@@ -73,11 +73,6 @@ Symbol.keyFor = function(sym) {};
  */
 Symbol.asyncIterator;
 
-/**
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Symbol/hasInstance
- * @const {symbol}
- */
-Symbol.hasInstance;
 
 /**
  * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Symbol/isConcatSpreadable
@@ -115,90 +110,74 @@ Symbol.replace;
  */
 Symbol.search;
 
-/**
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Symbol/species
- * @const {symbol}
- */
-Symbol.species;
-
 // /**
 //  * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Symbol/split
 //  * @const {symbol}
 //  */
 // Symbol.split;
 
-/**
- * @const {symbol}
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Symbol/toPrimitive
- */
-Symbol.toPrimitive;
-
-/**
- * @const {symbol}
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Symbol/toStringTag
- */
-Symbol.toStringTag;
-
-/**
- * @const {symbol}
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Symbol/unscopables
- */
-Symbol.unscopables;
-
 
 /**
  * @record
- * @template VALUE
+ * @template TYield
  */
 function IIterableResult() {};
 
 /** @type {boolean} */
 IIterableResult.prototype.done;
 
-/** @type {VALUE} */
+/** @type {TYield} */
 IIterableResult.prototype.value;
 
 
 
 /**
  * @interface
- * @template VALUE
+ * @template T, TReturn, TNext
  */
 function Iterable() {}
 
-// TODO(johnlenz): remove the suppression when the compiler understands
-// "symbol" natively
 /**
- * @return {!Iterator<VALUE, ?, *>}
- * @suppress {externsValidation}
+ * @return {!IteratorLike<T, ?, *>}
  */
 Iterable.prototype[Symbol.iterator] = function() {};
 
 
 
 /**
- * TODO(b/142881197): UNUSED_RETURN_T and UNUSED_NEXT_T are not yet used for
- * anything. https://github.com/google/closure-compiler/issues/3489
- * @interface
- * @template VALUE, UNUSED_RETURN_T, UNUSED_NEXT_T
+ * TODO(b/142881197): TReturn and TNext are not yet used for anything.
+ * https://github.com/google/closure-compiler/issues/3489
+ * @record
+ * @template T, TReturn, TNext
  * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/The_Iterator_protocol
  */
-function Iterator() {}
+function IteratorLike() {}
 
 /**
  * @param {?=} opt_value
- * @return {!IIterableResult<VALUE>}
+ * @return {!IIterableResult<T>}
  */
-Iterator.prototype.next = function(opt_value) {};
+IteratorLike.prototype.next = function(opt_value) {};
+
+/**
+ * @type {((function(T=): !IIterableResult<T>)|undefined)}
+ */
+IteratorLike.prototype.return;
+
+/**
+ * @type {((function(?=): !IIterableResult<T>)|undefined)}
+ */
+IteratorLike.prototype.throw;
+
 
 
 /**
- * Use this to indicate a type is both an Iterator and an Iterable.
+ * Use this to indicate a type is both an IteratorLike and an Iterable.
  *
  * @interface
- * @extends {Iterator<T, ?, *>}
- * @extends {Iterable<T>}
- * @template T
+ * @extends {IteratorLike<T, ?, *>}
+ * @extends {Iterable<T, ?, *>}
+ * @template T, TReturn, TNext
  */
 function IteratorIterable() {}
 
@@ -228,6 +207,9 @@ IArrayLike.prototype.length;
  * @see http://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Functions_and_function_scope/arguments
  */
 function Arguments() {}
+
+/** @override */
+Arguments.prototype[Symbol.iterator] = function() {};
 
 /**
  * @type {Function}
@@ -642,11 +624,9 @@ Function.prototype.toString = function() {};
  */
 function ReadonlyArray() {}
 
-// TODO(johnlenz): remove the suppression when the compiler understands
-// "symbol" natively
 /**
- * @return {Iterator<T>}
- * @suppress {externsValidation}
+ * @return {!IteratorIterable<T>}
+ * @override
  */
 ReadonlyArray.prototype[Symbol.iterator] = function() {};
 
@@ -725,7 +705,7 @@ ReadonlyArray.prototype.reduceRight = function(callback, opt_initialValue) {};
 
 /**
  * Available in ECMAScript 5, Mozilla 1.6+.
- * @param {?function(this:S, T, number, !ReadonlyArray<T>): ?} callback
+ * @param {?function(this:S, T, number, !ReadonlyArray<T>): *} callback
  * @param {S=} opt_thisobj
  * @return {boolean}
  * @this {IArrayLike<T>|string}
@@ -736,7 +716,7 @@ ReadonlyArray.prototype.every = function(callback, opt_thisobj) {};
 
 /**
  * Available in ECMAScript 5, Mozilla 1.6+.
- * @param {?function(this:S, T, number, !ReadonlyArray<T>): ?} callback
+ * @param {?function(this:S, T, number, !ReadonlyArray<T>): *} callback
  * @param {S=} opt_thisobj
  * @return {!Array<T>}
  * @this {IArrayLike<T>|string}
@@ -793,7 +773,7 @@ ReadonlyArray.prototype.map = function(callback, opt_thisobj) {};
 
 /**
  * Available in ECMAScript 5, Mozilla 1.6+.
- * @param {?function(this:S, T, number, !ReadonlyArray<T>): ?} callback
+ * @param {?function(this:S, T, number, !ReadonlyArray<T>): *} callback
  * @param {S=} opt_thisobj
  * @return {boolean}
  * @this {IArrayLike<T>|string}
@@ -822,8 +802,7 @@ ReadonlyArray.prototype.length;
 function Array(var_args) {}
 
 /**
- * @return {Iterator<T>}
- * @suppress {externsValidation}
+ * @return {!IteratorIterable<T>}
  * @override
  */
 Array.prototype[Symbol.iterator] = function() {};
@@ -1009,7 +988,7 @@ Array.prototype.reduceRight = function(callback, opt_initialValue) {};
 
 /**
  * Available in ECMAScript 5, Mozilla 1.6+.
- * @param {?function(this:S, T, number, !Array<T>): ?} callback
+ * @param {?function(this:S, T, number, !Array<T>): *} callback
  * @param {S=} opt_thisobj
  * @return {boolean}
  * @this {IArrayLike<T>|string}
@@ -1021,7 +1000,7 @@ Array.prototype.every = function(callback, opt_thisobj) {};
 
 /**
  * Available in ECMAScript 5, Mozilla 1.6+.
- * @param {?function(this:S, T, number, !Array<T>): ?} callback
+ * @param {?function(this:S, T, number, !Array<T>): *} callback
  * @param {S=} opt_thisobj
  * @return {!Array<T>}
  * @this {IArrayLike<T>|string}
@@ -1083,7 +1062,7 @@ Array.prototype.map = function(callback, opt_thisobj) {};
 
 /**
  * Available in ECMAScript 5, Mozilla 1.6+.
- * @param {?function(this:S, T, number, !Array<T>): ?} callback
+ * @param {?function(this:S, T, number, !Array<T>): *} callback
  * @param {S=} opt_thisobj
  * @return {boolean}
  * @this {IArrayLike<T>|string}
@@ -1172,7 +1151,7 @@ Number.prototype.toExponential = function(opt_fractionDigits) {};
 
 /**
  * @this {Number|number}
- * @param {*=} opt_digits
+ * @param {number=} opt_digits
  * @return {string}
  * @nosideeffects
  * @see http://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Number/toFixed
@@ -1969,6 +1948,11 @@ Date.prototype.valueOf;
 function String(opt_str) {}
 
 /**
+ * @override
+ */
+String.prototype[Symbol.iterator] = function() {};
+
+/**
  * @param {...number} var_args
  * @return {string}
  * @nosideeffects
@@ -2134,7 +2118,7 @@ String.prototype.localeCompare = function(compareString, locales, options) {};
  *
  * @this {String|string}
  * @param {*} regexp
- * @return {Array<string>} This should really return an Array with a few
+ * @return {RegExpResult} This should really return an Array with a few
  *     special properties, but we do not have a good way to model this in
  *     our type system. Also see Regexp.prototype.exec.
  * @see http://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/match
@@ -2380,6 +2364,24 @@ RegExpResult.prototype.length;
 RegExpResult.prototype.groups;
 
 
+/**
+ * Not actually part of ES3; was added in 2022.
+ * https://github.com/tc39/proposal-regexp-match-indices
+ *
+ * @constructor
+ * @extends {Array<!Array<number>|undefined>}
+ */
+var RegExpResultIndices = function() {};
+
+
+/** @type {!Object<string, !Array<number>|undefined>} */
+RegExpResultIndices.prototype.groups;
+
+
+/** @type {!RegExpResultIndices} */
+RegExpResult.prototype.indices;
+
+
 // Constructor properties:
 
 /**
@@ -2566,7 +2568,7 @@ Error.captureStackTrace = function(error, opt_constructor){};
 
 /**
  * New in ES 2022, adds a cause to the error which is useful for chaining errors
- * @type {?Error}
+ * @type {*}
  * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Error/cause
  */
 Error.prototype.cause;

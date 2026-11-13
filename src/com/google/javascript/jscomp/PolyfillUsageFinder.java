@@ -17,20 +17,30 @@
 package com.google.javascript.jscomp;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static java.util.Objects.requireNonNull;
 
-import com.google.auto.value.AutoValue;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Splitter;
+import com.google.common.collect.ImmutableCollection;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.ImmutableSet;
 import com.google.javascript.jscomp.AbstractCompiler.LifeCycleStage;
+import com.google.javascript.jscomp.CompilerOptions.LanguageMode;
+import com.google.javascript.jscomp.colors.Color;
+import com.google.javascript.jscomp.colors.ColorId;
+import com.google.javascript.jscomp.colors.ColorRegistry;
+import com.google.javascript.jscomp.colors.StandardColors;
+import com.google.javascript.jscomp.parsing.parser.FeatureSet;
+import com.google.javascript.jscomp.parsing.parser.FeatureSet.Feature;
 import com.google.javascript.rhino.Node;
 import java.util.ArrayDeque;
-import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** Detects all potential usages of polyfilled classes or methods */
 final class PolyfillUsageFinder {
@@ -93,11 +103,17 @@ final class PolyfillUsageFinder {
     private final ImmutableMap<String, Polyfill> statics;
     // Set of suffixes of qualified names.
     private final ImmutableSet<String> suffixes;
+    // Map of all polyfills, keyed by their native version (the first ECMAScript spec version in
+    // which they are defined)
+    private final ImmutableMultimap<String, Polyfill> byNativeVersion;
 
     private Polyfills(
-        ImmutableMultimap<String, Polyfill> methods, ImmutableMap<String, Polyfill> statics) {
+        ImmutableMultimap<String, Polyfill> methods,
+        ImmutableMap<String, Polyfill> statics,
+        ImmutableMultimap<String, Polyfill> byNativeVersion) {
       this.methods = methods;
       this.statics = statics;
+      this.byNativeVersion = byNativeVersion;
       this.suffixes =
           ImmutableSet.copyOf(
               statics.keySet().stream()
@@ -119,6 +135,7 @@ final class PolyfillUsageFinder {
     static Polyfills fromTable(String table) {
       ImmutableMultimap.Builder<String, Polyfill> methods = ImmutableMultimap.builder();
       ImmutableMap.Builder<String, Polyfill> statics = ImmutableMap.builder();
+      ImmutableMultimap.Builder<String, Polyfill> byNativeVersion = ImmutableMultimap.builder();
       for (String line : Splitter.on('\n').omitEmptyStrings().split(table)) {
         List<String> tokens = Splitter.on(' ').omitEmptyStrings().splitToList(line.trim());
         if (tokens.size() == 1 && tokens.get(0).isEmpty()) {
@@ -142,39 +159,64 @@ final class PolyfillUsageFinder {
         } else {
           statics.put(symbol, polyfill);
         }
+        byNativeVersion.put(nativeVersionStr, polyfill);
       }
-      return new Polyfills(methods.build(), statics.buildOrThrow());
+      return new Polyfills(methods.build(), statics.buildOrThrow(), byNativeVersion.build());
     }
 
+    ImmutableList<Polyfill> getPolyfillsNewerThan(LanguageMode languageMode) {
+      FeatureSet featureSet = languageMode.toFeatureSet();
+      ImmutableList.Builder<Polyfill> result = ImmutableList.builder();
+
+      for (String nativeVersionStr : byNativeVersion.keySet()) {
+        FeatureSet polyfillNativeFeatureSet = getPolyfillSupportedFeatureSet(nativeVersionStr);
+        if (!featureSet.contains(polyfillNativeFeatureSet)) {
+          result.addAll(byNativeVersion.get(nativeVersionStr));
+        }
+      }
+      return result.build();
+    }
   }
 
-  @AutoValue
-  abstract static class PolyfillUsage {
-    abstract Polyfill polyfill();
+  /**
+   * Converts a polyfill native version string as passed to $jscomp.polyfill, e.g. "es6", to a
+   * FeatureSet.
+   */
+  static FeatureSet getPolyfillSupportedFeatureSet(String nativeVersionStr) {
+    // When calculating whether a polyfill should be included for a given language_out associated
+    // with a BFSY, we want to also compare using a BFSY FeatureSet. Needed because BFSY FeatureSets
+    // often exclude features but the ES20XX FeatureSets do not meaning we could unnecessarily
+    // include polyfills that, in reality, could be excluded.
+    return FeatureSet.browserFeatureSetValueOf(nativeVersionStr).without(Feature.MODULES);
+  }
 
-    abstract Node node();
-
-    abstract String name();
-
-    abstract boolean isExplicitGlobal();
+  record PolyfillUsage(Polyfill polyfill, Node node, String name, boolean isExplicitGlobal) {
+    PolyfillUsage {
+      requireNonNull(polyfill, "polyfill");
+      requireNonNull(node, "node");
+      requireNonNull(name, "name");
+    }
 
     private static PolyfillUsage createExplicit(Polyfill polyfill, Node node, String name) {
-      return new AutoValue_PolyfillUsageFinder_PolyfillUsage(
-          polyfill, node, name, /* isExplicitGlobal= */ true);
+      return new PolyfillUsage(polyfill, node, name, /* isExplicitGlobal= */ true);
     }
 
     private static PolyfillUsage createNonExplicit(Polyfill polyfill, Node node, String name) {
-      return new AutoValue_PolyfillUsageFinder_PolyfillUsage(
-          polyfill, node, name, /* isExplicitGlobal= */ false);
+      return new PolyfillUsage(polyfill, node, name, /* isExplicitGlobal= */ false);
     }
   }
 
   private final AbstractCompiler compiler;
   private final Polyfills polyfills;
+  private final boolean disambiguateProperties;
+  private final @Nullable ColorRegistry registry;
 
-  PolyfillUsageFinder(AbstractCompiler compiler, Polyfills polyfills) {
+  PolyfillUsageFinder(
+      AbstractCompiler compiler, Polyfills polyfills, boolean disambiguateProperties) {
     this.polyfills = polyfills;
     this.compiler = compiler;
+    this.disambiguateProperties = disambiguateProperties;
+    this.registry = compiler.hasOptimizationColors() ? compiler.getColorRegistry() : null;
   }
 
   /**
@@ -216,17 +258,13 @@ final class PolyfillUsageFinder {
     ALL;
 
     boolean shouldInclude(boolean isGuarded) {
-      switch (this) {
-        case ALL:
-          return true;
-        case ONLY_GUARDED:
-          return isGuarded;
-        case ONLY_UNGUARDED:
-          return !isGuarded;
-      }
-      throw new AssertionError();
+      return switch (this) {
+        case ALL -> true;
+        case ONLY_GUARDED -> isGuarded;
+        case ONLY_UNGUARDED -> !isGuarded;
+      };
     }
-  };
+  }
 
   private class Traverser extends GuardedCallback<String> {
 
@@ -246,15 +284,11 @@ final class PolyfillUsageFinder {
     @Override
     public void visitGuarded(NodeTraversal traversal, Node node, Node parent) {
       switch (node.getToken()) {
-        case NAME:
-          visitName(traversal, node);
-          break;
-        case GETPROP:
-        case OPTCHAIN_GETPROP:
-          visitGetPropChain(traversal, node);
-          break;
-        default:
+        case NAME -> visitName(traversal, node);
+        case GETPROP, OPTCHAIN_GETPROP -> visitGetPropChain(traversal, node);
+        default -> {
           // nothing to do
+        }
       }
     }
 
@@ -287,12 +321,17 @@ final class PolyfillUsageFinder {
         // e.g. `obj.includes(x)` could be a usage of `Array.prototype.includes` or
         // `String.prototype.includes`.
         final String propertyName = getPropNode.getString();
-        Collection<Polyfill> methodPolyfills = polyfills.methods.get(propertyName);
+        ImmutableCollection<Polyfill> methodPolyfills = polyfills.methods.get(propertyName);
         // Note that we use ".foo" as the guard check for methods to keep them distinct in case
         // there is also a static "foo" polyfill.
         if (!methodPolyfills.isEmpty()
             && includeGuardedUsages.shouldInclude(isGuarded("." + propertyName))) {
           for (Polyfill polyfill : methodPolyfills) {
+            String ownerName = getMethodOwner(polyfill.nativeSymbol);
+            // isDisjointFromIterator check is guarded by the shouldDisambiguateProperties flag.
+            if (disambiguateProperties && isDisjointFromIterator(getPropNode, ownerName)) {
+              continue;
+            }
             this.polyfillConsumer.accept(
                 PolyfillUsage.createNonExplicit(polyfill, getPropNode, propertyName));
           }
@@ -301,8 +340,7 @@ final class PolyfillUsageFinder {
     }
   }
 
-  @Nullable
-  private PolyfillUsage maybeCreateStaticPolyfillUsageForGetPropChain(
+  private @Nullable PolyfillUsage maybeCreateStaticPolyfillUsageForGetPropChain(
       NodeTraversal traversal, final Node getPropNode) {
     checkArgument(getPropNode.isGetProp() || getPropNode.isOptChainGetProp(), getPropNode);
     final String lastComponent = getPropNode.getString();
@@ -376,8 +414,7 @@ final class PolyfillUsageFinder {
         || t.getScope().getVar(globalName) == null);
   }
 
-  @Nullable
-  private static String findGlobalPrefix(String qualifiedName) {
+  private static @Nullable String findGlobalPrefix(String qualifiedName) {
     for (String global : GLOBAL_NAMES) {
       if (qualifiedName.startsWith(global)) {
         return global;
@@ -389,4 +426,130 @@ final class PolyfillUsageFinder {
   private static final ImmutableSet<String> GLOBAL_NAMES =
       ImmutableSet.of("goog.global.", "window.", "goog$global.", "globalThis.");
 
+  private static final ImmutableSet<ColorId> STANDARD_COLLECTION_IDS =
+      ImmutableSet.of(
+          StandardColors.ARRAY_ID,
+          StandardColors.ARRAY_PROTOTYPE_ID,
+          StandardColors.READONLY_ARRAY_ID,
+          StandardColors.READONLY_ARRAY_PROTOTYPE_ID,
+          StandardColors.I_TEMPLATE_ARRAY_ID,
+          StandardColors.I_TEMPLATE_ARRAY_PROTOTYPE_ID,
+          StandardColors.MAP_ID,
+          StandardColors.MAP_PROTOTYPE_ID,
+          StandardColors.READONLY_MAP_ID,
+          StandardColors.READONLY_MAP_PROTOTYPE_ID,
+          StandardColors.SET_ID,
+          StandardColors.SET_PROTOTYPE_ID,
+          StandardColors.READONLY_SET_ID,
+          StandardColors.READONLY_SET_PROTOTYPE_ID);
+
+  private static @Nullable String getMethodOwner(String nativeSymbol) {
+    int protoIdx = nativeSymbol.indexOf(".prototype.");
+    if (protoIdx != -1) {
+      return nativeSymbol.substring(0, protoIdx);
+    }
+    return null;
+  }
+
+  boolean isDisjointFromIterator(Node getPropNode, @Nullable String ownerName) {
+    // Currently only checks "Iterator" because ES2025 Iterator helper methods (forEach, reduce,
+    // toArray) collide with very common Array/Collection method names, causing significant binary
+    // size regressions when polyfills cannot be pruned.
+    if (!"Iterator".equals(ownerName)) {
+      return false;
+    }
+    // Registry can be null in three supported scenarios:
+    // 1. Transpile only builds.
+    // 2. Monolithic builds without type checking.
+    // 3. Precompiled .typedast (stage 2) builds with type-based optimizations disabled.
+    if (this.registry == null) {
+      return false;
+    }
+    Color receiverColor = getPropNode.getFirstChild().getColor();
+    if (receiverColor == null) {
+      return false;
+    }
+    return isDisjointFromIterator(receiverColor);
+  }
+
+  @VisibleForTesting
+  boolean isDisjointFromIterator(Color receiver) {
+    Color iteratorColor = this.registry.get(StandardColors.ITERATOR_ID);
+    if (receiver.equals(iteratorColor)) {
+      return false;
+    }
+
+    if (receiver.isUnion()) {
+      for (Color alt : receiver.getUnionElements()) {
+        if (!isDisjointFromIterator(alt)) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    if (receiver.isPrimitive()) {
+      return true;
+    }
+    // Back off on invalidating colors that cannot be proven disjoint from Iterator via nominal
+    // supertype edges in ColorRegistry:
+    // - UNKNOWN (?/*) and TOP_OBJECT (Object), which can hold any runtime object (including an
+    //   Iterator) without explicit supertype edges in ColorRegistry.
+    // - Structural interfaces (@record) and record types ({...}) (per b/571244650): because
+    //   Iterator.prototype helper methods are declared on Iterator in the externs, a real runtime
+    //   Iterator (e.g. from `arr.values()` or `Iterator.from(x)`, which inherits from
+    //   Iterator.prototype) structurally satisfies a @record such as `{forEach: function(...)}`.
+    //   When passed to a function parameter typed as that @record, the `.forEach()` call site only
+    //   sees the @record receiver color (which has no nominal edge from Iterator in ColorRegistry),
+    //   and `Iterator.from` itself does not inject the separate per-method helper polyfills.
+    // - Nominal types invalidated by type mismatches elsewhere in the program.
+    //
+    // However, in large Google3 builds, native collection types (Array, Map, Set) and their
+    // prototypes are frequently marked isInvalidating due to dynamic property access or type
+    // mismatches elsewhere in the codebase. Because their nominal inheritance hierarchy is sound
+    // and provably disjoint from Iterator, we exempt them from isInvalidating backoff so that calls
+    // on Array/Map/Set do not inject polyfills.
+    if (receiver.isInvalidating() && !STANDARD_COLLECTION_IDS.contains(receiver.getId())) {
+      return false;
+    }
+
+    // Two types are non-disjoint if either is a supertype of the other:
+    // 1. hasInSupertypesList(receiver, iteratorColor): receiver is a subtype of Iterator
+    //    (e.g. `class MyIter extends Iterator`), which inherits Iterator.prototype methods.
+    // 2. hasInSupertypesList(iteratorColor, receiver): receiver is a supertype of Iterator
+    //    (e.g. `IteratorIterable` from `arr.values()`, or `Iterable`), which can hold an
+    //    Iterator instance at runtime.
+    return !hasInSupertypesList(receiver, iteratorColor)
+        && !hasInSupertypesList(iteratorColor, receiver);
+  }
+
+  private boolean hasInSupertypesList(Color subCtor, Color superCtor) {
+    if (!this.hasInSupertypesListSeenSet.add(subCtor)) {
+      return false;
+    }
+    try {
+      if (subCtor.equals(superCtor)) {
+        return true;
+      }
+      for (Color immediateSupertype : this.registry.getDisambiguationSupertypes(subCtor)) {
+        if (immediateSupertype.isUnion()) {
+          for (Color alt : immediateSupertype.getUnionElements()) {
+            if (hasInSupertypesList(alt, superCtor)) {
+              return true;
+            }
+          }
+        } else if (hasInSupertypesList(immediateSupertype, superCtor)) {
+          return true;
+        }
+      }
+      return false;
+    } finally {
+      this.hasInSupertypesListSeenSet.remove(subCtor);
+    }
+  }
+
+  // Safe as an instance field because PolyfillUsageFinder is single-threaded, hasInSupertypesList
+  // only re-enters via direct recursion, and every added element is removed in the finally block
+  // before returning, leaving the set empty between top-level calls (avoiding per-call allocation).
+  private final LinkedHashSet<Color> hasInSupertypesListSeenSet = new LinkedHashSet<>();
 }

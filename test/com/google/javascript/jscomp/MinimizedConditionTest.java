@@ -32,20 +32,18 @@ import org.junit.runners.JUnit4;
 /**
  * Tests for {@link MinimizedCondition} in isolation. Tests for the containing
  * PeepholeMinimizeConditions pass are in {@link PeepholeMinimizeConditionsTest}.
- *
  */
 @RunWith(JUnit4.class)
 public final class MinimizedConditionTest {
 
   private static Node parseExpr(String code) {
     Compiler compiler = new Compiler();
-    List<SourceFile> input =
-        ImmutableList.of(SourceFile.fromCode("code", code));
+    ImmutableList<SourceFile> input = ImmutableList.of(SourceFile.fromCode("code", code));
     List<SourceFile> externs = new ArrayList<>();
     CompilerOptions options = new CompilerOptions();
     compiler.init(externs, input, options);
     Node root = compiler.parseInputs();
-    assertWithMessage("Unexpected parse error(s): " + Joiner.on("\n").join(compiler.getErrors()))
+    assertWithMessage("Unexpected parse error(s): %s", Joiner.on("\n").join(compiler.getErrors()))
         .that(root)
         .isNotNull();
     Node externsRoot = root.getFirstChild();
@@ -81,28 +79,20 @@ public final class MinimizedConditionTest {
         result2.getMinimized(MinimizationStyle.ALLOW_LEADING_NOT).buildReplacement();
     if (!positiveResult.isEquivalentTo(positiveNode)) {
       assertWithMessage(
-              "Not equal:"
-                  + "\nExpected: "
-                  + positive
-                  + "\nBut was : "
-                  + new Compiler().toSource(positiveResult)
-                  + "\nExpected tree:\n"
-                  + positiveNode.toStringTree()
-                  + "\nActual tree:\n"
-                  + positiveResult.toStringTree())
+              "Not equal:" + "\nExpected: %s\nBut was : %s\nExpected tree:\n%s\nActual tree:\n%s",
+              positive,
+              new Compiler().toSource(positiveResult),
+              positiveNode.toStringTree(),
+              positiveResult.toStringTree())
           .fail();
     }
     if (!negativeResult.isEquivalentTo(negativeNode)) {
       assertWithMessage(
-              "Not equal:"
-                  + "\nExpected: "
-                  + negative
-                  + "\nBut was : "
-                  + new Compiler().toSource(negativeResult)
-                  + "\nExpected tree:\n"
-                  + negativeNode.toStringTree()
-                  + "\nActual tree:\n"
-                  + negativeResult.toStringTree())
+              "Not equal:" + "\nExpected: %s\nBut was : %s\nExpected tree:\n%s\nActual tree:\n%s",
+              negative,
+              new Compiler().toSource(negativeResult),
+              negativeNode.toStringTree(),
+              negativeResult.toStringTree())
           .fail();
     }
   }
@@ -143,15 +133,12 @@ public final class MinimizedConditionTest {
 
   @Test
   public void testMinimizeComplementableOperator() {
-    minCond(
-        "0===c && (2===a || 1===a)",
-        "0===c && (2===a || 1===a)",
-        "!(0!==c || 2!==a && 1!==a)");
+    minCond("0===c && (2===a || 1===a)", "0===c && (2===a || 1===a)", "!(0!==c || 2!==a && 1!==a)");
   }
 
   @Test
   public void testMinimizeHook() {
-    minCond("!(x ? y : z)", "(x ? !y : !z)",  "!(x ? y : z)");
+    minCond("!(x ? y : z)", "(x ? !y : !z)", "!(x ? y : z)");
   }
 
   @Test
@@ -160,5 +147,4 @@ public final class MinimizedConditionTest {
     minCond("!(inc?.(), test?.())", "inc?.(), !test?.()", "!(inc?.(), test?.())");
     minCond("!((x,y)&&z)", "(x,!y)||!z", "!((x,y)&&z)");
   }
-
 }

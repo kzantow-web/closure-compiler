@@ -64,6 +64,13 @@ Headers.prototype.append = function(name, value) {};
  */
 Headers.prototype.delete = function(name) {};
 
+/**
+ * @param {function(string, string, !Headers)} callbackfn
+ * @param {*=} opt_thisArg
+ * @return {undefined}
+ */
+Headers.prototype.forEach = function(callbackfn, opt_thisArg) {};
+
 /** @return {!IteratorIterable<!Array<string>>} */
 Headers.prototype.entries = function() {};
 
@@ -95,11 +102,19 @@ Headers.prototype.keys = function() {};
  */
 Headers.prototype.set = function(name, value) {};
 
-/** @return {!Iterator<string>} */
+/** @return {!IteratorIterable<string>} */
 Headers.prototype.values = function() {};
 
-/** @return {!Iterator<!Array<string>>} */
+/**
+ * @return {!IteratorIterable<!Array<string>>}
+ * @override
+ */
 Headers.prototype[Symbol.iterator] = function() {};
+
+/**
+ * @return {!Array<string>}
+ */
+Headers.prototype.getSetCookie = function() {};
 
 
 /**
@@ -131,6 +146,9 @@ Body.prototype.arrayBuffer = function() {};
 
 /** @return {!Promise<!Blob>} */
 Body.prototype.blob = function() {};
+
+/** @return {!Promise<!Uint8Array>} */
+Body.prototype.bytes = function() {};
 
 /** @return {!Promise<!FormData>} */
 Body.prototype.formData = function() {};
@@ -166,6 +184,9 @@ Request.prototype.arrayBuffer = function() {};
 
 /** @override */
 Request.prototype.blob = function() {};
+
+/** @override */
+Request.prototype.bytes = function() {};
 
 /** @override */
 Request.prototype.formData = function() {};
@@ -343,6 +364,9 @@ Response.prototype.arrayBuffer = function() {};
 
 /** @override */
 Response.prototype.blob = function() {};
+
+/** @override */
+Response.prototype.bytes = function() {};
 
 /** @override */
 Response.prototype.formData = function() {};

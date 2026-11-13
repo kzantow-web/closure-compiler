@@ -28,7 +28,6 @@ import static com.google.javascript.rhino.jstype.JSTypeNative.BOOLEAN_OBJECT_FUN
 import static com.google.javascript.rhino.jstype.JSTypeNative.BOOLEAN_TYPE;
 import static com.google.javascript.rhino.jstype.JSTypeNative.DATE_FUNCTION_TYPE;
 import static com.google.javascript.rhino.jstype.JSTypeNative.FUNCTION_FUNCTION_TYPE;
-import static com.google.javascript.rhino.jstype.JSTypeNative.FUNCTION_TYPE;
 import static com.google.javascript.rhino.jstype.JSTypeNative.GENERATOR_FUNCTION_TYPE;
 import static com.google.javascript.rhino.jstype.JSTypeNative.GLOBAL_THIS;
 import static com.google.javascript.rhino.jstype.JSTypeNative.ITERABLE_FUNCTION_TYPE;
@@ -42,6 +41,7 @@ import static com.google.javascript.rhino.jstype.JSTypeNative.REGEXP_FUNCTION_TY
 import static com.google.javascript.rhino.jstype.JSTypeNative.REGEXP_TYPE;
 import static com.google.javascript.rhino.jstype.JSTypeNative.STRING_OBJECT_FUNCTION_TYPE;
 import static com.google.javascript.rhino.jstype.JSTypeNative.STRING_TYPE;
+import static com.google.javascript.rhino.jstype.JSTypeNative.SYMBOL_OBJECT_FUNCTION_TYPE;
 import static com.google.javascript.rhino.jstype.JSTypeNative.UNKNOWN_TYPE;
 import static com.google.javascript.rhino.jstype.JSTypeNative.VOID_TYPE;
 
@@ -49,10 +49,10 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Supplier;
-import com.google.common.collect.HashMultimap;
 import com.google.common.collect.HashMultiset;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.LinkedHashMultimap;
 import com.google.common.collect.ListMultimap;
@@ -60,7 +60,8 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.MultimapBuilder;
 import com.google.common.collect.Multiset;
-import com.google.javascript.jscomp.CodingConvention.DelegateRelationship;
+import com.google.common.collect.SetMultimap;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.javascript.jscomp.CodingConvention.ObjectLiteralCast;
 import com.google.javascript.jscomp.CodingConvention.SubclassRelationship;
 import com.google.javascript.jscomp.FunctionTypeBuilder.AstFunctionContents;
@@ -73,7 +74,6 @@ import com.google.javascript.jscomp.modules.ModuleMap;
 import com.google.javascript.jscomp.modules.ModuleMetadataMap;
 import com.google.javascript.jscomp.modules.ModuleMetadataMap.ModuleMetadata;
 import com.google.javascript.jscomp.modules.ModuleMetadataMap.ModuleType;
-import com.google.javascript.jscomp.parsing.parser.util.format.SimpleFormat;
 import com.google.javascript.rhino.ErrorReporter;
 import com.google.javascript.rhino.InputId;
 import com.google.javascript.rhino.JSDocInfo;
@@ -83,29 +83,29 @@ import com.google.javascript.rhino.QualifiedName;
 import com.google.javascript.rhino.StaticSymbolTable;
 import com.google.javascript.rhino.Token;
 import com.google.javascript.rhino.jstype.EnumType;
-import com.google.javascript.rhino.jstype.FunctionParamBuilder;
 import com.google.javascript.rhino.jstype.FunctionType;
 import com.google.javascript.rhino.jstype.FunctionType.Parameter;
 import com.google.javascript.rhino.jstype.JSType;
 import com.google.javascript.rhino.jstype.JSTypeNative;
 import com.google.javascript.rhino.jstype.JSTypeRegistry;
+import com.google.javascript.rhino.jstype.KnownSymbolType;
 import com.google.javascript.rhino.jstype.ObjectType;
 import com.google.javascript.rhino.jstype.Property;
+import com.google.javascript.rhino.jstype.Property.StringKey;
 import com.google.javascript.rhino.jstype.StaticTypedScope;
 import com.google.javascript.rhino.jstype.TemplateType;
 import com.google.javascript.rhino.jstype.TemplateTypeMap;
 import com.google.javascript.rhino.jstype.TemplateTypeReplacer;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Creates the symbol table of variables available in the current scope and their types.
@@ -118,8 +118,6 @@ import javax.annotation.Nullable;
  * registry.
  */
 final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVar, TypedVar> {
-  /** A suffix for naming delegate proxies differently from their base. */
-  static final String DELEGATE_PROXY_SUFFIX = ObjectType.createDelegateSuffix("Proxy");
 
   static final DiagnosticType MALFORMED_TYPEDEF =
       DiagnosticType.warning(
@@ -173,8 +171,6 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
   private final ModuleMetadataMap metadataMap;
   private final ModuleImportResolver moduleImportResolver;
   private final boolean processClosurePrimitives;
-  private List<FunctionType> delegateProxyCtors;
-  private Map<String, String> delegateCallingConventions;
   private final Map<Node, TypedScope> memoized = new LinkedHashMap<>();
 
   // Maps from scope root to declared variable names. Populated by FirstOrderFunctionAnalyzer to
@@ -212,29 +208,56 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
 
   private Stage stage = Stage.BUILDING;
 
+  /**
+   * Tracks information about a weakly ordered import, such as goog.requireType or
+   * goog.forwardDeclare
+   *
+   * <p>TypedScopeCreator traverses through all files once in AST order, so when visiting a
+   * goog.requireType() call, the required module may not have its scope populated yet. Thus we
+   * create a 'WeakModuleImport' object and revisit the import after TypedScopeCreator has traversed
+   * all files.
+   */
   private class WeakModuleImport {
-    private final Node moduleLocalNode;
-    private final ScopedName scopedImport;
-    private final TypedScope localModuleScope;
+    private final Node moduleLocalNode; // the NAME or IMPORT_STAR representing the assignee
+    private final ScopedName scopedImport; // the name (possibly qualified) & scope being imported
+    private final TypedScope localModuleScope; // the scope containing the import
 
     WeakModuleImport(Node moduleLocalNode, ScopedName scopedImport, TypedScope localModuleScope) {
+      checkState(moduleLocalNode.isName() || moduleLocalNode.isImportStar(), moduleLocalNode);
       this.moduleLocalNode = moduleLocalNode;
       this.scopedImport = scopedImport;
       this.localModuleScope = localModuleScope;
     }
 
     void resolve() {
+      // resolvedScope may be null if this is importing a nonexistent module
       TypedScope resolvedScope = memoized.get(scopedImport.getScopeRoot());
-
-      // RequiredVar may be null if this is a bad import statement.
       TypedVar requiredVar =
           resolvedScope != null ? resolvedScope.getSlot(scopedImport.getName()) : null;
+
+      final JSType type;
+      final boolean isInferred;
+      if (requiredVar != null) {
+        type = requiredVar.getType();
+        isInferred = requiredVar.isTypeInferred();
+      } else if (resolvedScope != null) {
+        // Some imports might not exist as fully qualified names in the given scope, but are still
+        // resolvable via properties. This is always true for "provideAlreadyProvided" names.
+        JSType nsType = resolvedScope.getTypeThroughNamespace(scopedImport.getName());
+        type = nsType != null ? nsType : unknownType;
+        isInferred = (nsType == null);
+      } else {
+        // if resolvedScope is null, this code is importing a module that doesn't actually exist
+        // and we'll error elsewhere.
+        type = unknownType;
+        isInferred = true;
+      }
       localModuleScope.declare(
           moduleLocalNode.getString(),
           moduleLocalNode,
-          requiredVar != null ? requiredVar.getType() : unknownType,
+          type,
           compiler.getInput(NodeUtil.getInputId(moduleLocalNode)),
-          requiredVar == null || requiredVar.isTypeInferred());
+          isInferred);
       if (requiredVar != null && requiredVar.getNameNode().getTypedefTypeProp() != null) {
         // Propagate the 'typedef type' from the module export to this variable. Otherwise
         // NamedTypes pointing to the imported name fail to resolve.
@@ -247,10 +270,10 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
 
   /** Stores the type and qualified name for a destructuring rvalue. */
   private static class RValueInfo {
-    @Nullable final JSType type;
-    @Nullable final QualifiedName qualifiedName;
+    final @Nullable JSType type;
+    final @Nullable QualifiedName qualifiedName;
 
-    RValueInfo(JSType type, QualifiedName qualifiedName) {
+    RValueInfo(@Nullable JSType type, @Nullable QualifiedName qualifiedName) {
       this.type = type;
       this.qualifiedName = qualifiedName;
     }
@@ -382,7 +405,7 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
       // Because JSTypeRegistry#getType looks up the scope in which a root of a qualified name is
       // declared, pre-populate this TypedScope with all qualified name roots. This prevents
       // type resolution from accidentally returning a type from an outer scope that is shadowed.
-      Set<String> reservedNames = new HashSet<>();
+      Set<String> reservedNames = new LinkedHashSet<>();
       reservedNames.addAll(reservedNamesForScope.removeAll(root));
       if (module != null && module.metadata().isGoogModule()) {
         // TypedScopeCreator treats default export assignments, like `exports = class {};`, as
@@ -399,22 +422,20 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
 
     if (root.isFunction()) {
       scopeBuilder = new FunctionScopeBuilder(newScope);
-    } else if (root.isClass()) {
+    } else if (root.isClass() || root.isMemberFieldDef() || root.isComputedFieldDef()) {
       scopeBuilder = new ClassScopeBuilder(newScope);
     } else {
       scopeBuilder = new NormalScopeBuilder(newScope);
+      if (root.isModuleBody()) {
+        // Store the module scope on the CompilerInput object so it can be found and used for
+        // program analysis purposes.
+        // DefaultPassConfig is responsible for removing it when it is no longer needed.
+        final InputId inputId = checkNotNull(NodeUtil.getInputId(root));
+        final CompilerInput compilerInput = checkNotNull(compiler.getInput(inputId));
+        compilerInput.setTypedScope(newScope);
+      }
     }
     scopeBuilder.build();
-
-    if (typedParent == null) {
-      List<NominalTypeBuilder> delegateProxies = new ArrayList<>();
-      for (FunctionType delegateProxyCtor : delegateProxyCtors) {
-        delegateProxies.add(
-            new NominalTypeBuilder(delegateProxyCtor, delegateProxyCtor.getInstanceType()));
-      }
-      codingConvention.defineDelegateProxyPrototypeProperties(
-          typeRegistry, delegateProxies, delegateCallingConventions);
-    }
     if (module != null && module.metadata().isEs6Module()) {
       // Declare an implicit variable representing the namespace of this module, then add a property
       // for each exported name to that variable's type.
@@ -540,7 +561,7 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
 
     NodeTraversal.builder()
         .setCompiler(compiler)
-        .setCallback(new IdentifyEnumsAndTypedefsAsNonNullable(typeRegistry, codingConvention))
+        .setCallback(new IdentifyEnumsAndTypedefsAsNonNullable(typeRegistry))
         .setScopeCreator(scopeCreator)
         .traverse(root);
 
@@ -557,7 +578,9 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
     declareNativeFunctionType(s, OBJECT_FUNCTION_TYPE);
     declareNativeFunctionType(s, REGEXP_FUNCTION_TYPE);
     declareNativeFunctionType(s, STRING_OBJECT_FUNCTION_TYPE);
+    declareNativeFunctionType(s, SYMBOL_OBJECT_FUNCTION_TYPE);
     declareNativeValueType(s, "undefined", VOID_TYPE);
+    addWellKnownSymbols(s);
 
     gatherAllProvides(root);
 
@@ -567,6 +590,39 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
     memoized.put(root, s);
 
     return s;
+  }
+
+  /**
+   * Symbols that are defined in the language spec.
+   *
+   * <p>NOTE: adding a symbol to this list is necessary only to make it available in Clutz output.
+   * By default, JSCompiler will note any Symbol.* references in externs whether or not they are in
+   * this list, but Clutz runs without including all externs so relies on this list to know what is
+   * / is not a well-known symbol.
+   */
+  private static final ImmutableSet<String> WELL_KNOWN_SYMBOLS =
+      ImmutableSet.of(
+          // go/keep-sorted start
+          "Symbol.asyncDispose",
+          "Symbol.asyncIterator",
+          "Symbol.dispose",
+          "Symbol.hasInstance",
+          "Symbol.isConcatSpreadable",
+          "Symbol.iterator",
+          "Symbol.match",
+          "Symbol.replace",
+          "Symbol.species",
+          "Symbol.toPrimitive",
+          "Symbol.toStringTag",
+          "Symbol.unscopables"
+          // go/keep-sorted end
+          );
+
+  private void addWellKnownSymbols(TypedScope scope) {
+    for (String symbol : WELL_KNOWN_SYMBOLS) {
+      JSType type = new KnownSymbolType(typeRegistry, symbol);
+      declareNativeType(scope, symbol, type);
+    }
   }
 
   private void declareNativeFunctionType(TypedScope scope, JSTypeNative tId) {
@@ -634,15 +690,13 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
   }
 
   private void clearCommonState() {
-    this.delegateProxyCtors = new ArrayList<>();
-    this.delegateCallingConventions = new HashMap<>();
     this.reservedNamesForScope = MultimapBuilder.hashKeys().arrayListValues().build();
-    this.functionsWithNonEmptyReturns = new HashSet<>();
-    this.escapedVarNames = new HashSet<>();
+    this.functionsWithNonEmptyReturns = new LinkedHashSet<>();
+    this.escapedVarNames = new LinkedHashSet<>();
     this.assignedVarNames = HashMultiset.create();
     this.weakImports = new ArrayList<>();
     this.unresolvedNodes = new ArrayList<>();
-    this.undeclaredNamesForClosure = new HashSet<>();
+    this.undeclaredNamesForClosure = new LinkedHashSet<>();
     this.providedNamesFromCall = LinkedHashMultimap.create();
   }
 
@@ -650,25 +704,21 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
   private static class IdentifyEnumsAndTypedefsAsNonNullable extends AbstractPostOrderCallback {
     private final JSTypeRegistry registry;
 
-    IdentifyEnumsAndTypedefsAsNonNullable(
-        JSTypeRegistry registry, CodingConvention codingConvention) {
+    IdentifyEnumsAndTypedefsAsNonNullable(JSTypeRegistry registry) {
       this.registry = registry;
     }
 
     @Override
     public void visit(NodeTraversal t, Node node, Node parent) {
       switch (node.getToken()) {
-        case LET:
-        case CONST:
-        case VAR:
+        case LET, CONST, VAR -> {
           for (Node child = node.getFirstChild(); child != null; child = child.getNext()) {
             // TODO(b/116853368): make this work for destructuring aliases as well.
             identifyEnumOrTypedefDeclaration(
                 t, child, child.getFirstChild(), NodeUtil.getBestJSDocInfo(child));
           }
-
-          break;
-        case EXPR_RESULT:
+        }
+        case EXPR_RESULT -> {
           Node firstChild = node.getFirstChild();
           if (firstChild.isAssign()) {
             Node assign = firstChild;
@@ -678,9 +728,8 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
             identifyEnumOrTypedefDeclaration(
                 t, firstChild, /* rvalue= */ null, firstChild.getJSDocInfo());
           }
-          break;
-        default:
-          break;
+        }
+        default -> {}
       }
     }
 
@@ -715,7 +764,7 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
     final TypedScope currentHoistScope;
 
     /** The current source file that we're in. */
-    private String sourceName = null;
+    private @Nullable String sourceName = null;
 
     /** The InputId of the current node. */
     private InputId inputId;
@@ -725,7 +774,7 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
      * or resolving type-less stubs. These actions are added to this map, keyed by the node that
      * should be waited for before running.
      */
-    final Multimap<Node, Runnable> deferredActions = HashMultimap.create();
+    final SetMultimap<Node, Runnable> deferredActions = LinkedHashMultimap.create();
 
     AbstractScopeBuilder(TypedScope scope) {
       this.currentScope = scope;
@@ -737,8 +786,7 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
       return compiler.getInput(inputId);
     }
 
-    @Nullable
-    Module getModule() {
+    @Nullable Module getModule() {
       return this.currentScope.getModule();
     }
 
@@ -762,13 +810,12 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
       }
       ModuleType moduleType = this.getModule().metadata().moduleType();
       switch (moduleType) {
-        case LEGACY_GOOG_MODULE:
-        case GOOG_MODULE:
+        case LEGACY_GOOG_MODULE, GOOG_MODULE -> {
           declareExportsInGoogModuleScope(this.getModule(), moduleBody);
           markGoogModuleExportsAsConst(moduleBody);
-          break;
-        case ES6_MODULE:
-          Map<Node, ScopedName> unresolvedImports =
+        }
+        case ES6_MODULE -> {
+          ImmutableMap<Node, ScopedName> unresolvedImports =
               moduleImportResolver.declareEsModuleImports(
                   this.getModule(),
                   currentScope,
@@ -776,13 +823,13 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
           unresolvedImports.entrySet().stream()
               .map(entry -> new WeakModuleImport(entry.getKey(), entry.getValue(), currentScope))
               .forEachOrdered(weakImports::add);
-          break;
-        default:
-          // This should have been a build-breaking DUPLICATE_NAMESPACE_AND_MODULE error in
-          // GatherModuleMetadata
-          throw new IllegalStateException(
-              SimpleFormat.format(
-                  "Unexpected module type %s in module %s", moduleType, this.getModule()));
+        }
+        default ->
+            // This should have been a build-breaking DUPLICATE_NAMESPACE_AND_MODULE error in
+            // GatherModuleMetadata
+            throw new IllegalStateException(
+                String.format(
+                    "Unexpected module type %s in module %s", moduleType, this.getModule()));
       }
     }
 
@@ -819,6 +866,14 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
     /**
      * Declares goog.module.declareLegacyNamespace() names in the global scope and annotates the AST
      * with type information about module exports.
+     *
+     * <p>For example, given <code>
+     *   goog.module('a.b.Foo');
+     *   goog.module.declareLegacyNamespace();
+     *
+     *   exports = class Foo {};
+     *   </code> This function is responsible for declaring a global name `a.b.Foo` and giving it
+     * the type from `exports = class Foo {};`
      */
     private void finishDeclaringGoogModule() {
       if (this.getModule() == null || !this.getModule().metadata().isGoogModule()) {
@@ -842,12 +897,16 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
           JSType parentType =
               currentScope.getGlobalScope().lookupQualifiedName(moduleNamespace.getOwner());
           if (parentType != null && parentType.toMaybeObjectType() != null) {
+            // Declare the namespace on the parent name, propagating any JSDoc annotations
+            // on "exports = Foo".
+            JSDocInfo typeDoc = NodeUtil.getBestJSDocInfo(exportsVar.getNameNode());
             declarePropertyIfNamespaceType(
                 parentType.toMaybeObjectType(),
                 exportsVar.getNameNode(),
-                moduleNamespace.getComponent(),
+                new StringKey(moduleNamespace.getComponent()),
                 exportsVar.getType(),
-                exportsVar.getNameNode());
+                exportsVar.getNameNode(),
+                typeDoc);
           }
         }
         declareAliasTypeIfRvalueIsAliasable(
@@ -903,14 +962,17 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
 
     @Override
     public final void visit(NodeTraversal t, Node n, Node parent) {
+      boolean isScopeRoot = (parent == null);
       inputId = t.getInputId();
-      if (parent != null) {
+      if (!isScopeRoot || !n.isClass()) {
+        // Do not type literals or visit class scope roots
         attachLiteralTypes(n);
         visitPostorder(t, n, parent);
-        if (deferredActions.containsKey(n)) { // streams are expensive, only make if needed
-          deferredActions.removeAll(n).forEach(Runnable::run);
-        }
-      } else if (!deferredActions.isEmpty()) {
+      }
+      if (!isScopeRoot
+          && deferredActions.containsKey(n)) { // streams are expensive, only make if needed
+        deferredActions.removeAll(n).forEach(Runnable::run);
+      } else if (isScopeRoot && !deferredActions.isEmpty()) {
         // Run *all* remaining deferred actions, in case any were missed.
         deferredActions.values().forEach(Runnable::run);
       }
@@ -924,37 +986,14 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
 
     void attachLiteralTypes(Node n) {
       switch (n.getToken()) {
-        case NULL:
-          n.setJSType(getNativeType(NULL_TYPE));
-          break;
-
-        case VOID:
-          n.setJSType(getNativeType(VOID_TYPE));
-          break;
-
-        case STRINGLIT:
-        case TEMPLATELIT_STRING:
-          n.setJSType(getNativeType(STRING_TYPE));
-          break;
-
-        case NUMBER:
-          n.setJSType(getNativeType(NUMBER_TYPE));
-          break;
-
-        case BIGINT:
-          n.setJSType(getNativeType(BIGINT_TYPE));
-          break;
-
-        case TRUE:
-        case FALSE:
-          n.setJSType(getNativeType(BOOLEAN_TYPE));
-          break;
-
-        case REGEXP:
-          n.setJSType(getNativeType(REGEXP_TYPE));
-          break;
-
-        case OBJECTLIT:
+        case NULL -> n.setJSType(getNativeType(NULL_TYPE));
+        case VOID -> n.setJSType(getNativeType(VOID_TYPE));
+        case STRINGLIT, TEMPLATELIT_STRING -> n.setJSType(getNativeType(STRING_TYPE));
+        case NUMBER -> n.setJSType(getNativeType(NUMBER_TYPE));
+        case BIGINT -> n.setJSType(getNativeType(BIGINT_TYPE));
+        case TRUE, FALSE -> n.setJSType(getNativeType(BOOLEAN_TYPE));
+        case REGEXP -> n.setJSType(getNativeType(REGEXP_TYPE));
+        case OBJECTLIT -> {
           JSDocInfo info = n.getJSDocInfo();
           if (info != null && info.hasLendsName()) {
             // Defer analyzing object literals with a @lends annotation until we
@@ -968,25 +1007,19 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
           } else {
             defineObjectLiteral(n);
           }
-          break;
-
-        case CLASS:
-          // NOTE(sdh): We can't handle function nodes here because they need special behavior to
-          // deal with hoisting.  But since classes aren't hoisted, and may need to be handled in
-          // such places as default method initializers (i.e. in a FunctionScope) or class extends
-          // clauses (technically part of the ClassScope, but visited instead by the NormalScope),
-          // they can be handled consistently in all scopes.
-          defineClassLiteral(n);
-          break;
-
-          // NOTE(johnlenz): If we ever support Array tuples,
-          // we will need to handle them here as we do object literals
-          // above.
-        case ARRAYLIT:
-          n.setJSType(getNativeType(ARRAY_TYPE));
-          break;
-        default:
-          break;
+        }
+        case CLASS ->
+            // NOTE(sdh): We can't handle function nodes here because they need special behavior to
+            // deal with hoisting.  But since classes aren't hoisted, and may need to be handled in
+            // such places as default method initializers (i.e. in a FunctionScope) or class extends
+            // clauses (technically part of the ClassScope, but visited instead by the NormalScope),
+            // they can be handled consistently in all scopes.
+            defineClassLiteral(n);
+        // NOTE(johnlenz): If we ever support Array tuples,
+        // we will need to handle them here as we do object literals
+        // above.
+        case ARRAYLIT -> n.setJSType(getNativeType(ARRAY_TYPE));
+        default -> {}
       }
     }
 
@@ -1043,14 +1076,28 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
      */
     void processObjectLitProperties(Node objLit, ObjectType objLitType, boolean declareOnOwner) {
       for (Node keyNode = objLit.getFirstChild(); keyNode != null; keyNode = keyNode.getNext()) {
-        if (keyNode.isComputedProp() || keyNode.isSpread()) {
+        if (keyNode.isSpread()) {
           // Don't try defining computed or spread properties on an object. Note that for spread
           // type inference will try to determine the properties and types. We cannot do it here as
           // we don't have all the type information of the spread object.
           continue;
         }
-        Node value = keyNode.getFirstChild();
-        String memberName = NodeUtil.getObjectOrClassLitKeyName(keyNode);
+        final Property.Key memberName;
+        final Node value;
+        final String qualifiedName;
+        if (keyNode.isComputedProp()) {
+          KnownSymbolType symbol = extractKnownSymbolKey(currentScope, keyNode.getFirstChild());
+          if (symbol == null) {
+            continue;
+          }
+          qualifiedName = null;
+          memberName = new Property.SymbolKey(symbol);
+          value = keyNode.getSecondChild();
+        } else {
+          value = keyNode.getFirstChild();
+          memberName = new StringKey(NodeUtil.getObjectOrClassLitKeyName(keyNode));
+          qualifiedName = NodeUtil.getBestLValueName(keyNode);
+        }
         JSDocInfo info = keyNode.getJSDocInfo();
         JSType valueType = getDeclaredType(info, keyNode, value, null);
         JSType keyType =
@@ -1060,7 +1107,6 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
 
         // Try to declare this property in the current scope if it
         // has an authoritative name.
-        String qualifiedName = NodeUtil.getBestLValueName(keyNode);
         if (qualifiedName != null) {
           new SlotDefiner()
               .forDeclarationNode(keyNode)
@@ -1081,33 +1127,42 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
     }
 
     /**
-     * Returns the type specified in a JSDoc annotation near a GETPROP, NAME, member function, or
-     * object literal key.
+     * Returns the type specified in a JSDoc annotation near a GETPROP, NAME, object literal member,
+     * or class field.
      *
      * <p>Extracts type information from the {@code @type} tag.
      */
     private JSType getDeclaredTypeInAnnotation(Node node, JSDocInfo info) {
-      checkArgument(info.hasType());
-
-      ImmutableList<TemplateType> ownerTypeKeys = ImmutableList.of();
-      Node ownerNode = NodeUtil.getBestLValueOwner(node);
-      String ownerName = NodeUtil.getBestLValueName(ownerNode);
-      ObjectType ownerType = null;
-      if (ownerName != null) {
-        TypedVar ownerVar = currentScope.getVar(ownerName);
-        if (ownerVar != null) {
-          ownerType = getPrototypeOwnerType(ObjectType.cast(ownerVar.getType()));
-          if (ownerType != null) {
-            ownerTypeKeys = ownerType.getTemplateTypeMap().getTemplateKeys();
-          }
-        }
-      }
+      checkArgument(info.hasType(), info);
+      ImmutableList<TemplateType> ownerTypeKeys = findOwnerTypeKeys(node);
 
       StaticTypedScope templateScope =
           !ownerTypeKeys.isEmpty()
               ? typeRegistry.createScopeWithTemplates(currentScope, ownerTypeKeys)
               : currentScope;
       return info.getType().evaluate(templateScope, typeRegistry);
+    }
+
+    ImmutableList<TemplateType> findOwnerTypeKeys(Node node) {
+      if (node != null && !node.isStaticMember() && node.getParent().isClassMembers()) {
+        JSType classType = node.getGrandparent().getJSType();
+        if (classType != null) {
+          return classType.toMaybeFunctionType().getTemplateTypeMap().getTemplateKeys();
+        }
+        return ImmutableList.of();
+      }
+      Node ownerNode = NodeUtil.getBestLValueOwner(node);
+      String ownerName = NodeUtil.getBestLValueName(ownerNode);
+      if (ownerName != null) {
+        TypedVar ownerVar = currentScope.getVar(ownerName);
+        if (ownerVar != null) {
+          JSType ownerType = getPrototypeOwnerType(ObjectType.cast(ownerVar.getType()));
+          if (ownerType != null) {
+            return ownerType.getTemplateTypeMap().getTemplateKeys();
+          }
+        }
+      }
+      return ImmutableList.of();
     }
 
     /**
@@ -1125,25 +1180,27 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
       // Though almost certainly a terrible idea, it is possible to do destructuring in
       // the catch declaration.
       // e.g. `} catch ({message, errno}) {`
-      for (Node catchName : NodeUtil.findLhsNodesInNode(n)) {
-        JSType type = getDeclaredType(catchName.getJSDocInfo(), catchName, null, null);
-        new SlotDefiner()
-            .forDeclarationNode(catchName)
-            .forVariableName(catchName.getString())
-            .inScope(currentScope)
-            .withType(type)
-            .allowLaterTypeInference(type == null)
-            .defineSlot();
-      }
+      NodeUtil.visitLhsNodesInNode(
+          n,
+          (catchName) -> {
+            JSType type = getDeclaredType(catchName.getJSDocInfo(), catchName, null, null);
+            new SlotDefiner()
+                .forDeclarationNode(catchName)
+                .forVariableName(catchName.getString())
+                .inScope(currentScope)
+                .withType(type)
+                .allowLaterTypeInference(type == null)
+                .defineSlot();
+          });
     }
 
-    /** Defines an assignment to a name as if it were an actual declaration. */
-    void defineAssignAsIfDeclaration(Node assignment) {
+    /** Defines an assignment to a name as if it were an actual `var` declaration. */
+    void defineAssignAsIfVarDeclaration(Node assignment) {
       JSDocInfo info = assignment.getJSDocInfo();
       Node name = assignment.getFirstChild();
       checkArgument(name.isName(), name);
       Node rvalue = assignment.getSecondChild();
-      defineName(name, rvalue, currentScope, info);
+      defineName(name, rvalue, currentScope.getClosestHoistScope(), info);
     }
 
     /** Defines a variable declared with `var`, `let`, or `const`. */
@@ -1312,21 +1369,12 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
       }
     }
 
-    private String getBestTypeName(Node lvalue, @Nullable String syntacticLvalueName) {
+    private @Nullable String getBestTypeName(Node lvalue, @Nullable String syntacticLvalueName) {
       if (syntacticLvalueName == null) {
         return null;
       }
       if (isGoogModuleExports(lvalue)) {
         return syntacticLvalueName.replace("exports", this.getModule().closureNamespace());
-      }
-      if (compiler.getOptions().isCheckingMissingOverrideTypes()
-          && this.getModule() != null
-          && this.getModule().closureNamespace() != null) {
-        // When fixing missing override types, we want to generate a fully
-        // qualified type name for this `syntacticLValueName` in the JSDoc.
-        if (!syntacticLvalueName.contains(this.getModule().closureNamespace() + ".")) {
-          return this.getModule().closureNamespace() + "." + syntacticLvalueName;
-        }
       }
       return syntacticLvalueName;
     }
@@ -1364,7 +1412,6 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
      *
      * @param name The {@link Token#NAME} node.
      * @param value Optionally, the value assigned to the name node.
-     * @param scope
      * @param info the {@link JSDocInfo} information relating to this {@code name} node.
      */
     private void defineName(Node name, Node value, TypedScope scope, JSDocInfo info) {
@@ -1399,16 +1446,29 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
     private void defineModuleImport(
         Node localNameNode,
         @Nullable ScopedName importedModuleObject,
-        String optionalProperty,
+        @Nullable String optionalProperty,
         TypedScope scopeToDeclareIn) {
       if (importedModuleObject == null) {
-        // We could not find the module defining this import. Just declare the name as unknown.
+        // We could not find the module defining this import. If the compiler is assuming forward
+        // declared types (or if explicitly forward declared), create a NamedType so it resolves to
+        // NoResolvedType. Otherwise, fall back to unknownType to avoid spurious type check errors.
+        JSType fallbackType =
+            compiler.getOptions().assumeForwardDeclaredForMissingTypes()
+                ? typeRegistry.createNamedType(
+                    currentScope,
+                    localNameNode.getString(),
+                    localNameNode.getSourceFileName(),
+                    localNameNode.getLineno(),
+                    localNameNode.getCharno())
+                : unknownType;
         new SlotDefiner()
             .forDeclarationNode(localNameNode)
             .forVariableName(localNameNode.getString())
             .inScope(scopeToDeclareIn)
-            .withType(unknownType)
-            .allowLaterTypeInference(true)
+            .withType(fallbackType)
+            .allowLaterTypeInference(
+                fallbackType.isUnknownType()
+                    && !compiler.getOptions().assumeForwardDeclaredForMissingTypes())
             .defineSlot();
         return;
       }
@@ -1569,8 +1629,8 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
      * Look at the {@code extends} clause to find the instance type being extended. Returns {@code
      * null} if there is no such clause, and unknown if the type cannot be determined.
      */
-    @Nullable
-    private ObjectType findSuperClassFromNodes(Node extendsNode, @Nullable JSDocInfo info) {
+    private @Nullable ObjectType findSuperClassFromNodes(
+        Node extendsNode, @Nullable JSDocInfo info) {
       if (extendsNode.isEmpty()) {
         // No extends clause: return null.
         return null;
@@ -1610,7 +1670,7 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
       if (ctorType != null) {
         if (ctorType.isConstructor() || ctorType.isInterface()) {
           return ctorType.toMaybeFunctionType().getInstanceType();
-        } else if (ctorType.isUnknownType()) {
+        } else if (ctorType.isUnknownType() || ctorType.isNoResolvedType()) {
           // The constructor could have an unknown type for cases where it is dynamically
           // created or passed in from elsewhere.
           // e.g. with a mixin pattern
@@ -1618,6 +1678,8 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
           //   return class extends ctor { ... };
           // }
           // In that case consider the super class instance type to be unknown.
+          // On the other hand, the constructor can be a NoResolvedType if running in Clutz's
+          // partial compilation mode.
           return ctorType.toMaybeObjectType();
         }
       }
@@ -1642,8 +1704,7 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
      *
      * @param extendsNode `goog.module.get('x');` or a getprop `goog.module.get('x').y.z
      */
-    @Nullable
-    private JSType getCtorForGoogModuleGet(Node extendsNode) {
+    private @Nullable JSType getCtorForGoogModuleGet(Node extendsNode) {
       Node call = extendsNode;
       ArrayList<String> properties = new ArrayList<>();
       while (!call.isCall()) {
@@ -1891,7 +1952,7 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
       }
     }
 
-    private ObjectType getPrototypeOwnerType(ObjectType ownerType) {
+    private @Nullable ObjectType getPrototypeOwnerType(ObjectType ownerType) {
       if (ownerType != null && ownerType.isFunctionPrototypeType()) {
         return ownerType.getOwnerFunction();
       }
@@ -2007,7 +2068,7 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
       String variableName;
       TypedScope scope;
       // default is no type and a type may be inferred later
-      JSType type = null;
+      @Nullable JSType type = null;
       boolean allowLaterTypeInference = true;
       boolean forGoogProvidedName = false;
 
@@ -2016,12 +2077,16 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
       //     e.g. There will probably always be a declarationNode, so make it a constructor
       //     parameter.
 
-      /** @param declarationNode the defining NAME or GETPROP or object literal key node. */
+      /**
+       * @param declarationNode the defining NAME or GETPROP or object literal key node.
+       */
+      @CanIgnoreReturnValue
       SlotDefiner forDeclarationNode(Node declarationNode) {
         this.declarationNode = declarationNode;
         return this;
       }
 
+      @CanIgnoreReturnValue
       SlotDefiner readVariableNameFromDeclarationNode() {
         // Only qualified name nodes can use this method to get the variable name
         // Object literal keys will have to compute their names themselves.
@@ -2045,6 +2110,7 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
 
       // TODO(bradfordcsmith): maybe change to withVariableName(). Need to make these names more
       //     consistent.
+      @CanIgnoreReturnValue
       SlotDefiner forVariableName(String variableName) {
         this.variableName = variableName;
         return this;
@@ -2056,21 +2122,25 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
        * <p>If the given name is a qualified name, this scope should be the scope in which the root
        * of the name is (or will later be) declared.
        */
+      @CanIgnoreReturnValue
       SlotDefiner inScope(TypedScope scope) {
         this.scope = checkNotNull(scope);
         return this;
       }
 
+      @CanIgnoreReturnValue
       SlotDefiner withType(@Nullable JSType type) {
         this.type = type;
         return this;
       }
 
+      @CanIgnoreReturnValue
       SlotDefiner allowLaterTypeInference(boolean allowLaterTypeInference) {
         this.allowLaterTypeInference = allowLaterTypeInference;
         return this;
       }
 
+      @CanIgnoreReturnValue
       SlotDefiner forGoogProvidedName() {
         this.forGoogProvidedName = true;
         return this;
@@ -2103,8 +2173,8 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
 
         boolean isGlobalVar = declarationNode.isName() && scopeToDeclareIn.isGlobal();
         boolean shouldDeclareOnGlobalThis =
-            isGlobalVar && (parent.isVar() || parent.isFunction())
-                || this.forGoogProvidedName && !variableName.contains(".");
+            (isGlobalVar && (parent.isVar() || parent.isFunction()))
+                || (this.forGoogProvidedName && !variableName.contains("."));
 
         // TODO(sdh): Remove this special case.  It is required to reproduce the original
         // non-block-scoped behavior, which is depended on in several places including
@@ -2178,8 +2248,8 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
           FunctionType globalThisCtor =
               typeRegistry.getNativeObjectType(GLOBAL_THIS).getConstructor();
           globalThisCtor.getInstanceType().clearCachedValues();
-          globalThisCtor.getPrototype().clearCachedValues();
-          globalThisCtor.setPrototypeBasedOn((type.toMaybeFunctionType()).getInstanceType());
+          typeRegistry.resetImplicitPrototype(
+              globalThisCtor.getPrototype(), type.toMaybeFunctionType().getInstanceType());
         }
       }
     }
@@ -2247,23 +2317,18 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
         if (root.isName()) {
           Node nameParent = root.getParent();
           switch (nameParent.getToken()) {
-            case VAR:
+            case VAR -> {
               return currentHoistScope;
-            case LET:
-            case CONST:
-            case CLASS:
-            case FUNCTION:
-            case PARAM_LIST:
-            case CATCH:
+            }
+            case LET, CONST, CLASS, FUNCTION, PARAM_LIST, CATCH -> {
               return currentScope;
-
-            case ITER_REST:
-            case OBJECT_REST:
+            }
+            case ITER_REST, OBJECT_REST -> {
               // TODO(bradfordcsmith): Handle array destructuring REST
               checkState(nameParent.getParent().isParamList(), nameParent);
               return currentScope;
-
-            default:
+            }
+            default -> {
               if (isGoogModuleExports(root)) {
                 // Ensure that 'exports = class {}' in a goog.module returns the module scope.
                 return currentScope;
@@ -2272,6 +2337,7 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
               if (var != null) {
                 return var.getScope();
               }
+            }
           }
         } else if (root.isThis() || root.isSuper()) {
           // We want the enclosing function scope, or the global scope if not in a function.
@@ -2291,13 +2357,32 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
      * @param declaredRValueTypeSupplier A supplier for the declared type of the rvalue, used for
      *     destructuring declarations where we have to do additional work on the rvalue.
      */
-    JSType getDeclaredType(
+    @Nullable JSType getDeclaredType(
         JSDocInfo info,
         Node lValue,
         @Nullable Node rValue,
         @Nullable Supplier<RValueInfo> declaredRValueTypeSupplier) {
       if (info != null && info.hasType()) {
-        return getDeclaredTypeInAnnotation(lValue, info);
+        JSType type = getDeclaredTypeInAnnotation(lValue, info);
+
+        if (type.isSymbol()
+            && lValue.isFromExterns()
+            && lValue.isGetProp()
+            && lValue.getFirstChild().matchesName("Symbol")
+            && currentScope.isGlobal()) {
+          // Create a unique subtype type for this name.
+          // Currently we only look specifically for extern properties on the global Symbol object
+          // itself - so
+          //   /** @const {symbol} */
+          //   Symbol.iterator;
+          // but not:
+          //   /** @const {symbol} */
+          //   const x = Symbol();
+          // We could consider relaxing that in the future & also defining known symbols from
+          // source code.
+          return new KnownSymbolType(typeRegistry, lValue.getQualifiedName());
+        }
+        return type;
       } else if (rValue != null
           && rValue.isFunction()
           && shouldUseFunctionLiteralType(
@@ -2326,8 +2411,10 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
         }
       }
 
-      // Check if this is constant, and if it has a known type.
-      if (NodeUtil.isConstantDeclaration(info, lValue) || isGoogModuleExports(lValue)) {
+      // Check if this is constant and if it has a known type.
+      if ((lValue.isExport() && lValue.getBooleanProp(Node.EXPORT_DEFAULT))
+          || NodeUtil.isConstantDeclaration(info, lValue)
+          || isGoogModuleExports(lValue)) {
         if (rValue != null) {
           JSType rValueType = getDeclaredRValueType(lValue, rValue);
           declareAliasTypeIfRvalueIsAliasable(
@@ -2347,19 +2434,21 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
         }
       }
 
-      if (info != null && FunctionTypeBuilder.isFunctionTypeDeclaration(info)) {
+      if (rValue != null && rValue.isAssign()) {
+        // Handle nested assignments. For example, TypeScript generates code like this:
+        //   var Foo_1;
+        //   let Foo = Foo_1 = class Foo {}
+        //   Foo = Foo_1 = tslib_1.decorate(..., Foo);
+        return getDeclaredType(info, lValue, rValue.getSecondChild(), null);
+      }
+
+      if (info != null && NodeUtil.isFunctionTypeDeclaration(info)) {
         String fnName = lValue.getQualifiedName();
         return createFunctionTypeFromNodes(null, fnName, info, lValue);
       }
 
       if (isValidTypedefDeclaration(lValue, info)) {
         return getNativeType(JSTypeNative.NO_TYPE);
-      }
-
-      if (rValue != null && rValue.isAssign()) {
-        // Handle nested assignments. For example, tsickle generates code like this:
-        //   let Foo = Foo_1 = tslib_1.decorate(...)
-        return getDeclaredType(info, lValue, rValue.getSecondChild(), null);
       }
 
       return null;
@@ -2476,7 +2565,7 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
     }
 
     /** Returns the AST node associated with the definition, if any. */
-    private Node getDefinitionNode(QualifiedName qname, TypedScope scope) {
+    private @Nullable Node getDefinitionNode(QualifiedName qname, TypedScope scope) {
       if (qname.isSimple()) {
         TypedVar var = scope.getVar(qname.getComponent());
         return var != null ? var.getNameNode() : null;
@@ -2494,7 +2583,7 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
      *
      * @param lValue is the lvalue node if this is a simple assignment, null for destructuring
      */
-    private JSType getDeclaredRValueType(@Nullable Node lValue, Node rValue) {
+    private @Nullable JSType getDeclaredRValueType(@Nullable Node lValue, Node rValue) {
       // If rValue has a type-cast, we use the type in the type-cast.
       JSDocInfo rValueInfo = rValue.getJSDocInfo();
       if (rValue.isCast() && rValueInfo != null && rValueInfo.hasType()) {
@@ -2539,6 +2628,14 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
           if (fnType != null && fnType.hasInstanceType()) {
             return fnType.getInstanceType();
           }
+        }
+      }
+
+      if (rValue.isCall() && rValue.getFirstChild().matchesName("Symbol")) {
+        // Type calls like `Symbol('foo')`
+        TypedVar symbolVar = currentScope.getVar("Symbol");
+        if (symbolVar != null && symbolVar.getScope().isGlobal()) {
+          return typeRegistry.getNativeType(JSTypeNative.SYMBOL_TYPE);
         }
       }
 
@@ -2608,11 +2705,6 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
         }
       }
 
-      DelegateRelationship delegateRelationship = codingConvention.getDelegateRelationship(n);
-      if (delegateRelationship != null) {
-        applyDelegateRelationship(delegateRelationship);
-      }
-
       ObjectLiteralCast objectLiteralCast = codingConvention.getObjectLiteralCast(n);
       if (objectLiteralCast != null) {
         if (objectLiteralCast.diagnosticType == null) {
@@ -2630,55 +2722,42 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
       }
     }
 
-    /** Apply special properties that only apply to delegates. */
-    private void applyDelegateRelationship(DelegateRelationship delegateRelationship) {
-      ObjectType delegatorObject =
-          ObjectType.cast(
-              typeRegistry.getType(
-                  currentScope, delegateRelationship.delegator.getQualifiedName()));
-      ObjectType delegateBaseObject =
-          ObjectType.cast(
-              typeRegistry.getType(
-                  currentScope, delegateRelationship.delegateBase.getQualifiedName()));
-      ObjectType delegateSuperObject =
-          ObjectType.cast(
-              typeRegistry.getType(currentScope, codingConvention.getDelegateSuperclassName()));
-      if (delegatorObject != null && delegateBaseObject != null && delegateSuperObject != null) {
-        FunctionType delegatorCtor = delegatorObject.getConstructor();
-        FunctionType delegateBaseCtor = delegateBaseObject.getConstructor();
-        FunctionType delegateSuperCtor = delegateSuperObject.getConstructor();
-
-        if (delegatorCtor != null && delegateBaseCtor != null && delegateSuperCtor != null) {
-          FunctionParamBuilder functionParamBuilder = new FunctionParamBuilder(typeRegistry);
-          functionParamBuilder.addRequiredParams(getNativeType(FUNCTION_TYPE));
-          FunctionType findDelegate =
-              typeRegistry.createFunctionType(
-                  typeRegistry.createNullableType(delegateBaseObject),
-                  functionParamBuilder.build());
-
-          FunctionType delegateProxy =
-              typeRegistry.createConstructorType(
-                  delegateBaseObject.getReferenceName() + DELEGATE_PROXY_SUFFIX /* name */,
-                  delegateBaseCtor.getSource() /* source */,
-                  null /* parameters */,
-                  null /* returnType */,
-                  null /* templateKeys */,
-                  false /* isAbstract */);
-          delegateProxy.setPrototypeBasedOn(delegateBaseObject);
-
-          codingConvention.applyDelegateRelationship(
-              new NominalTypeBuilder(delegateSuperCtor, delegateSuperObject),
-              new NominalTypeBuilder(delegateBaseCtor, delegateBaseObject),
-              new NominalTypeBuilder(delegatorCtor, delegatorObject),
-              (ObjectType) delegateProxy.getTypeOfThis(),
-              findDelegate);
-          delegateProxyCtors.add(delegateProxy);
-        }
+    /**
+     * Declare a computed property on its owner type
+     *
+     * @param info The doc info for this property.
+     * @param n A top-level GETELEM node (it should not be contained inside another GETPROP).
+     * @param rhsValue The node that {@code n} is being initialized to, or {@code null} if this is a
+     *     stub declaration.
+     */
+    void maybeDeclareGetElem(JSDocInfo info, Node n, @Nullable Node rhsValue) {
+      checkArgument(n.isGetElem(), n);
+      Node ownerNode = n.getFirstChild();
+      Node key = n.getSecondChild();
+      KnownSymbolType keyType = extractKnownSymbolKey(currentScope, key);
+      if (keyType == null) {
+        return;
       }
+      JSType valueType = getDeclaredType(info, n, rhsValue, null);
+      if (valueType == null) {
+        return;
+      }
+      String ownerName = ownerNode.getQualifiedName();
+      ObjectType ownerType = getObjectSlot(ownerName);
+      if (ownerType == null) {
+        return;
+      }
+      declarePropertyIfNamespaceType(
+          ownerType,
+          ownerNode,
+          new Property.SymbolKey(keyType),
+          valueType,
+          n,
+          /* jsdocInfo= */ null);
     }
 
     /**
-     * Declare the symbol for a qualified name in the global scope.
+     * Declare the symbol for a qualified name in the current scope.
      *
      * @param info The doc info for this property.
      * @param n A top-level GETPROP node (it should not be contained inside another GETPROP).
@@ -2687,7 +2766,7 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
      *     stub declaration.
      */
     void maybeDeclareQualifiedName(
-        NodeTraversal t, JSDocInfo info, Node n, Node parent, Node rhsValue) {
+        NodeTraversal t, JSDocInfo info, Node n, Node parent, @Nullable Node rhsValue) {
       boolean isTypedef = isValidTypedefDeclaration(n, info);
       if (isTypedef) {
         declareTypedefType(n, info);
@@ -2764,7 +2843,8 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
       if (!inferred) {
         ObjectType ownerType = getObjectSlot(ownerName);
         if (ownerType != null) {
-          declarePropertyIfNamespaceType(ownerType, ownerNode, propName, valueType, n);
+          declarePropertyIfNamespaceType(
+              ownerType, ownerNode, new StringKey(propName), valueType, n, /* jsdocInfo= */ null);
         }
 
         // this is a memory optimization: we don't need to declare .prototype props in the scope.
@@ -2828,7 +2908,7 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
               && (info.hasType()
                   || info.hasEnumParameterType()
                   || isValidTypedefDeclaration(n, info)
-                  || FunctionTypeBuilder.isFunctionTypeDeclaration(info)
+                  || NodeUtil.isFunctionTypeDeclaration(info)
                   || (rhsValue != null && rhsValue.isFunction())))
           || isTypedConstantDeclaration(info, n, valueType)) {
         return false;
@@ -2931,7 +3011,7 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
      * @param slotName The name of the slot to find the type in.
      * @return An object type, or null if this slot does not contain an object.
      */
-    private ObjectType getObjectSlot(String slotName) {
+    private @Nullable ObjectType getObjectSlot(String slotName) {
       TypedVar ownerVar = currentScope.getVar(slotName);
       if (ownerVar != null) {
         JSType ownerVarType = ownerVar.getType();
@@ -2945,7 +3025,7 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
      * When a class has a stub for a property, and the property exists on a super interface, use
      * that type.
      */
-    private JSType getInheritedInterfacePropertyType(ObjectType obj, String propName) {
+    private @Nullable JSType getInheritedInterfacePropertyType(ObjectType obj, String propName) {
       if (obj != null && obj.isFunctionPrototypeType()) {
         FunctionType f = obj.getOwnerFunction();
         for (ObjectType i : f.getImplementedInterfaces()) {
@@ -3029,9 +3109,10 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
     void declarePropertyIfNamespaceType(
         ObjectType ownerType,
         Node ownerNode,
-        String propName,
+        Property.Key propName,
         JSType valueType,
-        Node declarationNode) {
+        Node declarationNode,
+        @Nullable JSDocInfo jsdocInfo) {
       // Only declare this as an official property if it has not been
       // declared yet.
       if (ownerType.hasOwnProperty(propName) && !ownerType.isPropertyTypeInferred(propName)) {
@@ -3052,6 +3133,7 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
       if (isNonNativeExtern || !ownerType.isInstanceType() || ownerNode.isThis()) {
         // If the property is undeclared or inferred, declare it now.
         ownerType.defineDeclaredProperty(propName, valueType, declarationNode);
+        ownerType.setPropertyJSDocInfo(propName, jsdocInfo);
       }
     }
   } // end AbstractScopeBuilder
@@ -3089,64 +3171,60 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
     @Override
     void visitPostorder(NodeTraversal t, Node n, Node parent) {
       switch (n.getToken()) {
-        case CALL:
-          checkForClassDefiningCalls(n);
-          break;
-
-        case ASSIGN:
+        case CALL -> checkForClassDefiningCalls(n);
+        case ASSIGN -> {
           // Handle initialization of properties.
           // We only allow qualified name declarations of the form
           //   /** @type {number} */ a.b.c = rhs;
+          // or, for symbol-typed properties:
+          //   /** @type {number} */ a.b[Symbol.something] = rhs;
           // TODO(b/77597706): Ensure that CheckJSDoc warns for JSDoc on assignments not to
           // qualified names, e.g.
           //   /** @type {number} */ [a.b.c] = someArr;
           Node firstChild = n.getFirstChild();
           if (firstChild.isGetProp() && firstChild.isQualifiedName()) {
             maybeDeclareQualifiedName(t, n.getJSDocInfo(), firstChild, n, firstChild.getNext());
+          } else if (firstChild.isGetElem() && firstChild.getFirstChild().isQualifiedName()) {
+            maybeDeclareGetElem(n.getJSDocInfo(), firstChild, firstChild.getNext());
           } else if (undeclaredNamesForClosure.contains(firstChild)) {
-            defineAssignAsIfDeclaration(n);
+            defineAssignAsIfVarDeclaration(n);
           }
-          break;
-
-        case CATCH:
-          defineCatch(n);
-          break;
-
-        case VAR:
-        case LET:
-        case CONST:
-          defineVars(n);
-          break;
-
-        case GETPROP:
-          codingConvention.checkForCallingConventionDefinitions(n, delegateCallingConventions);
+        }
+        case CATCH -> defineCatch(n);
+        case VAR, LET, CONST -> defineVars(n);
+        case GETPROP -> {
           // Handle stubbed properties.
           if (parent.isExprResult() && n.isQualifiedName()) {
             maybeDeclareQualifiedName(t, n.getJSDocInfo(), n, parent, null);
           }
-          break;
-
-        case CLASS:
-          // Analyse CLASS child-scopes now because later code in this scope may assign
-          // properties to these class-types. We want to ensure declarations within the CLASS have
-          // priority.
-          createScope(n, currentScope);
-          break;
-
-        case EXPR_RESULT:
+        }
+        case GETELEM -> {
+          // Handle stubbed properties.
+          if (parent.isExprResult() && n.getFirstChild().isQualifiedName()) {
+            maybeDeclareGetElem(n.getJSDocInfo(), n, null);
+          }
+        }
+        case CLASS ->
+            // Analyse CLASS child-scopes now because later code in this scope may assign
+            // properties to these class-types. We want to ensure declarations within the CLASS have
+            // priority.
+            createScope(n, currentScope);
+        case EXPR_RESULT -> {
           Collection<ProvidedName> names = providedNamesFromCall.get(n);
           if (names != null) {
             for (ProvidedName name : names) {
               declareProvidedNs(n, name);
             }
           }
-          break;
-
-        case EXPORT:
+        }
+        case EXPORT -> {
           if (n.getBooleanProp(Node.EXPORT_DEFAULT)) {
             // Define a dummy var for "export default <someExpr>" so that other utilities have
             // access to the type.
-            JSType declaredType = n.getOnlyChild().getJSType();
+            // Problem: according to the debugger, if we have export default SomeName
+            // SomeName does not have a type attached so we don't really export it and can't use it
+            // as a type later. So we need to call getDeclaredType() instead to get the type.
+            JSType declaredType = getDeclaredType(null, n, n.getOnlyChild(), null);
             new SlotDefiner()
                 .inScope(currentScope)
                 .forDeclarationNode(n)
@@ -3155,17 +3233,15 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
                 .allowLaterTypeInference(declaredType == null)
                 .defineSlot();
           }
-          break;
-
-        default:
-          break;
+        }
+        default -> {}
       }
     }
   } // end NormalScopeBuilder
 
   /**
    * Scope builder subclass for function scopes, which only contain bleeding function names and
-   * parameter names. The main function body is handled by the a NormalScopeBuilder on the function
+   * parameter names. The main function body is handled by the NormalScopeBuilder on the function
    * block.
    */
   private final class FunctionScopeBuilder extends AbstractScopeBuilder {
@@ -3242,36 +3318,64 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
           }
         }
 
-        // Also add template params to the scope so that JSTypeRegistry can find them (they
-        // were already registered by FunctionTypeBuilder).
-        JSDocInfo info = NodeUtil.getBestJSDocInfo(functionNode);
-        if (info != null) {
-          Iterable<String> templateNames =
-              Iterables.concat(info.getTemplateTypeNames(), info.getTypeTransformations().keySet());
-          if (!Iterables.isEmpty(templateNames)) {
-            CompilerInput input = getCompilerInput();
-            JSType voidType = typeRegistry.getNativeType(VOID_TYPE);
-            // Declare any template names in the function scope. This means that if someone shadows
-            // an outer variable FOO with a @template FOO and refers to FOO inside the method, we
-            // will treat it as undefined, rather than the correct type, which could lead to weird
-            // errors. Ideally we'd have a "don't use me" type that gives an error at use.
-            for (String name : templateNames) {
-              if (!currentScope.canDeclare(name)) {
-                validator.expectUndeclaredVariable(
-                    NodeUtil.getSourceName(functionNode),
-                    input,
-                    functionNode,
-                    functionNode.getParent(),
-                    currentScope.getVar(name),
-                    name,
-                    voidType);
-              }
-              currentScope.declare(name, functionNode, voidType, input, /* inferred= */ false);
-            }
-          }
-        }
+        declareTemplatesInFunctionBody(functionNode, functionType);
       }
     } // end declareParameters
+
+    private void declareTemplatesInFunctionBody(Node functionNode, FunctionType functionType) {
+      // Add template params to the scope.
+      // This lets JSTypeRegistry resolve references to template types within the function body
+      // scope. (they were already registered as types by FunctionTypeBuilder, but they need to be
+      // in a TypedScope to let JSTypeRegistry correctly handle scoping).
+      JSDocInfo info = NodeUtil.getBestJSDocInfo(functionNode);
+      Set<String> templateNames = new LinkedHashSet<>();
+
+      boolean isPossiblePrototypeMethod =
+          !functionType.hasInstanceType() && (info == null || !info.hasThisType());
+      if (isPossiblePrototypeMethod) {
+        // If this is a prototype method, add any @template types from the prototype owner.
+        // e.g. given
+        //   /** @template T */
+        //   class Foo {
+        //     bar() {}
+        //   }
+        // We want to declare 'T' in the scope of 'bar'
+        Node ownerNode = NodeUtil.getBestLValue(functionNode);
+        for (TemplateType templateKey : findOwnerTypeKeys(ownerNode)) {
+          templateNames.add(templateKey.getReferenceName());
+        }
+      }
+      if (info != null) {
+        // Add @template parameters from the JSDoc on this function directly. For example, given
+        //   /** @template U */
+        //   function foo() {}
+        // This declares 'U'.
+        templateNames.addAll(info.getTemplateTypeNames());
+        templateNames.addAll(info.getTypeTransformations().keySet());
+      }
+      if (templateNames.isEmpty()) {
+        return;
+      }
+      CompilerInput input = getCompilerInput();
+      JSType voidType = getNativeType(VOID_TYPE);
+      // Declare any template names in the function scope. This means that if someone shadows
+      // an outer variable FOO with a @template FOO and refers to FOO inside the method, we
+      // will treat it as undefined, rather than the correct type, which could lead to weird
+      // errors. Ideally we'd have a "don't use me" type that gives an error at use.
+      for (String name : templateNames) {
+        if (!currentScope.canDeclare(name)) {
+          validator.expectUndeclaredVariable(
+              NodeUtil.getSourceName(functionNode),
+              input,
+              functionNode,
+              functionNode.getParent(),
+              currentScope.getVar(name),
+              name,
+              voidType);
+        }
+        currentScope.declare(name, functionNode, voidType, input, /* inferred= */ false);
+      }
+    }
 
     /**
      * Declares the name(s) in a positional AST parameter in the scope.
@@ -3303,11 +3407,11 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
       }
 
       switch (astParameter.getToken()) {
-        case NAME: // function f(x) {}
-          declareSingleParameterName(isInferred, astParameter, paramType);
-          break;
-
-        case ITER_REST: // function f(...x) {}
+        case NAME ->
+            // function f(x) {}
+            declareSingleParameterName(isInferred, astParameter, paramType);
+        case ITER_REST -> {
+          // function f(...x) {}
           // rest parameter is actually an array of the type specified in the JSDoc
           Node param = astParameter.getFirstChild();
           ObjectType arrayType = typeRegistry.getNativeObjectType(ARRAY_TYPE);
@@ -3318,24 +3422,22 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
             // function f(...{length}) {}
             declareDestructuringParameter(isInferred, param, restParamType);
           }
-          break;
-
-        case DEFAULT_VALUE: // function f(x = 3) {} or function f([x] = []) {}
+        }
+        case DEFAULT_VALUE -> {
+          // function f(x = 3) {} or function f([x] = []) {}
           Node actualParam = astParameter.getFirstChild();
           if (actualParam.isName()) {
             declareSingleParameterName(isInferred, actualParam, paramType);
           } else {
             declareDestructuringParameter(isInferred, actualParam, paramType);
           }
-          break;
-
-        case ARRAY_PATTERN: // function f([x]) {}
-        case OBJECT_PATTERN: // function f({x}) {}
-          declareDestructuringParameter(isInferred, astParameter, paramType);
-          break;
-
-        default:
-          throw new IllegalStateException("Unexpected function parameter node " + astParameter);
+        }
+        case ARRAY_PATTERN, OBJECT_PATTERN ->
+            // function f([x]) {}
+            // function f({x}) {}
+            declareDestructuringParameter(isInferred, astParameter, paramType);
+        default ->
+            throw new IllegalStateException("Unexpected function parameter node " + astParameter);
       }
     }
 
@@ -3402,8 +3504,10 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
   } // end FunctionScopeBuilder
 
   /**
-   * Scope builder subclass for class scopes, which only contain a bleeding class name. Methods are
-   * handled by FunctionScopeBuilder and NormalScopeBuilder for the bodies.
+   * Scope builder subclass for class scopes (which only contain a bleeding class name), member
+   * field def scopes, and RHS computed field def scopes (the latter two of which have `this` and
+   * `super` properties). Methods are handled by FunctionScopeBuilder and NormalScopeBuilder for the
+   * bodies.
    */
   private final class ClassScopeBuilder extends AbstractScopeBuilder {
 
@@ -3442,12 +3546,19 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
             .defineSlot();
       } else if (NodeUtil.isEs6ConstructorMemberFunctionDef(n)) {
         // Ignore "constructor" since it has special handling in `createClassTypeFromNodes()`.
-      } else if (n.isMemberFunctionDef()) {
+      } else if (n.isMemberFunctionDef() && parent.isClassMembers()) {
         defineMemberFunction(n);
       } else if (n.isMemberFieldDef()) {
+        // public fields are roots of their own scope so the parent doesn't get passed into
+        // visitPostorder
         defineMemberField(n);
-      } else if (n.isGetterDef() || n.isSetterDef()) {
+      } else if ((n.isGetterDef() || n.isSetterDef()) && parent.isClassMembers()) {
         defineGetterSetter(n);
+      } else if (n.isComputedFieldDef()
+          || (n.isComputedProp()
+              && n.getBooleanProp(Node.COMPUTED_PROP_METHOD)
+              && parent.isClassMembers())) {
+        defineComputedMemberField(n);
       }
     }
 
@@ -3457,16 +3568,50 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
     }
 
     void defineMemberField(Node n) {
-      ObjectType ownerType = determineOwnerTypeForClassMember(n);
-
-      JSType declaredType = getDeclaredType(n.getJSDocInfo(), n, n.getFirstChild(), null);
+      Node rhs = n.getLastChild();
+      JSType declaredType = getDeclaredType(n.getJSDocInfo(), n, rhs, null);
+      // When there's no JSDoc type declaration for a field:
+      // If we can infer a type other than UNKNOWN for an initial value, use that as the field type
+      // Otherwise, set the field's type to the ALL type ('*')
       if (declaredType == null) {
-        // TODO(b/192088118): Stop treating member fields without JSDoc as declared with type {?}
-        declaredType = getNativeType(JSTypeNative.UNKNOWN_TYPE);
+        JSType rhsType = rhs == null ? null : super.getDeclaredRValueType(null, rhs);
+        declaredType =
+            rhsType != null && !rhsType.isUnknownType()
+                ? rhsType
+                : getNativeType(JSTypeNative.ALL_TYPE);
       }
 
+      ObjectType ownerType = determineOwnerTypeForClassMember(n);
       String propName = n.getString();
       ownerType.defineDeclaredProperty(propName, declaredType, n);
+      n.setJSType(declaredType);
+    }
+
+    void defineComputedMemberField(Node n) {
+      Node key = n.getFirstChild();
+      if (!key.isQualifiedName()) {
+        return;
+      }
+      JSType keyType = currentScope.lookupQualifiedName(key.getQualifiedNameObject());
+      if (keyType == null || !keyType.isKnownSymbolValueType()) {
+        return;
+      }
+      Node rhs = n.getLastChild();
+      JSType declaredType = getDeclaredType(n.getJSDocInfo(), n, rhs, null);
+      // When there's no JSDoc type declaration for a field:
+      // If we can infer a type other than UNKNOWN for an initial value, use that as the field type
+      // Otherwise, set the field's type to the ALL type ('*')
+      if (declaredType == null) {
+        JSType rhsType = rhs == null ? null : super.getDeclaredRValueType(null, rhs);
+        declaredType =
+            rhsType != null && !rhsType.isUnknownType()
+                ? rhsType
+                : getNativeType(JSTypeNative.ALL_TYPE);
+      }
+
+      ObjectType ownerType = determineOwnerTypeForClassMember(n);
+      ownerType.defineDeclaredProperty(
+          new Property.SymbolKey(keyType.toMaybeKnownSymbolType()), declaredType, n);
       n.setJSType(declaredType);
     }
 
@@ -3474,25 +3619,19 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
       String name = n.getString();
       FunctionType methodType = n.getLastChild().getJSType().toMaybeFunctionType();
 
-      final JSType propertyType;
-      switch (n.getToken()) {
-        case GETTER_DEF:
-          // TODO(sdh): consider only falling back on unknown if the function body is empty? But
-          // we need to not report a conflicting type error if there's different unknowns.
-          propertyType =
-              methodType.isReturnTypeInferred() ? unknownType : methodType.getReturnType();
-          break;
-
-        case SETTER_DEF:
-          propertyType =
-              methodType.getParameters().isEmpty()
-                  ? unknownType
-                  : methodType.getParameters().get(0).getJSType();
-          break;
-
-        default:
-          throw new AssertionError(n.toStringTree());
-      }
+      final JSType propertyType =
+          switch (n.getToken()) {
+            case GETTER_DEF ->
+                // TODO(sdh): consider only falling back on unknown if the function body is empty?
+                // But
+                // we need to not report a conflicting type error if there's different unknowns.
+                methodType.isReturnTypeInferred() ? unknownType : methodType.getReturnType();
+            case SETTER_DEF ->
+                methodType.getParameters().isEmpty()
+                    ? unknownType
+                    : methodType.getParameters().get(0).getJSType();
+            default -> throw new AssertionError(n.toStringTree());
+          };
 
       ObjectType ownerType = determineOwnerTypeForClassMember(n);
       // TODO(b/116797078): correctly model getters/setters and stop treating this as a normal
@@ -3507,8 +3646,10 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
      * nonstatic member.
      */
     private ObjectType determineOwnerTypeForClassMember(Node member) {
-      // MEMBER_FUNCTION_DEF -> CLASS_MEMBERS -> CLASS  or
-      // GETTER_DEF -> CLASS_MEMBERS -> CLASS
+      // MEMBER_FUNCTION_DEF -> CLASS_MEMBERS -> CLASS or
+      // MEMBER_FIELD_DEF -> CLASS_MEMBERS -> CLASS or
+      // GETTER_DEF -> CLASS_MEMBERS -> CLASS or
+      // SETTER_DEF -> CLASS_MEMBERS -> CLASS
       Node ownerNode = member.getGrandparent();
       checkState(ownerNode.isClass());
       FunctionType ownerType = ownerNode.getJSType().toMaybeFunctionType();
@@ -3518,10 +3659,14 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
         return ownerType.getInstanceType();
       } else {
         checkState(
-            member.isMemberFunctionDef() || member.isGetterDef() || member.isSetterDef(), member);
+            member.isMemberFunctionDef()
+                || member.isGetterDef()
+                || member.isSetterDef()
+                || member.isComputedProp()
+                || member.isComputedFieldDef(),
+            member);
         return ownerType.getPrototype();
       }
-
     }
   } // end ClassScopeBuilder
 
@@ -3596,8 +3741,7 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
     }
   }
 
-  @Nullable
-  static String containingGoogModuleIdOf(TypedScope scope) {
+  static @Nullable String containingGoogModuleIdOf(TypedScope scope) {
     Module module = scope.getModule();
     if (module == null) {
       TypedScope parent = scope.getParent();
@@ -3608,10 +3752,19 @@ final class TypedScopeCreator implements ScopeCreator, StaticSymbolTable<TypedVa
     ModuleMetadata metadata = module.metadata();
     checkState(metadata.isModule(), metadata);
 
-    /**
+    /*
      * This module may not have a goog.module/goog.declareModuleId. Also don't crash if it's
      * malformed with multiple module IDs.
      */
     return Iterables.getFirst(metadata.googNamespaces(), null);
+  }
+
+  private static @Nullable KnownSymbolType extractKnownSymbolKey(
+      TypedScope currentScope, Node key) {
+    if (!key.isQualifiedName()) {
+      return null;
+    }
+    JSType type = currentScope.lookupQualifiedName(key.getQualifiedNameObject());
+    return type != null ? type.toMaybeKnownSymbolType() : null;
   }
 }

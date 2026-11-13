@@ -42,13 +42,14 @@ package com.google.javascript.rhino.jstype;
 import static com.google.javascript.jscomp.base.Tri.FALSE;
 import static com.google.javascript.jscomp.base.Tri.TRUE;
 
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.javascript.jscomp.base.Tri;
 import com.google.javascript.rhino.ErrorReporter;
 import com.google.javascript.rhino.Node;
 import java.util.Collections;
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.Set;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * An enum type representing a branded collection of elements. Each element is referenced by its
@@ -61,7 +62,7 @@ public final class EnumType extends PrototypeObjectType implements JSType.WithSo
   // the type of the individual elements
   private EnumElementType elementType;
   // the elements' names (they all have the same type)
-  private final Set<String> elements = new HashSet<>();
+  private final Set<String> elements = new LinkedHashSet<>();
   // the node representing rhs of the enum
   private final Node source;
   private final String googModuleId;
@@ -90,18 +91,21 @@ public final class EnumType extends PrototypeObjectType implements JSType.WithSo
     }
 
     /** The object literal that creates the enum, a reference to another enum, or null. */
+    @CanIgnoreReturnValue
     public Builder setSource(Node x) {
       this.source = x;
       return this;
     }
 
     /** The ID of the goog.module in which this enum was declared. */
+    @CanIgnoreReturnValue
     public Builder setGoogModuleId(String x) {
       this.googModuleId = x;
       return this;
     }
 
     /** The base type of the individual elements. */
+    @CanIgnoreReturnValue
     public Builder setElementType(JSType x) {
       this.elementType = x;
       return this;
@@ -140,8 +144,8 @@ public final class EnumType extends PrototypeObjectType implements JSType.WithSo
 
   /**
    * Gets the elements defined on this enum.
-   * @return the elements' names defined on this enum. The returned set is
-   *         immutable.
+   *
+   * @return the elements' names defined on this enum. The returned set is immutable.
    */
   public Set<String> getElements() {
     return Collections.unmodifiableSet(elements);
@@ -149,6 +153,7 @@ public final class EnumType extends PrototypeObjectType implements JSType.WithSo
 
   /**
    * Defines a new element on this enum.
+   *
    * @param name the name of the new element
    * @param definingNode the {@code Node} that defines this new element
    * @return true iff the new element is added successfully
@@ -193,12 +198,13 @@ public final class EnumType extends PrototypeObjectType implements JSType.WithSo
     return visitor.caseObjectType(this);
   }
 
-  @Override <T> T visit(RelationshipVisitor<T> visitor, JSType that) {
+  @Override
+  <T> T visit(RelationshipVisitor<T> visitor, JSType that) {
     return visitor.caseObjectType(this, that);
   }
 
   @Override
-  public FunctionType getConstructor() {
+  public @Nullable FunctionType getConstructor() {
     return null;
   }
 
@@ -217,12 +223,13 @@ public final class EnumType extends PrototypeObjectType implements JSType.WithSo
     return true;
   }
 
+  @Override
   public final Node getSource() {
     return source;
   }
 
-  @Nullable
-  public String getGoogModuleId() {
+  @Override
+  public @Nullable String getGoogModuleId() {
     return this.googModuleId;
   }
 

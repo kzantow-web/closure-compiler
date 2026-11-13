@@ -29,6 +29,7 @@ import com.google.javascript.rhino.jstype.JSType;
 import com.google.javascript.rhino.jstype.StaticTypedRef;
 import com.google.javascript.rhino.jstype.StaticTypedScope;
 import com.google.javascript.rhino.jstype.StaticTypedSlot;
+import org.jspecify.annotations.Nullable;
 
 /**
  * A flow scope that tries to store as little symbol information as possible,
@@ -168,7 +169,7 @@ class LinkedFlowScope implements FlowScope {
 
   @Override
   public JSType getTypeOfThis() {
-    return functionScope.getTypeOfThis();
+    return syntacticScope.getTypeOfThis();
   }
 
   @Override
@@ -247,7 +248,7 @@ class LinkedFlowScope implements FlowScope {
 
   /** Join the two FlowScopes. */
   static class FlowScopeJoinOp implements FlowJoiner<FlowScope> {
-    LinkedFlowScope result = null;
+    @Nullable LinkedFlowScope result = null;
     final CompilerInputProvider inputProvider;
 
     FlowScopeJoinOp(CompilerInputProvider inputProvider) {
@@ -320,10 +321,9 @@ class LinkedFlowScope implements FlowScope {
   @Override
   public boolean equals(Object other) {
 
-    if (!(other instanceof LinkedFlowScope)) {
+    if (!(other instanceof LinkedFlowScope that)) {
       return false;
     }
-    LinkedFlowScope that = (LinkedFlowScope) other;
 
     // If two flow scopes are in the same function, then they could have
     // two possible function scopes: the real one and the BOTTOM scope.

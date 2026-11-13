@@ -45,35 +45,106 @@ public final class Es6CheckModuleTest extends CompilerTestCase {
   @Test
   public void testEs6ThisWithImportModule() {
     testWarning(
-        lines("import ln from 'other.x'", "if (x) {", "  alert(this);", "}"),
+        """
+        import ln from './other/x'
+        if (x) {
+          alert(this);
+        }
+        """,
         Es6CheckModule.ES6_MODULE_REFERENCES_THIS);
   }
 
   @Test
   public void testEs6ThisWithConstructor() {
     testSame(
-        lines(
-            "class Foo {",
-            "  constructor() {",
-            "    this.x = 5;",
-            "  }",
-            "}",
-            "",
-            "exports = Foo;"));
+        """
+        class Foo {
+          constructor() {
+            this.x = 5;
+          }
+        }
+
+        exports = Foo;
+        """);
+  }
+
+  @Test
+  public void testThisWithStaticMethod() {
+    testSame("class Foo { static h() {var x = this.y;} }; exports = Foo;");
+    testSame("class Foo {static h() {this.x = 2; }}; exports = Foo;");
+    testSame("class Foo {static h() {this[this.x] = 3;}}; exports = Foo;");
+    testSame(
+        """
+        class Foo {
+          static h() {
+            function g() {
+              return this.f() + 1;
+            }
+            var y = g() + 1;
+          }
+          static f() {return 1;}
+        }
+        exports = Foo;
+        """);
+    testSame(
+        """
+        class Foo {
+          static h() {
+            button.addEventListener('click', function () {
+              this.click();
+            });
+          }
+          static click() {}
+        };
+        exports = Foo;
+        """);
+  }
+
+  @Test
+  public void testThisWithStaticBlock() {
+    testSame("class Foo { static {var x = this.y;} }; exports = Foo;");
+    testSame("class Foo {static {this.x = 2; }}; exports = Foo;");
+    testSame("class Foo {static {this[this.x] = 3;}}; exports = Foo;");
+    testSame(
+        """
+        class Foo {
+          static {
+            function g() {
+              return this.f() + 1;
+            }
+            var y = g() + 1;
+          }
+          static f() {return 1;}
+        }
+        exports = Foo;
+        """);
+    testSame(
+        """
+        class Foo {
+          static {
+            button.addEventListener('click', function () {
+              this.click();
+            });
+          }
+          static click() {}
+        };
+        exports = Foo;
+        """);
   }
 
   // just here to make sure import.meta doesn't break anything
   @Test
   public void testImportMeta() {
     testSame(
-        lines(
-            "class Foo {",
-            "  constructor() {",
-            "    this.url = import.meta.url",
-            "  }",
-            "}",
-            "",
-            "exports = Foo;"));
+        """
+        class Foo {
+          constructor() {
+            this.url = import.meta.url
+          }
+        }
+
+        exports = Foo;
+        """);
   }
 
   @Test

@@ -31,6 +31,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Prints a JSDocInfo, used for preserving type annotations in ES6 transpilation.
@@ -114,26 +115,6 @@ public final class JSDocInfoPrinter {
       parts.add("@wizaction");
     }
 
-    if (info.isPolymerBehavior()) {
-      parts.add("@polymerBehavior");
-    }
-
-    if (info.isPolymer()) {
-      parts.add("@polymer");
-    }
-
-    if (info.isCustomElement()) {
-      parts.add("@customElement");
-    }
-
-    if (info.isMixinClass()) {
-      parts.add("@mixinClass");
-    }
-
-    if (info.isMixinFunction()) {
-      parts.add("@mixinFunction");
-    }
-
     if (info.isNoSideEffects()) {
       parts.add("@nosideeffects");
     }
@@ -144,6 +125,14 @@ public final class JSDocInfoPrinter {
 
     if (info.isNoInline()) {
       parts.add("@noinline");
+    }
+
+    if (info.isRequireInlining()) {
+      parts.add("@requireInlining");
+    }
+
+    if (info.isEncourageInlining()) {
+      parts.add("@encourageInlining");
     }
 
     if (info.isProvideAlreadyProvided()) {
@@ -192,6 +181,10 @@ public final class JSDocInfoPrinter {
 
     if (info.isInterface() && info.usesImplicitMatch()) {
       parts.add("@record");
+    }
+
+    if (info.isClosureUnawareCode()) {
+      parts.add("@closureUnaware");
     }
 
     if (info.hasBaseType()) {
@@ -351,6 +344,10 @@ public final class JSDocInfoPrinter {
       parts.add("@ngInject");
     }
 
+    if (info.isLegacyNamedTsExport()) {
+      parts.add("@legacyNamedTsExport");
+    }
+
     for (String tsType : info.getTsTypes()) {
       parts.add("@tsType " + tsType);
     }
@@ -399,7 +396,7 @@ public final class JSDocInfoPrinter {
   }
 
   private String buildAnnotationWithType(
-      String annotation, JSTypeExpression type, String description) {
+      String annotation, JSTypeExpression type, @Nullable String description) {
     return buildAnnotationWithType(annotation, type.getRoot(), description);
   }
 
@@ -407,7 +404,8 @@ public final class JSDocInfoPrinter {
     return buildAnnotationWithType(annotation, type, null);
   }
 
-  private String buildAnnotationWithType(String annotation, Node type, String description) {
+  private String buildAnnotationWithType(
+      String annotation, Node type, @Nullable String description) {
     StringBuilder sb = new StringBuilder();
     sb.append("@");
     sb.append(annotation);
@@ -450,73 +448,80 @@ public final class JSDocInfoPrinter {
       sb.append(typeNode.getOriginalName());
       return;
     }
-    if (typeNode.getToken() == Token.BANG) {
-      sb.append("!");
-      appendTypeNode(sb, typeNode.getFirstChild());
-    } else if (typeNode.getToken() == Token.EQUALS) {
-      appendTypeNode(sb, typeNode.getFirstChild());
-      sb.append("=");
-    } else if (typeNode.getToken() == Token.PIPE) {
-      sb.append("(");
-      Node lastChild = typeNode.getLastChild();
-      for (Node child = typeNode.getFirstChild(); child != null; child = child.getNext()) {
-        appendTypeNode(sb, child);
-        if (child != lastChild) {
-          sb.append("|");
-        }
-      }
-      sb.append(")");
-    } else if (typeNode.getToken() == Token.ITER_REST) {
-      sb.append("...");
-      if (typeNode.hasChildren() && !typeNode.getFirstChild().isEmpty()) {
+    switch (typeNode.getToken()) {
+      case BANG -> {
+        sb.append("!");
         appendTypeNode(sb, typeNode.getFirstChild());
       }
-    } else if (typeNode.getToken() == Token.STAR) {
-      sb.append("*");
-    } else if (typeNode.getToken() == Token.QMARK) {
-      sb.append("?");
-      if (typeNode.hasChildren()) {
+      case EQUALS -> {
+        appendTypeNode(sb, typeNode.getFirstChild());
+        sb.append("=");
+      }
+      case PIPE -> {
+        sb.append("(");
+        Node lastChild = typeNode.getLastChild();
+        for (Node child = typeNode.getFirstChild(); child != null; child = child.getNext()) {
+          appendTypeNode(sb, child);
+          if (child != lastChild) {
+            sb.append("|");
+          }
+        }
+        sb.append(")");
+      }
+      case ITER_REST -> {
+        sb.append("...");
+        if (typeNode.hasChildren() && !typeNode.getFirstChild().isEmpty()) {
+          appendTypeNode(sb, typeNode.getFirstChild());
+        }
+      }
+      case STAR -> sb.append("*");
+      case QMARK -> {
+        sb.append("?");
+        if (typeNode.hasChildren()) {
+          appendTypeNode(sb, typeNode.getFirstChild());
+        }
+      }
+      case FUNCTION -> appendFunctionNode(sb, typeNode);
+      case LC -> {
+        sb.append("{");
+        Node lb = typeNode.getFirstChild();
+        Node lastColon = lb.getLastChild();
+        for (Node colon = lb.getFirstChild(); colon != null; colon = colon.getNext()) {
+          if (colon.hasChildren()) {
+            sb.append(colon.getFirstChild().getString()).append(":");
+            appendTypeNode(sb, colon.getLastChild());
+          } else {
+            sb.append(colon.getString());
+          }
+          if (colon != lastColon) {
+            sb.append(",");
+          }
+        }
+        sb.append("}");
+      }
+      case VOID -> sb.append("void");
+      case TYPEOF -> {
+        sb.append("typeof ");
         appendTypeNode(sb, typeNode.getFirstChild());
       }
-    } else if (typeNode.isFunction()) {
-      appendFunctionNode(sb, typeNode);
-    } else if (typeNode.getToken() == Token.LC) {
-      sb.append("{");
-      Node lb = typeNode.getFirstChild();
-      Node lastColon = lb.getLastChild();
-      for (Node colon = lb.getFirstChild(); colon != null; colon = colon.getNext()) {
-        if (colon.hasChildren()) {
-          sb.append(colon.getFirstChild().getString()).append(":");
-          appendTypeNode(sb, colon.getLastChild());
-        } else {
-          sb.append(colon.getString());
-        }
-        if (colon != lastColon) {
-          sb.append(",");
-        }
-      }
-      sb.append("}");
-    } else if (typeNode.isVoid()) {
-      sb.append("void");
-    } else if (typeNode.isTypeOf()) {
-      sb.append("typeof ");
-      appendTypeNode(sb, typeNode.getFirstChild());
-    } else {
-      if (typeNode.hasChildren()) {
-        sb.append(typeNode.getString())
-            .append("<");
-        Node child = typeNode.getFirstChild();
-        Node last = child.getLastChild();
-        for (Node type = child.getFirstChild(); type != null; type = type.getNext()) {
+      case BLOCK -> {
+        sb.append("<");
+        Node last = typeNode.getLastChild();
+        for (Node type = typeNode.getFirstChild(); type != null; type = type.getNext()) {
           appendTypeNode(sb, type);
           if (type != last) {
             sb.append(",");
           }
         }
         sb.append(">");
-      } else {
-        sb.append(typeNode.getString());
       }
+      case STRINGLIT -> {
+        sb.append(typeNode.getString());
+        if (typeNode.hasChildren()) {
+          appendTypeNode(sb, typeNode.getOnlyChild());
+        }
+      }
+      default -> throw new IllegalStateException("Unexpected typeNode: " + typeNode);
     }
   }
 

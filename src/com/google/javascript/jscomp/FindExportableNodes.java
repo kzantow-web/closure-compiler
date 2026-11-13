@@ -78,6 +78,12 @@ class FindExportableNodes extends AbstractPostOrderCallback {
       return;
     }
 
+    if (n.isPrivateIdentifier()) {
+      // A private member can't be exported, because its name is valid only inside the class body.
+      t.report(n, EXPORT_ANNOTATION_NOT_ALLOWED);
+      return;
+    }
+
     if (parent.isAssign() && (n.isFunction() || n.isClass())) {
       JSDocInfo parentInfo = parent.getJSDocInfo();
       if (parentInfo != null && parentInfo.isExport()) {
@@ -103,16 +109,14 @@ class FindExportableNodes extends AbstractPostOrderCallback {
 
       case ASSIGN:
         Node grandparent = parent.getParent();
+        Node child = n.getFirstChild();
         if (parent.isExprResult() && !n.getLastChild().isAssign()) {
-          if (grandparent != null
-              && grandparent.isScript()
-              && n.getFirstChild().isQualifiedName()) {
-            export = n.getFirstChild().getQualifiedName();
+          if (grandparent != null && grandparent.isScript() && child.isQualifiedName()) {
+            export = child.getQualifiedName();
             context = n;
             mode = Mode.EXPORT;
-          } else if (allowLocalExports && n.getFirstChild().isGetProp()) {
-            Node target = n.getFirstChild();
-            export = target.getString();
+          } else if (allowLocalExports && child.isGetProp()) {
+            export = child.getString();
             mode = Mode.EXTERN;
           }
         }
@@ -142,6 +146,23 @@ class FindExportableNodes extends AbstractPostOrderCallback {
           }
           break;
         }
+
+      case MEMBER_FIELD_DEF:
+        if (n.isStaticMember()) {
+          Node classNode = parent.getParent();
+          String className = NodeUtil.getName(classNode);
+          if (className == null) {
+            t.report(n, EXPORT_ANNOTATION_NOT_ALLOWED);
+            return;
+          }
+          export = className + "." + n.getString();
+          mode = Mode.EXPORT;
+          context = n;
+        } else if (allowLocalExports) {
+          export = n.getString();
+          mode = Mode.EXTERN;
+        }
+        break;
 
       case MEMBER_FUNCTION_DEF:
         if (parent.getParent().isClass()) {

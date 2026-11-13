@@ -19,14 +19,14 @@ package com.google.javascript.jscomp;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableSet;
 import com.google.javascript.jscomp.NodeTraversal.AbstractPostOrderCallback;
+import com.google.javascript.jscomp.js.RuntimeJsLibManager;
 import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.Node;
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -106,19 +106,19 @@ public final class ConcretizeStaticInheritanceForInlining implements CompilerPas
   static final DiagnosticType DUPLICATE_CLASS =
       DiagnosticType.error("DUPLICATE_CLASS", "Multiple classes cannot share the same name: {0}");
 
-  private final Set<String> duplicateClassNames = new HashSet<>();
+  private final Set<String> duplicateClassNames = new LinkedHashSet<>();
 
   // Property names that may cause issues if they are concretized.
   private static final ImmutableSet<String> BANNED_PROP_NAMES =
       ImmutableSet.of("prototype", "getInstance");
 
+  private final RuntimeJsLibManager.JsLibField inherits;
+
   private static class JavascriptClass {
     // All static members to the class including get set properties.
     private final Set<Node> staticMembers = new LinkedHashSet<>();
     // Keep updated the set of static member names to avoid O(n^2) searches.
-    private final Set<String> staticMemberNames = new HashSet<>();
-    // Collect all the static field accesses to the class.
-    private final Set<Node> staticFieldAccess = new LinkedHashSet<>();
+    private final Set<String> staticMemberNames = new LinkedHashSet<>();
     // Collect all get set properties as defined by Object.defineProperties(...)
     private final Set<String> definedProperties = new LinkedHashSet<>();
 
@@ -134,6 +134,7 @@ public final class ConcretizeStaticInheritanceForInlining implements CompilerPas
 
   public ConcretizeStaticInheritanceForInlining(AbstractCompiler compiler) {
     this.compiler = compiler;
+    this.inherits = compiler.getRuntimeJsLibManager().getJsLibField("$jscomp.inherits");
   }
 
   @Override
@@ -160,49 +161,13 @@ public final class ConcretizeStaticInheritanceForInlining implements CompilerPas
         continue;
       }
       copyStaticMembers(superClass, subClass, inheritsCall, findStaticMembers);
-      copyDeclarations(superClass, subClass, inheritsCall);
-    }
-  }
-
-  /**
-   * When static get/set properties are transpiled, in addition to the Object.defineProperties, they
-   * are declared with stub GETPROP declarations so that the optimizer understands that these
-   * properties exist on the class. When subclassing, we also need to declare these properties on
-   * the subclass so that the optimizer knows they exist.
-   */
-  private void copyDeclarations(
-      JavascriptClass superClass, JavascriptClass subClass, Node inheritsCall) {
-    for (Node staticGetProp : superClass.staticFieldAccess) {
-      checkState(staticGetProp.isGetProp());
-      String memberName = staticGetProp.getString();
-      // We only copy declarations that have corresponding Object.defineProperties
-      if (!superClass.definedProperties.contains(memberName)) {
-        continue;
-      }
-      // If the subclass already declares the property no need to redeclare it.
-      if (isOverriden(subClass, memberName)) {
-        continue;
-      }
-      Node subclassNameNode = inheritsCall.getSecondChild();
-      Node getprop = IR.getprop(subclassNameNode.cloneTree(), memberName);
-
-      getprop.setJSDocInfo(null);
-      Node declaration = IR.exprResult(getprop);
-      declaration.srcrefTreeIfMissing(inheritsCall);
-      Node parent = inheritsCall.getParent();
-      declaration.insertBefore(parent);
-      compiler.reportChangeToEnclosingScope(parent);
-
-      // Copy over field access so that subclasses of this subclass can also make the declarations
-      if (!subClass.definedProperties.contains(memberName)) {
-        subClass.staticFieldAccess.add(getprop);
-        subClass.definedProperties.add(memberName);
-      }
     }
   }
 
   private void copyStaticMembers(
-      JavascriptClass superClass, JavascriptClass subClass, Node inheritsCall,
+      JavascriptClass superClass,
+      JavascriptClass subClass,
+      Node inheritsCall,
       FindStaticMembers findStaticMembers) {
     for (Node staticMember : superClass.staticMembers) {
       checkState(staticMember.isAssign(), staticMember);
@@ -275,38 +240,24 @@ public final class ConcretizeStaticInheritanceForInlining implements CompilerPas
     final List<Node> inheritsCalls = new ArrayList<>();
     // Store the order we find class definitions and static fields.  Copied statics must occur
     // after both the namespace and the copied property are defined.
-    final Map<Node, Integer> nodeOrder = new HashMap<>();
+    final Map<Node, Integer> nodeOrder = new LinkedHashMap<>();
 
     @Override
     public void visit(NodeTraversal t, Node n, Node parent) {
       switch (n.getToken()) {
-        case CALL:
-          if (n.getFirstChild().matchesQualifiedName(Es6RewriteClass.INHERITS)) {
+        case CALL -> {
+          if (inherits.matches(n.getFirstChild())) {
             inheritsCalls.add(n);
             nodeOrder.put(n, nodeOrder.size());
           }
           if (NodeUtil.isObjectDefinePropertiesDefinition(n)) {
             visitDefinedPropertiesCall(t, n);
           }
-          break;
-        case CONST:
-        case LET:
-        case VAR:
-          visitVariableDeclaration(n);
-          break;
-        case ASSIGN:
-          visitAssign(t, n);
-          break;
-        case GETPROP:
-          if (parent.isExprResult()) {
-            visitGetProp(t, n);
-          }
-          break;
-        case FUNCTION:
-          visitFunctionClassDef(n);
-          break;
-        default:
-          break;
+        }
+        case CONST, LET, VAR -> visitVariableDeclaration(n);
+        case ASSIGN -> visitAssign(t, n);
+        case FUNCTION -> visitFunctionClassDef(n);
+        default -> {}
       }
     }
 
@@ -325,6 +276,9 @@ public final class ConcretizeStaticInheritanceForInlining implements CompilerPas
       JSDocInfo classInfo = NodeUtil.getBestJSDocInfo(n);
       if (classInfo != null && classInfo.isConstructor()) {
         String name = NodeUtil.getName(n);
+        if (name == null) {
+          return;
+        }
         if (classByAlias.containsKey(name)) {
           duplicateClassNames.add(name);
         } else {
@@ -334,15 +288,10 @@ public final class ConcretizeStaticInheritanceForInlining implements CompilerPas
     }
 
     private void setAlias(String original, String alias) {
+      Preconditions.checkNotNull(original, "original is null");
+      Preconditions.checkNotNull(alias, "alias is null");
       checkArgument(classByAlias.containsKey(original));
       classByAlias.put(alias, classByAlias.get(original));
-    }
-
-    private void visitGetProp(NodeTraversal t, Node n) {
-      Node classNode = n.getFirstChild();
-      if (isReferenceToClass(t, classNode)) {
-        classByAlias.get(classNode.getQualifiedName()).staticFieldAccess.add(n);
-      }
     }
 
     private void visitAssign(NodeTraversal t, Node n) {
@@ -369,7 +318,7 @@ public final class ConcretizeStaticInheritanceForInlining implements CompilerPas
         return;
       }
       String maybeOriginalName = child.getFirstChild().getQualifiedName();
-      if (classByAlias.containsKey(maybeOriginalName)) {
+      if (maybeOriginalName != null && classByAlias.containsKey(maybeOriginalName)) {
         String maybeAlias = child.getQualifiedName();
         if (maybeAlias != null) {
           setAlias(maybeOriginalName, maybeAlias);

@@ -17,7 +17,7 @@
 package com.google.javascript.jscomp.colors;
 
 import static com.google.common.truth.Truth.assertThat;
-import static com.google.javascript.rhino.testing.Asserts.assertThrows;
+import static org.junit.Assert.assertThrows;
 
 import com.google.common.collect.ImmutableSet;
 import com.google.protobuf.ByteString;
@@ -118,7 +118,7 @@ public final class ColorIdTest {
     assertThat(ColorId.fromUnsigned((byte) -1).toString()).isEqualTo("ff");
     // -1 is an int by default
     assertThat(ColorId.fromUnsigned(-1).toString()).isEqualTo("ffffffff");
-    assertThat(ColorId.fromUnsigned((long) -1).toString()).isEqualTo("ffffffffffffffff");
+    assertThat(ColorId.fromUnsigned(-1L).toString()).isEqualTo("ffffffffffffffff");
   }
 
   @Test

@@ -16,10 +16,10 @@
 
 package com.google.javascript.jscomp.deps;
 
-import static com.google.common.collect.ImmutableSortedSet.toImmutableSortedSet;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.joining;
 
-import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -30,8 +30,7 @@ import com.google.javascript.jscomp.JSError;
 import com.google.javascript.jscomp.deps.ModuleLoader.ModuleResolverFactory;
 import com.google.javascript.jscomp.deps.ModuleLoader.PathEscaper;
 import java.util.Comparator;
-import java.util.Set;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Limited superset of the {@link BrowserModuleResolver} that allows for replacing some path
@@ -68,15 +67,14 @@ public class BrowserWithTransformedPrefixesModuleResolver extends ModuleResolver
    * Struct of prefix and replacement. Has a natural ordering from longest prefix to shortest
    * prefix.
    */
-  @AutoValue
-  abstract static class PrefixReplacement {
-    abstract String prefix();
-
-    abstract String replacement();
+  record PrefixReplacement(String prefix, String replacement) {
+    PrefixReplacement {
+      requireNonNull(prefix, "prefix");
+      requireNonNull(replacement, "replacement");
+    }
 
     public static PrefixReplacement of(String prefix, String replacement) {
-      return new AutoValue_BrowserWithTransformedPrefixesModuleResolver_PrefixReplacement(
-          prefix, replacement);
+      return new PrefixReplacement(prefix, replacement);
     }
   }
 
@@ -90,17 +88,16 @@ public class BrowserWithTransformedPrefixesModuleResolver extends ModuleResolver
       PathEscaper pathEscaper,
       ImmutableMap<String, String> prefixReplacements) {
     super(modulePaths, moduleRootPaths, errorHandler, pathEscaper);
-    Set<PrefixReplacement> p =
+    this.prefixReplacements =
         prefixReplacements.entrySet().stream()
             .map(entry -> PrefixReplacement.of(entry.getKey(), entry.getValue()))
-            .collect(
-                toImmutableSortedSet(
-                    // Sort by length in descending order to prefixes are applied most specific to
-                    // least specific.
-                    Comparator.<PrefixReplacement>comparingInt(r -> r.prefix().length())
-                        .reversed()
-                        .thenComparing(PrefixReplacement::prefix)));
-    this.prefixReplacements = ImmutableSet.copyOf(p);
+            .sorted(
+                // Sort by length in descending order to prefixes are applied most specific to
+                // least specific.
+                Comparator.<PrefixReplacement>comparingInt(r -> r.prefix().length())
+                    .reversed()
+                    .thenComparing(PrefixReplacement::prefix))
+            .collect(toImmutableSet());
     this.expectedPrefixes =
         this.prefixReplacements.stream()
             .map(PrefixReplacement::prefix)
@@ -108,23 +105,31 @@ public class BrowserWithTransformedPrefixesModuleResolver extends ModuleResolver
             .collect(joining(", "));
   }
 
-  @Nullable
-  @Override
-  public String resolveJsModule(
-      String scriptAddress, String moduleAddress, String sourcename, int lineno, int colno) {
-    String transformedAddress = moduleAddress;
+  private @Nullable String replacePathPrefixes(String moduleAddress) {
+    if (moduleAddress == null) {
+      return null;
+    }
 
-    boolean replaced = false;
+    String transformedAddress = moduleAddress;
 
     for (PrefixReplacement prefixReplacement : prefixReplacements) {
       if (moduleAddress.startsWith(prefixReplacement.prefix())) {
         transformedAddress =
             prefixReplacement.replacement()
                 + moduleAddress.substring(prefixReplacement.prefix().length());
-        replaced = true;
         break;
       }
     }
+
+    return transformedAddress;
+  }
+
+  @Override
+  public @Nullable String resolveJsModule(
+      String scriptAddress, String moduleAddress, String sourcename, int lineno, int colno) {
+    String transformedAddress = replacePathPrefixes(moduleAddress);
+
+    boolean replaced = transformedAddress != null && !transformedAddress.equals(moduleAddress);
 
     // If ambiguous after the loop it was not transformed and the original moduleAddress is
     // ambiguous with an unrecognized prefix. Allow transformed paths to be ambiguous after
@@ -142,13 +147,25 @@ public class BrowserWithTransformedPrefixesModuleResolver extends ModuleResolver
       return null;
     }
 
-    String loadAddress = locate(scriptAddress, transformedAddress);
-    if (transformedAddress == null) {
-      errorHandler.report(
-          CheckLevel.WARNING,
-          JSError.make(sourcename, lineno, colno, ModuleLoader.LOAD_WARNING, moduleAddress));
+    // A null load address is not an error for this resolver, because it is expected that the
+    // module may be supplied at runtime.
+    return locate(scriptAddress, transformedAddress);
+  }
+
+  @Override
+  public @Nullable String resolveJsModuleSilently(String scriptAddress, String moduleAddress) {
+    String transformedAddress = replacePathPrefixes(moduleAddress);
+
+    boolean replaced = transformedAddress != null && !transformedAddress.equals(moduleAddress);
+
+    // If ambiguous after the loop it was not transformed and the original moduleAddress is
+    // ambiguous with an unrecognized prefix. Allow transformed paths to be ambiguous after
+    // transformation to maybe match how files are passed to the compiler.
+    if (!replaced && ModuleLoader.isAmbiguousIdentifier(transformedAddress)) {
+      return null;
     }
-    return loadAddress;
+
+    return locate(scriptAddress, transformedAddress);
   }
 
   @Override

@@ -18,7 +18,9 @@ package com.google.javascript.jscomp;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.truth.Truth.assertThat;
 import static com.google.javascript.jscomp.testing.ColorSubject.assertThat;
+import static org.junit.Assert.assertThrows;
 
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
@@ -27,16 +29,13 @@ import com.google.javascript.jscomp.colors.Color;
 import com.google.javascript.jscomp.colors.StandardColors;
 import com.google.javascript.jscomp.testing.JSChunkGraphBuilder;
 import com.google.javascript.rhino.Node;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
-/**
- * Tests for {@link DevirtualizeMethods}
- *
- */
+/** Tests for {@link DevirtualizeMethods} */
 @RunWith(JUnit4.class)
 public final class DevirtualizeMethodsTest extends CompilerTestCase {
   private static final String EXTERNAL_SYMBOLS =
@@ -46,63 +45,57 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
     super(EXTERNAL_SYMBOLS);
   }
 
-  @Override
-  protected int getNumRepetitions() {
-    // run pass once.
-    return 1;
-  }
-
-  @Override
   @Before
-  public void setUp() throws Exception {
-    super.setUp();
+  public void customSetUp() throws Exception {
     enableNormalize(); // Required for `OptimizeCalls`.
     disableTypeCheck();
   }
 
-  /**
-   * Combine source strings using ';' as the separator.
-   */
-  private static String semicolonJoin(String ... parts) {
+  /** Combine source strings using ';' as the separator. */
+  private static String semicolonJoin(String... parts) {
     return Joiner.on(";").join(parts);
   }
 
   @Test
   public void testRewritePrototypeMethodsWithCorrectColors() {
+    // TODO(bradfordcsmith): Stop normalizing the expected output or document why it is necessary.
+    enableNormalizeExpectedOutput();
     String input =
-        lines(
-            "/** @constructor */",
-            "function A() { this.x = 3; }",
-            "A: A;",
-            "/** @return {number} */",
-            "A.prototype.foo = function() { return this.x; };",
-            "/** @param {number} p",
-            "    @return {number} */",
-            "A.prototype.bar = function(p) { return this.x; };",
-            "A.prototype.baz = function() {};",
-            "var o = new A();",
-            "FOO_RESULT: o.foo();",
-            "BAR_RESULT: o.bar(2);",
-            "BAZ_RESULT: o.baz()");
+        """
+        /** @constructor */
+        function A() { this.x = 3; }
+        A: A;
+        /** @return {number} */
+        A.prototype.foo = function() { return this.x; };
+        /** @param {number} p
+            @return {number} */
+        A.prototype.bar = function(p) { return this.x; };
+        A.prototype.baz = function() {};
+        var o = new A();
+        FOO_RESULT: o.foo();
+        BAR_RESULT: o.bar(2);
+        BAZ_RESULT: o.baz()
+        """;
     String expected =
-        lines(
-            "/** @constructor */",
-            "function A(){ this.x = 3; }",
-            "A: A;",
-            "var JSCompiler_StaticMethods_foo = ",
-            "  function(JSCompiler_StaticMethods_foo$self) {",
-            "    return JSCompiler_StaticMethods_foo$self.x",
-            "  };",
-            "var JSCompiler_StaticMethods_bar = ",
-            "  function(JSCompiler_StaticMethods_bar$self, p) {",
-            "    return JSCompiler_StaticMethods_bar$self.x",
-            "  };",
-            "var JSCompiler_StaticMethods_baz = ",
-            "  function(JSCompiler_StaticMethods_baz$self) {};",
-            "var o = new A();",
-            "FOO_RESULT: JSCompiler_StaticMethods_foo(o);",
-            "BAR_RESULT: JSCompiler_StaticMethods_bar(o, 2);",
-            "BAZ_RESULT: JSCompiler_StaticMethods_baz(o)");
+        """
+        /** @constructor */
+        function A(){ this.x = 3; }
+        A: A;
+        var JSCompiler_StaticMethods_foo =
+          function(JSCompiler_StaticMethods_foo$self) {
+            return JSCompiler_StaticMethods_foo$self.x
+          };
+        var JSCompiler_StaticMethods_bar =
+          function(JSCompiler_StaticMethods_bar$self, p) {
+            return JSCompiler_StaticMethods_bar$self.x
+          };
+        var JSCompiler_StaticMethods_baz =
+          function(JSCompiler_StaticMethods_baz$self) {};
+        var o = new A();
+        FOO_RESULT: JSCompiler_StaticMethods_foo(o);
+        BAR_RESULT: JSCompiler_StaticMethods_bar(o, 2);
+        BAZ_RESULT: JSCompiler_StaticMethods_baz(o)
+        """;
 
     enableTypeCheck();
     replaceTypesWithColors();
@@ -124,9 +117,9 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
     assertThat(barResultType).isEqualTo(StandardColors.NUMBER);
     assertThat(bazResultType).isEqualTo(StandardColors.NULL_OR_VOID);
 
-    assertThat(fooType).isNotEqualTo(StandardColors.UNKNOWN);
-    assertThat(barType).isNotEqualTo(StandardColors.UNKNOWN);
-    assertThat(bazType).isNotEqualTo(StandardColors.UNKNOWN);
+    assertThat(fooType).isEqualTo(StandardColors.TOP_FUNCTION);
+    assertThat(barType).isEqualTo(StandardColors.TOP_FUNCTION);
+    assertThat(bazType).isEqualTo(StandardColors.TOP_FUNCTION);
   }
 
   private Node getLabelledExpression(String label) {
@@ -138,8 +131,7 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
         label);
   }
 
-  @Nullable
-  private static Node getLabelledExpressionIfPresent(String label, Node root) {
+  private static @Nullable Node getLabelledExpressionIfPresent(String label, Node root) {
     if (root.isLabel() && root.getFirstChild().getString().equals(label)) {
       Node labelledBlock = root.getSecondChild();
       checkState(labelledBlock.isBlock(), labelledBlock);
@@ -161,27 +153,27 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
   @Test
   public void testRewriteChained() {
     String source =
-        lines(
-            "A.prototype.foo = function(){return this.b};",
-            "B.prototype.bar = function(){};",
-            "o.foo().bar()");
+        """
+        A.prototype.foo = function(){return this.b};
+        B.prototype.bar = function(){};
+        o.foo().bar()
+        """;
 
     String expected =
-        lines(
-            "var JSCompiler_StaticMethods_foo = ",
-            "function(JSCompiler_StaticMethods_foo$self) {",
-            "  return JSCompiler_StaticMethods_foo$self.b",
-            "};",
-            "var JSCompiler_StaticMethods_bar = ",
-            "function(JSCompiler_StaticMethods_bar$self) {",
-            "};",
-            "JSCompiler_StaticMethods_bar(JSCompiler_StaticMethods_foo(o))");
+        """
+        var JSCompiler_StaticMethods_foo =
+        function(JSCompiler_StaticMethods_foo$self) {
+          return JSCompiler_StaticMethods_foo$self.b
+        };
+        var JSCompiler_StaticMethods_bar =
+        function(JSCompiler_StaticMethods_bar$self) {
+        };
+        JSCompiler_StaticMethods_bar(JSCompiler_StaticMethods_foo(o))
+        """;
     test(source, expected);
   }
 
-  /**
-   * Inputs for declaration used as an r-value tests.
-   */
+  /** Inputs for declaration used as an r-value tests. */
   private static class NoRewriteDeclarationUsedAsRValue {
     static final String DECL = "a.prototype.foo = function() {}";
     static final String CALL = "o.foo()";
@@ -191,50 +183,85 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
 
   @Test
   public void testRewriteDeclIsExpressionStatement() {
-    test(semicolonJoin(NoRewriteDeclarationUsedAsRValue.DECL,
-                       NoRewriteDeclarationUsedAsRValue.CALL),
-         "var JSCompiler_StaticMethods_foo =" +
-         "function(JSCompiler_StaticMethods_foo$self) {};" +
-         "JSCompiler_StaticMethods_foo(o)");
+    test(
+        semicolonJoin(NoRewriteDeclarationUsedAsRValue.DECL, NoRewriteDeclarationUsedAsRValue.CALL),
+        """
+        var JSCompiler_StaticMethods_foo =
+        function(JSCompiler_StaticMethods_foo$self) {};
+        JSCompiler_StaticMethods_foo(o)
+        """);
   }
 
   @Test
   public void testNoRewriteDeclUsedAsAssignmentRhs() {
-    testSame(semicolonJoin("var c = " + NoRewriteDeclarationUsedAsRValue.DECL,
-                           NoRewriteDeclarationUsedAsRValue.CALL));
+    testSame(
+        semicolonJoin(
+            "var c = " + NoRewriteDeclarationUsedAsRValue.DECL,
+            NoRewriteDeclarationUsedAsRValue.CALL));
   }
 
   @Test
   public void testNoRewriteDeclUsedAsCallArgument() {
-    testSame(semicolonJoin("f(" + NoRewriteDeclarationUsedAsRValue.DECL + ")",
-                           NoRewriteDeclarationUsedAsRValue.CALL));
+    testSame(
+        semicolonJoin(
+            "f(" + NoRewriteDeclarationUsedAsRValue.DECL + ")",
+            NoRewriteDeclarationUsedAsRValue.CALL));
   }
 
   @Test
   public void testRewrite_ifDefined_unconditionally() {
     test(
-        lines(
-            "function a(){}",
-            "a.prototype.foo = function() {return this.x};",
-            "var o = new a;",
-            "o.foo()"),
-        lines(
-            "function a(){}",
-            "var JSCompiler_StaticMethods_foo = ",
-            "function(JSCompiler_StaticMethods_foo$self) {",
-            "  return JSCompiler_StaticMethods_foo$self.x",
-            "};",
-            "var o = new a;",
-            "JSCompiler_StaticMethods_foo(o);"));
+        """
+        function a(){}
+        a.prototype.foo = function() {return this.x};
+        var o = new a;
+        o.foo()
+        """,
+        """
+        function a(){}
+        var JSCompiler_StaticMethods_foo =
+        function(JSCompiler_StaticMethods_foo$self) {
+          return JSCompiler_StaticMethods_foo$self.x
+        };
+        var o = new a;
+        JSCompiler_StaticMethods_foo(o);
+        """);
+  }
+
+  @Test
+  public void noRewrite_forPropertyNamesAccessedReflectively() {
+    test(
+        externs("function use() {}"),
+        srcs(
+            """
+            class C { m() {} n() {} }
+            const c = new C();
+            c.m();
+            c.n();
+            // this call should prevent devirtualizing m() but not n()
+            use(C.prototype, goog.reflect.objectProperty('m', C.prototype));
+            """),
+        expected(
+            """
+            var JSCompiler_StaticMethods_n = function(JSCompiler_StaticMethods_n$self) {};
+            class C { m() {} }
+            const c = new C();
+            c.m();
+            JSCompiler_StaticMethods_n(c);
+            use(C.prototype, goog.reflect.objectProperty('m', C.prototype));
+            """));
   }
 
   private void testNoRewriteIfDefinitionSiteBetween(String prefix, String suffix) {
     testSame(
-        lines(
-            "function a(){}",
-            prefix + "a.prototype.foo = function() {return this.x}" + suffix + ";",
-            "var o = new a;",
-            "o.foo()"));
+        """
+        function a(){}
+        _PREFIX_a.prototype.foo = function() {return this.x}_SUFFIX_;
+        var o = new a;
+        o.foo()
+        """
+            .replace("_PREFIX_", prefix)
+            .replace("_SUFFIX_", suffix));
   }
 
   @Test
@@ -244,6 +271,8 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
 
   @Test
   public void testNoRewrite_ifDefinedIn_loopScope() {
+    // TODO(bradfordcsmith): Stop normalizing the expected output or document why it is necessary.
+    enableNormalizeExpectedOutput();
     testNoRewriteIfDefinitionSiteBetween("while (true) ", "");
   }
 
@@ -259,6 +288,8 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
 
   @Test
   public void testNoRewrite_ifDefinedIn_arrowFunctionScope() {
+    // TODO(bradfordcsmith): Stop normalizing the expected output or document why it is necessary.
+    enableNormalizeExpectedOutput();
     testNoRewriteIfDefinitionSiteBetween("() => ", "");
   }
 
@@ -310,18 +341,22 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
   private void testRewritePreservesFunctionKind(String fnKeyword) {
     test(
         srcs(
-            lines(
-                "function a(){}",
-                "a.prototype.foo = " + fnKeyword + "() { return 0; };",
-                "",
-                "(new a()).foo();")),
+            """
+            function a(){}
+            a.prototype.foo = FN_KEYWORD() { return 0; };
+
+            (new a()).foo();
+            """
+                .replace("FN_KEYWORD", fnKeyword)),
         expected(
-            lines(
-                "function a(){}",
-                "var JSCompiler_StaticMethods_foo =",
-                "    " + fnKeyword + "(JSCompiler_StaticMethods_foo$self) { return 0; };",
-                "",
-                "JSCompiler_StaticMethods_foo(new a());")));
+            """
+            function a(){}
+            var JSCompiler_StaticMethods_foo =
+                FN_KEYWORD(JSCompiler_StaticMethods_foo$self) { return 0; };
+
+            JSCompiler_StaticMethods_foo(new a());
+            """
+                .replace("FN_KEYWORD", fnKeyword)));
   }
 
   @Test
@@ -343,68 +378,76 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
   public void testRewrite_replacesMultipleThisRefreences() {
     test(
         srcs(
-            lines(
-                "class Foo {",
-                "  a() {",
-                "     alert(this);",
-                "     alert(this, this);",
-                "  }",
-                "}",
-                "new Foo().a();")),
+            """
+            class Foo {
+              a() {
+                 alert(this);
+                 alert(this, this);
+              }
+            }
+            new Foo().a();
+            """),
         expected(
-            lines(
-                "var JSCompiler_StaticMethods_a = function(JSCompiler_StaticMethods_a$self) {",
-                "  alert(JSCompiler_StaticMethods_a$self);",
-                "  alert(JSCompiler_StaticMethods_a$self, JSCompiler_StaticMethods_a$self);",
-                "};",
-                "",
-                "class Foo { }",
-                "JSCompiler_StaticMethods_a(new Foo());")));
+            """
+            var JSCompiler_StaticMethods_a = function(JSCompiler_StaticMethods_a$self) {
+              alert(JSCompiler_StaticMethods_a$self);
+              alert(JSCompiler_StaticMethods_a$self, JSCompiler_StaticMethods_a$self);
+            };
+
+            class Foo { }
+            JSCompiler_StaticMethods_a(new Foo());
+            """));
   }
 
   @Test
   public void testRewrite_defaultParams_usesThisReference() {
     test(
         srcs(
-            lines(
-                "class Foo {", //
-                "  bar(y = this) { return y; }",
-                "}",
-                "",
-                // We need at least one normal call to trigger rewriting.
-                "x.bar();")),
+            """
+            class Foo {
+              bar(y = this) { return y; }
+            }
+
+            // We need at least one normal call to trigger rewriting.
+            x.bar();
+            """),
         expected(
-            lines(
-                "var JSCompiler_StaticMethods_bar = function(",
-                "    JSCompiler_StaticMethods_bar$self,",
-                "    y = JSCompiler_StaticMethods_bar$self) {",
-                "  return y;",
-                "};",
-                "class Foo { }", //
-                "",
-                "JSCompiler_StaticMethods_bar(x);")));
+            """
+            var JSCompiler_StaticMethods_bar = function(
+                JSCompiler_StaticMethods_bar$self,
+                y = JSCompiler_StaticMethods_bar$self) {
+              return y;
+            };
+            class Foo { }
+
+            JSCompiler_StaticMethods_bar(x);
+            """));
   }
 
   @Test
   public void testNoRewrite_defaultParams_usesSuperReference() {
     testSame(
-        lines(
-            "class Foo {", //
-            "  bar(y = super.toString()) { return y; }",
-            "}",
-            "",
-            // We need at least one normal call to trigger rewriting.
-            "x.bar();"));
+        """
+        class Foo {
+          bar(y = super.toString()) { return y; }
+        }
+
+        // We need at least one normal call to trigger rewriting.
+        x.bar();
+        """);
   }
 
   @Test
   public void testNoRewrite_ifDefinedByArrow() {
+    // TODO(bradfordcsmith): Stop normalizing the expected output or document why it is necessary.
+    enableNormalizeExpectedOutput();
     testSame(
-        lines(
-            "function a(){};", //
-            "a.prototype.foo = () => 5;",
-            "",
-            "(new a()).foo();"));
+        """
+        function a(){};
+        a.prototype.foo = () => 5;
+
+        (new a()).foo();
+        """);
   }
 
   @Test
@@ -416,73 +459,79 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
   @Test
   public void testRewrite_ifMultipleIdenticalDefinitions() {
     test(
-        lines(
-            "function A(){};",
-            "A.prototype.getFoo = function() { return 1; }; ",
-            "",
-            "function B(){};",
-            "B.prototype.getFoo = function() { return 1; }; ",
-            "",
-            "x.getFoo();"),
-        lines(
-            "function A() {}; ",
-            "var JSCompiler_StaticMethods_getFoo =",
-            "    function(JSCompiler_StaticMethods_getFoo$self) { return 1; };",
-            "",
-            "function B(){};",
-            "B.prototype.getFoo = function() { return 1 };", // Dead definition.
-            "",
-            "JSCompiler_StaticMethods_getFoo(x);"));
+        """
+        function A(){};
+        A.prototype.getFoo = function() { return 1; };
+
+        function B(){};
+        B.prototype.getFoo = function() { return 1; };
+
+        x.getFoo();
+        """,
+        """
+        function A() {};
+        var JSCompiler_StaticMethods_getFoo =
+            function(JSCompiler_StaticMethods_getFoo$self) { return 1; };
+
+        function B(){};
+        B.prototype.getFoo = function() { return 1 }; // Dead definition.
+
+        JSCompiler_StaticMethods_getFoo(x);
+        """);
   }
 
   @Test
   public void testRewrite_ifMultipleIdenticalDefinitions_ensuresDefinitionBeforeInvocations() {
     test(
-        lines(
-            "function A() {};",
-            "A.prototype.getFoo = function() { return 1; }; ",
-            "",
-            "x.getFoo();",
-            "",
-            "function B() {};",
-            "B.prototype.getFoo = function() { return 1; }; ",
-            "",
-            "y.getFoo();"),
-        lines(
-            "function A() {}; ",
-            "var JSCompiler_StaticMethods_getFoo =",
-            "    function(JSCompiler_StaticMethods_getFoo$self) { return 1; };",
-            "",
-            "JSCompiler_StaticMethods_getFoo(x);",
-            "",
-            "function B() {};",
-            "B.prototype.getFoo=function() { return 1; };", // Dead definition.
-            "",
-            "JSCompiler_StaticMethods_getFoo(y);"));
+        """
+        function A() {};
+        A.prototype.getFoo = function() { return 1; };
+
+        x.getFoo();
+
+        function B() {};
+        B.prototype.getFoo = function() { return 1; };
+
+        y.getFoo();
+        """,
+        """
+        function A() {};
+        var JSCompiler_StaticMethods_getFoo =
+            function(JSCompiler_StaticMethods_getFoo$self) { return 1; };
+
+        JSCompiler_StaticMethods_getFoo(x);
+
+        function B() {};
+        B.prototype.getFoo=function() { return 1; }; // Dead definition.
+
+        JSCompiler_StaticMethods_getFoo(y);
+        """);
   }
 
   @Test
   public void testRewrite_ifMultipleIdenticalDefinitions_withThis() {
     test(
-        lines(
-            "function A() {};",
-            "A.prototype.getFoo = function() { return this._foo + 1; };",
-            "",
-            "function B() {};",
-            "B.prototype.getFoo = function() { return this._foo + 1; }; ",
-            "",
-            "x.getFoo();"),
-        lines(
-            "function A() {}; ",
-            "var JSCompiler_StaticMethods_getFoo =",
-            "    function(JSCompiler_StaticMethods_getFoo$self) {",
-            "      return JSCompiler_StaticMethods_getFoo$self._foo + 1",
-            "    };",
-            "",
-            "function B() {};",
-            "B.prototype.getFoo = function() { return this._foo + 1 };", // Dead definition.
-            "",
-            "JSCompiler_StaticMethods_getFoo(x);"));
+        """
+        function A() {};
+        A.prototype.getFoo = function() { return this._foo + 1; };
+
+        function B() {};
+        B.prototype.getFoo = function() { return this._foo + 1; };
+
+        x.getFoo();
+        """,
+        """
+        function A() {};
+        var JSCompiler_StaticMethods_getFoo =
+            function(JSCompiler_StaticMethods_getFoo$self) {
+              return JSCompiler_StaticMethods_getFoo$self._foo + 1
+            };
+
+        function B() {};
+        B.prototype.getFoo = function() { return this._foo + 1 }; // Dead definition.
+
+        JSCompiler_StaticMethods_getFoo(x);
+        """);
   }
 
   @Test
@@ -491,39 +540,38 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
     // the naming conflict is resolved before devirtualization even begins. The change in names
     // invalidates devirtualization by making the definition subtrees unequal.
     test(
-        lines(
-            // Note how `f` refers to different objects in the function bodies, even though the
-            // bodies are node-wise identical.
-            "function A() {};",
-            "A.prototype.getFoo = function f() { return f.prop; }; ",
-            "",
-            "function B() {};",
-            "B.prototype.getFoo = function f() { return f.prop; }; ",
-            "",
-            "x.getFoo();"),
-        lines(
-            "function A() {};",
-            "A.prototype.getFoo = function f() { return f.prop; }; ",
-            "",
-            "function B() {};",
-            "B.prototype.getFoo = function f$jscomp$1() { return f$jscomp$1.prop; }; ",
-            "",
-            "x.getFoo();"));
+        """
+        function A() {};
+        A.prototype.getFoo = function f() { return f.prop; };
+
+        function B() {};
+        B.prototype.getFoo = function f() { return f.prop; };
+
+        x.getFoo();
+        """,
+        """
+        function A() {};
+        A.prototype.getFoo = function f() { return f.prop; };
+
+        function B() {};
+        B.prototype.getFoo = function f$jscomp$1() { return f$jscomp$1.prop; };
+
+        x.getFoo();
+        """);
   }
 
   @Test
   public void testNoRewrite_ifMultipleDistinctDefinitions() {
     testSame(
-        lines(
-            "function A(){}; A.prototype.getFoo = function() { return 1; }; ",
-            "function B(){}; B.prototype.getFoo = function() { return 2; }; ",
-            "var x = Math.random() ? new A() : new B();",
-            "alert(x.getFoo());"));
+        """
+        function A(){}; A.prototype.getFoo = function() { return 1; };
+        function B(){}; B.prototype.getFoo = function() { return 2; };
+        var x = Math.random() ? new A() : new B();
+        alert(x.getFoo());
+        """);
   }
 
-  /**
-   * Inputs for object literal tests.
-   */
+  /** Inputs for object literal tests. */
   private static class NoRewritePrototypeObjectLiteralsTestInput {
     static final String REGULAR = "b.prototype.foo = function() { return 1; }";
     static final String OBJ_LIT = "a.prototype = {foo : function() { return 2; }}";
@@ -538,10 +586,11 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
         semicolonJoin(
             NoRewritePrototypeObjectLiteralsTestInput.REGULAR,
             NoRewritePrototypeObjectLiteralsTestInput.CALL),
-        lines(
-            "var JSCompiler_StaticMethods_foo = ",
-            "function(JSCompiler_StaticMethods_foo$self) { return 1; };",
-            "JSCompiler_StaticMethods_foo(o)"));
+        """
+        var JSCompiler_StaticMethods_foo =
+        function(JSCompiler_StaticMethods_foo$self) { return 1; };
+        JSCompiler_StaticMethods_foo(o)
+        """);
   }
 
   @Test
@@ -550,20 +599,83 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
         semicolonJoin(
             NoRewritePrototypeObjectLiteralsTestInput.OBJ_LIT,
             NoRewritePrototypeObjectLiteralsTestInput.CALL),
-        lines(
-            "var JSCompiler_StaticMethods_foo = function(JSCompiler_StaticMethods_foo$self) {",
-            "  return 2;",
-            "};",
-            "a.prototype={};",
-            "",
-            "JSCompiler_StaticMethods_foo(o)"));
+        """
+        var JSCompiler_StaticMethods_foo = function(JSCompiler_StaticMethods_foo$self) {
+          return 2;
+        };
+        a.prototype={};
+
+        JSCompiler_StaticMethods_foo(o)
+        """);
+  }
+
+  @Test
+  public void testRewrite_definedUsingProtoObjectLit_shorthandMethod() {
+    test(
+        "a.prototype = {foo() { return 2; }}; o.foo()",
+        """
+        var JSCompiler_StaticMethods_foo = function(JSCompiler_StaticMethods_foo$self) {
+          return 2;
+        };
+        a.prototype={};
+        JSCompiler_StaticMethods_foo(o)
+        """);
+  }
+
+  // Methods on plain object literals are left to CollapseProperties, which (unlike this pass)
+  // checks whether the object escapes. Plain objects are routinely enumerated, copied, or
+  // mixed in (e.g. Polymer behaviors), so removing a method from one is unsafe in general.
+
+  @Test
+  public void testNoRewrite_definedUsingPlainObjectLit() {
+    testSame(
+        """
+        const obj = {
+          x: 1,
+          foo: function() {
+            return this.x;
+          },
+        };
+        use(obj);
+        obj.foo();
+        """);
+  }
+
+  @Test
+  public void testNoRewrite_definedUsingPlainObjectLit_shorthandMethod() {
+    // Regression test for b/571987051: shorthand methods were devirtualized even though the
+    // equivalent `foo: function() {}` above was not. This went unnoticed in ES5 output because
+    // shorthand methods were transpiled to `foo: function() {}` before this pass ran.
+    testSame(
+        """
+        const obj = {
+          x: 1,
+          foo() {
+            return this.x;
+          },
+        };
+        use(obj);
+        obj.foo();
+        """);
+  }
+
+  @Test
+  public void testNoRewrite_definedUsingAnonymousObjectLit_shorthandMethod() {
+    testSame("use({foo() { return 1; }}); o.foo();");
+  }
+
+  @Test
+  public void testNoRewrite_definedUsingObjectLitNestedInProtoObjectLit_shorthandMethod() {
+    testSame("a.prototype = {bar: {foo() { return 1; }}}; o.foo();");
   }
 
   @Test
   public void testNoRewrite_multipleDefinitions_definedUsingProtoObjectLit_definedUsingGetProp() {
-    testSame(semicolonJoin(NoRewritePrototypeObjectLiteralsTestInput.OBJ_LIT,
-                           NoRewritePrototypeObjectLiteralsTestInput.REGULAR,
-                           NoRewritePrototypeObjectLiteralsTestInput.CALL));
+    testSame(
+        semicolonJoin(
+            NoRewritePrototypeObjectLiteralsTestInput.OBJ_LIT,
+            NoRewritePrototypeObjectLiteralsTestInput.REGULAR,
+            NoRewritePrototypeObjectLiteralsTestInput.CALL));
   }
 
   @Test
@@ -587,12 +699,13 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
     // renames as expected
     test(
         "function a() {} a.prototype.foo = function() {}; let o = new a; o.foo();",
-        lines(
-            "function a() {}",
-            "var JSCompiler_StaticMethods_foo =",
-            "function(JSCompiler_StaticMethods_foo$self) {};",
-            "let o = new a;",
-            "JSCompiler_StaticMethods_foo(o);"));
+        """
+        function a() {}
+        var JSCompiler_StaticMethods_foo =
+        function(JSCompiler_StaticMethods_foo$self) {};
+        let o = new a;
+        JSCompiler_StaticMethods_foo(o);
+        """);
 
     // no renaming, as leading _ indicates exported symbol
     testSame("function a() {} a.prototype._foo = function() {}; let o = new a; o._foo();");
@@ -601,19 +714,21 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
   @Test
   public void testRewriteNoVarArgs() {
     String source =
-        lines(
-            "function a(){}",
-            "a.prototype.foo = function(args) {return args};",
-            "var o = new a;",
-            "o.foo()");
+        """
+        function a(){}
+        a.prototype.foo = function(args) {return args};
+        var o = new a;
+        o.foo()
+        """;
 
     String expected =
-        lines(
-            "function a(){}",
-            "var JSCompiler_StaticMethods_foo = ",
-            "  function(JSCompiler_StaticMethods_foo$self, args) {return args};",
-            "var o = new a;",
-            "JSCompiler_StaticMethods_foo(o)");
+        """
+        function a(){}
+        var JSCompiler_StaticMethods_foo =
+          function(JSCompiler_StaticMethods_foo$self, args) {return args};
+        var o = new a;
+        JSCompiler_StaticMethods_foo(o)
+        """;
 
     test(source, expected);
   }
@@ -621,19 +736,21 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
   @Test
   public void testRewrite_argInsideOptionalChainingCall() {
     String source =
-        lines(
-            "function a(){}",
-            "a.prototype.foo = function(args) {return args};",
-            "var o = new a;",
-            "a?.(o.foo())");
+        """
+        function a(){}
+        a.prototype.foo = function(args) {return args};
+        var o = new a;
+        a?.(o.foo())
+        """;
 
     String expected =
-        lines(
-            "function a(){}",
-            "var JSCompiler_StaticMethods_foo = ",
-            "  function(JSCompiler_StaticMethods_foo$self, args) {return args};",
-            "var o = new a;",
-            "a?.(JSCompiler_StaticMethods_foo(o))");
+        """
+        function a(){}
+        var JSCompiler_StaticMethods_foo =
+          function(JSCompiler_StaticMethods_foo$self, args) {return args};
+        var o = new a;
+        a?.(JSCompiler_StaticMethods_foo(o))
+        """;
 
     test(source, expected);
   }
@@ -641,43 +758,47 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
   @Test
   public void testRewrite_lhsOfOptionalChainingCall() {
     String source =
-        lines(
-            "function a(){}",
-            "a.prototype.foo = function(args) {return args};",
-            "var o = new a;",
-            "o.foo()?.a");
+        """
+        function a(){}
+        a.prototype.foo = function(args) {return args};
+        var o = new a;
+        o.foo()?.a
+        """;
 
     String expected =
-        lines(
-            "function a(){}",
-            "var JSCompiler_StaticMethods_foo = ",
-            "  function(JSCompiler_StaticMethods_foo$self, args) {return args};",
-            "var o = new a;",
-            "JSCompiler_StaticMethods_foo(o)?.a");
+        """
+        function a(){}
+        var JSCompiler_StaticMethods_foo =
+          function(JSCompiler_StaticMethods_foo$self, args) {return args};
+        var o = new a;
+        JSCompiler_StaticMethods_foo(o)?.a
+        """;
 
     test(source, expected);
   }
 
   @Test
   public void testNoRewriteVarArgs() {
+    // TODO(bradfordcsmith): Stop normalizing the expected output or document why it is necessary.
+    enableNormalizeExpectedOutput();
     String source =
-        lines(
-            "function a(){}",
-            "a.prototype.foo = function(var_args) {return arguments};",
-            "var o = new a;",
-            "o.foo()");
+        """
+        function a(){}
+        a.prototype.foo = function(var_args) {return arguments};
+        var o = new a;
+        o.foo()
+        """;
     testSame(source);
   }
 
-  /**
-   * Inputs for invalidating reference tests.
-   */
+  /** Inputs for invalidating reference tests. */
   private static class NoRewriteNonCallReferenceTestInput {
     static final String BASE =
-        lines(
-            "function a() {}", //
-            "a.prototype.foo = function() {return this.x};",
-            "var o = new a;");
+        """
+        function a() {}
+        a.prototype.foo = function() {return this.x};
+        var o = new a;
+        """;
 
     private NoRewriteNonCallReferenceTestInput() {}
   }
@@ -685,14 +806,15 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
   @Test
   public void testRewrite_callReference() {
     String expected =
-        lines(
-            "function a(){}",
-            "var JSCompiler_StaticMethods_foo = ",
-            "function(JSCompiler_StaticMethods_foo$self) {",
-            "  return JSCompiler_StaticMethods_foo$self.x",
-            "};",
-            "var o = new a;",
-            "JSCompiler_StaticMethods_foo(o);");
+        """
+        function a(){}
+        var JSCompiler_StaticMethods_foo =
+        function(JSCompiler_StaticMethods_foo$self) {
+          return JSCompiler_StaticMethods_foo$self.x
+        };
+        var o = new a;
+        JSCompiler_StaticMethods_foo(o);
+        """;
 
     test(NoRewriteNonCallReferenceTestInput.BASE + "o.foo()", expected);
   }
@@ -705,237 +827,263 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
   @Test
   public void testNoRewrite_nonCallReference_viaGetprop() {
     testSame(
-        lines(
-            NoRewriteNonCallReferenceTestInput.BASE, //
-            "o.foo();", // We need at least one normal call to trigger rewriting.
-            "o.foo;"));
+        NoRewriteNonCallReferenceTestInput.BASE
+            + """
+            o.foo(); // We need at least one normal call to trigger rewriting.
+            o.foo;
+            """);
   }
 
   @Test
   public void testNoRewrite_nonCallReference_viaDestructuring() {
     testSame(
-        lines(
-            NoRewriteNonCallReferenceTestInput.BASE, //
-            "o.foo();", // We need at least one normal call to trigger rewriting.
-            "const {foo: x} = o;"));
+        NoRewriteNonCallReferenceTestInput.BASE
+            + """
+            o.foo(); // We need at least one normal call to trigger rewriting.
+            const {foo: x} = o;
+            """);
   }
 
   @Test
   public void testNoRewrite_nonCallReference_viaGetprop_usingFnCall() {
     // TODO(nickreid): Add rewriting support for this.
     testSame(
-        lines(
-            NoRewriteNonCallReferenceTestInput.BASE, //
-            "o.foo();", // We need at least one normal call to trigger rewriting.
-            "o.foo.call(null);"));
+        NoRewriteNonCallReferenceTestInput.BASE
+            + """
+            o.foo(); // We need at least one normal call to trigger rewriting.
+            o.foo.call(null);
+            """);
   }
 
   @Test
   public void testNoRewrite_nonCallReference_viaGetprop_usingFnApply() {
     // TODO(nickreid): Add rewriting support for this.
     testSame(
-        lines(
-            NoRewriteNonCallReferenceTestInput.BASE, //
-            "o.foo();", // We need at least one normal call to trigger rewriting.
-            "o.foo.apply(null);"));
+        NoRewriteNonCallReferenceTestInput.BASE
+            + """
+            o.foo(); // We need at least one normal call to trigger rewriting.
+            o.foo.apply(null);
+            """);
   }
 
   @Test
   public void testNoRewrite_nonCallReference_viaGetprop_asArgument() {
     testSame(
-        lines(
-            NoRewriteNonCallReferenceTestInput.BASE, //
-            "o.foo();", // We need at least one normal call to trigger rewriting.
-            "bar(o.foo, null);"));
+        NoRewriteNonCallReferenceTestInput.BASE
+            + """
+            o.foo(); // We need at least one normal call to trigger rewriting.
+            bar(o.foo, null);
+            """);
   }
 
   @Test
   public void testNoRewrite_nonCallReference_viaTaggedTemplateString() {
     // TODO(nickreid): Add rewriting support for this.
     testSame(
-        lines(
-            NoRewriteNonCallReferenceTestInput.BASE, //
-            "o.foo();", // We need at least one normal call to trigger rewriting.
-            "o.foo`Hello World!`;"));
+        NoRewriteNonCallReferenceTestInput.BASE
+            + """
+            o.foo(); // We need at least one normal call to trigger rewriting.
+            o.foo`Hello World!`;
+            """);
   }
 
   @Test
   public void testNoRewrite_optChain() {
     testSame(
-        lines(
-            NoRewriteNonCallReferenceTestInput.BASE, //
-            "o.foo();", // We need at least one normal call to trigger rewriting.
-            "o.foo?.();"));
+        NoRewriteNonCallReferenceTestInput.BASE
+            + """
+            o.foo(); // We need at least one normal call to trigger rewriting.
+            o.foo?.();
+            """);
   }
 
   @Test
   public void testNoRewrite_nonCallReference_viaNew() {
     // TODO(nickreid): Add rewriting support for this.
     testSame(
-        lines(
-            NoRewriteNonCallReferenceTestInput.BASE, //
-            "o.foo();",
-            "new o.foo();"));
+        NoRewriteNonCallReferenceTestInput.BASE
+            + """
+            o.foo();
+            new o.foo();
+            """);
   }
 
-  /**
-   * Inputs for nested definition tests.
-   */
+  /** Inputs for nested definition tests. */
   private static class NoRewriteNestedFunctionTestInput {
     static final String PREFIX = "a.prototype.foo = function() {";
     static final String SUFFIX = "o.foo()";
     static final String INNER = "a.prototype.bar = function() {}; o.bar()";
     static final String EXPECTED_PREFIX =
-        "var JSCompiler_StaticMethods_foo=" +
-        "function(JSCompiler_StaticMethods_foo$self){";
-    static final String EXPECTED_SUFFIX =
-        "JSCompiler_StaticMethods_foo(o)";
+        """
+        var JSCompiler_StaticMethods_foo=
+        function(JSCompiler_StaticMethods_foo$self){
+        """;
+    static final String EXPECTED_SUFFIX = "JSCompiler_StaticMethods_foo(o)";
 
     private NoRewriteNestedFunctionTestInput() {}
   }
 
   @Test
   public void testRewriteNoNestedFunction() {
-    test(semicolonJoin(
-             NoRewriteNestedFunctionTestInput.PREFIX + "}",
-             NoRewriteNestedFunctionTestInput.SUFFIX,
-             NoRewriteNestedFunctionTestInput.INNER),
-         semicolonJoin(
-             NoRewriteNestedFunctionTestInput.EXPECTED_PREFIX + "}",
-             NoRewriteNestedFunctionTestInput.EXPECTED_SUFFIX,
-             "var JSCompiler_StaticMethods_bar=" +
-             "function(JSCompiler_StaticMethods_bar$self){}",
-             "JSCompiler_StaticMethods_bar(o)"));
+    test(
+        semicolonJoin(
+            NoRewriteNestedFunctionTestInput.PREFIX + "}",
+            NoRewriteNestedFunctionTestInput.SUFFIX,
+            NoRewriteNestedFunctionTestInput.INNER),
+        semicolonJoin(
+            NoRewriteNestedFunctionTestInput.EXPECTED_PREFIX + "}",
+            NoRewriteNestedFunctionTestInput.EXPECTED_SUFFIX,
+            """
+            var JSCompiler_StaticMethods_bar=
+            function(JSCompiler_StaticMethods_bar$self){}
+            """,
+            "JSCompiler_StaticMethods_bar(o)"));
   }
 
   @Test
   public void testNoRewriteNestedFunction() {
-    test(NoRewriteNestedFunctionTestInput.PREFIX +
-         NoRewriteNestedFunctionTestInput.INNER + "};" +
-         NoRewriteNestedFunctionTestInput.SUFFIX,
-         NoRewriteNestedFunctionTestInput.EXPECTED_PREFIX +
-         NoRewriteNestedFunctionTestInput.INNER + "};" +
-         NoRewriteNestedFunctionTestInput.EXPECTED_SUFFIX);
+    test(
+        NoRewriteNestedFunctionTestInput.PREFIX
+            + NoRewriteNestedFunctionTestInput.INNER
+            + "};"
+            + NoRewriteNestedFunctionTestInput.SUFFIX,
+        NoRewriteNestedFunctionTestInput.EXPECTED_PREFIX
+            + NoRewriteNestedFunctionTestInput.INNER
+            + "};"
+            + NoRewriteNestedFunctionTestInput.EXPECTED_SUFFIX);
   }
 
   @Test
   public void testRewrite_definedUsingGetProp_withArgs_callUsingGetProp() {
     String source =
-        lines(
-            "function a(){}",
-            "a.prototype.foo = function(args) {return args};",
-            "var o = new a;",
-            "o.foo()");
+        """
+        function a(){}
+        a.prototype.foo = function(args) {return args};
+        var o = new a;
+        o.foo()
+        """;
     String expected =
-        lines(
-            "function a(){}",
-            "var JSCompiler_StaticMethods_foo = ",
-            "  function(JSCompiler_StaticMethods_foo$self, args) {return args};",
-            "var o = new a;",
-            "JSCompiler_StaticMethods_foo(o)");
+        """
+        function a(){}
+        var JSCompiler_StaticMethods_foo =
+          function(JSCompiler_StaticMethods_foo$self, args) {return args};
+        var o = new a;
+        JSCompiler_StaticMethods_foo(o)
+        """;
     test(source, expected);
   }
 
   @Test
   public void testNoRewrite_optChainGetProp() {
     String source =
-        lines(
-            "function a(){}",
-            "a.prototype.foo = function(args) {return args};",
-            "var o = new a;",
-            "o?.foo()");
+        """
+        function a(){}
+        a.prototype.foo = function(args) {return args};
+        var o = new a;
+        o?.foo()
+        """;
     testSame(source);
   }
 
   @Test
   public void testRewrite_definedUsingGetElem_withArgs_callUsingGetProp() {
     String source =
-        lines(
-            "function a(){}",
-            "a.prototype['foo'] = function(args) {return args};",
-            "var o = new a;",
-            "o.foo()");
+        """
+        function a(){}
+        a.prototype['foo'] = function(args) {return args};
+        var o = new a;
+        o.foo()
+        """;
     testSame(source);
   }
 
   @Test
   public void testNoRewrite_definedUsingGetProp_withArgs_noCall_bracketAccess() {
     String source =
-        lines(
-            "function a(){}",
-            "a.prototype.foo = function(args) {return args};",
-            "var o = new a;",
-            "o['foo']");
+        """
+        function a(){}
+        a.prototype.foo = function(args) {return args};
+        var o = new a;
+        o['foo']
+        """;
     testSame(source);
   }
 
   @Test
   public void testNoRewrite_optChainGetElemAccess() {
     String source =
-        lines(
-            "function a(){}",
-            "a.prototype.foo = function(args) {return args};",
-            "var o = new a;",
-            "o?.['foo']");
+        """
+        function a(){}
+        a.prototype.foo = function(args) {return args};
+        var o = new a;
+        o?.['foo']
+        """;
     testSame(source);
   }
 
   @Test
   public void testNoRewrite_definedUsingGetElem_withArgs_noCall_bracketAccess() {
     String source =
-        lines(
-            "function a(){}",
-            "a.prototype['foo'] = function(args) {return args};",
-            "var o = new a;",
-            "o['foo']");
+        """
+        function a(){}
+        a.prototype['foo'] = function(args) {return args};
+        var o = new a;
+        o['foo']
+        """;
     testSame(source);
   }
 
   @Test
   public void testRewrite_definedInExpression_thatCreatesScope_reportsScopeAsDeleted() {
     test(
-        lines(
-            "(function() {}).prototype.foo = function() {extern();};",
-            // A call is needed to trigger rewriting.
-            "a.foo();"),
-        lines(
-            "var JSCompiler_StaticMethods_foo = function(JSCompiler_StaticMethods_foo$self) {",
-            "  extern();",
-            "};",
-            "JSCompiler_StaticMethods_foo(a);"));
+        """
+        (function() {}).prototype.foo = function() {extern();};
+        // A call is needed to trigger rewriting.
+        a.foo();
+        """,
+        """
+        var JSCompiler_StaticMethods_foo = function(JSCompiler_StaticMethods_foo$self) {
+          extern();
+        };
+        JSCompiler_StaticMethods_foo(a);
+        """);
   }
 
   @Test
   public void testRewrite_definedInExpression_withSideEffects() {
     // TODO(nickreid): Expect this not to be a rewrite (or confirm it's safe).
     test(
-        lines(
-            "extern().prototype.foo = function() { };",
-            // A call is needed to trigger rewriting.
-            "a.foo()"),
+        """
+        extern().prototype.foo = function() { };
+        // A call is needed to trigger rewriting.
+        a.foo()
+        """,
         // We think this is risky because if `extern()` had side effects they'd be eliminated.
-        lines(
-            "var JSCompiler_StaticMethods_foo=function(JSCompiler_StaticMethods_foo$self){};",
-            "JSCompiler_StaticMethods_foo(a)"));
+        """
+        var JSCompiler_StaticMethods_foo=function(JSCompiler_StaticMethods_foo$self){};
+        JSCompiler_StaticMethods_foo(a)
+        """);
   }
 
   @Test
   public void testRewrite_definedInExpression_withInvocation() {
     test(
         srcs(
-            lines(
-                "(", //
-                "  class { bar() { } },",
-                "  a.bar()",
-                ");")),
+            """
+            (
+              class { bar() { } },
+              a.bar()
+            );
+            """),
         expected(
-            lines(
-                "var JSCompiler_StaticMethods_bar = function(JSCompiler_StaticMethods_bar$self) {",
-                "};",
-                "(",
-                "  class { },",
-                "  JSCompiler_StaticMethods_bar(a)",
-                ");")));
+            """
+            var JSCompiler_StaticMethods_bar = function(JSCompiler_StaticMethods_bar$self) {
+            };
+            (
+              class { },
+              JSCompiler_StaticMethods_bar(a)
+            );
+            """));
   }
 
   @Test
@@ -943,56 +1091,61 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
     // TODO(b/120452418): Add rewriting support for this.
     testSame(
         srcs(
-            lines(
-                "function a(){}",
-                "a.prototype = {",
-                // Don't use `super.bar()` because that might effect the test.
-                "  foo() { return super.x; }",
-                "};",
-                "",
-                // We need at least one normal call to trigger rewriting.
-                "x.foo()")));
+            """
+            function a(){}
+            a.prototype = {
+            // Don't use `super.bar()` because that might effect the test.
+              foo() { return super.x; }
+            };
+
+            // We need at least one normal call to trigger rewriting.
+            x.foo()
+            """));
   }
 
   @Test
   public void testRewrite_definedUsingClassMember_prototypeMethod() {
     test(
         srcs(
-            lines(
-                "class Foo {", //
-                "  bar() { return 5; }",
-                "}",
-                "",
-                "x.bar();")),
+            """
+            class Foo {
+              bar() { return 5; }
+            }
+
+            x.bar();
+            """),
         expected(
-            lines(
-                "var JSCompiler_StaticMethods_bar = function(JSCompiler_StaticMethods_bar$self) {",
-                "  return 5;",
-                "};",
-                "class Foo { }", //
-                "",
-                "JSCompiler_StaticMethods_bar(x);")));
+            """
+            var JSCompiler_StaticMethods_bar = function(JSCompiler_StaticMethods_bar$self) {
+              return 5;
+            };
+            class Foo { }
+
+            JSCompiler_StaticMethods_bar(x);
+            """));
   }
 
   @Test
   public void testRewrite_definedUsingClassMember_prototypeMethod_usingThis() {
     test(
         srcs(
-            lines(
-                "class Foo {", //
-                "  bar() { return this; }",
-                "}",
-                "",
-                // We need at least one normal call to trigger rewriting.
-                "x.bar();")),
+            """
+            class Foo {
+              bar() { return this; }
+            }
+
+            // We need at least one normal call to trigger rewriting.
+            x.bar();
+            """),
         expected(
-            lines(
-                "var JSCompiler_StaticMethods_bar = function(JSCompiler_StaticMethods_bar$self) {",
-                "    return JSCompiler_StaticMethods_bar$self;",
-                "};",
-                "class Foo { }", //
-                "",
-                "JSCompiler_StaticMethods_bar(x);")));
+            """
+            var JSCompiler_StaticMethods_bar = function(JSCompiler_StaticMethods_bar$self) {
+                return JSCompiler_StaticMethods_bar$self;
+            };
+            class Foo { }
+
+            JSCompiler_StaticMethods_bar(x);
+            """));
   }
 
   @Test
@@ -1000,69 +1153,102 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
     // TODO(b/120452418): Add rewriting support for this.
     testSame(
         srcs(
-            lines(
-                "class Foo {", //
-                // Don't use `super.bar()` because that might effect the test.
-                "  bar() { return super.x; }",
-                "}",
-                "",
-                // We need at least one normal call to trigger rewriting.
-                "x.bar();")));
+            """
+            class Foo {
+            // Don't use `super.bar()` because that might effect the test.
+              bar() { return super.x; }
+            }
+
+            // We need at least one normal call to trigger rewriting.
+            x.bar();
+            """));
+  }
+
+  @Test
+  public void testNoRewrite_privateMethod_knownBug() {
+    // Expected behavior: `DevirtualizeMethods` leaves this code unchanged. `#m` is valid only
+    // inside the body of `Foo`, so neither `#m` nor `bar`, which calls `this.#m()`, can be moved
+    // out of `Foo` into a global function.
+    String js =
+        """
+        class Foo {
+          #m() { return 5; }
+          bar() { return this.#m(); }
+        }
+        new Foo().bar();
+        """;
+    // TODO(b/236744850): `#m` and `bar` are moved out of `Foo`.
+    // Current behavior: `#m` and `bar` become `var JSCompiler_StaticMethods_#m = function(...)`
+    //   and `var JSCompiler_StaticMethods_bar = function(...)` before an empty `class Foo {}`, and
+    //   `new Foo().bar()` becomes `JSCompiler_StaticMethods_bar(new Foo())`. So `testSame(js)`
+    //   fails.
+    // Why it's a bug: `JSCompiler_StaticMethods_#m` is not a valid name, so the output is a
+    //   SyntaxError, and the whole script fails to load.
+    // In a full build: ADVANCED variable renaming gives `JSCompiler_StaticMethods_#m` a valid
+    //   name, so the output loads, but `bar` no longer throws a TypeError for a receiver without
+    //   `#m`. The SyntaxError shows with pseudo names.
+    var ex = assertThrows(AssertionError.class, () -> testSame(js));
+    assertThat(ex).hasMessageThat().contains("var JSCompiler_StaticMethods_#m = function(");
   }
 
   @Test
   public void testNoRewrite_definedUsingClassMember_constructor() {
     testSame(
         srcs(
-            lines(
-                "class Foo {", //
-                "  constructor() { }",
-                "}",
-                "",
-                // We need at least one normal call to trigger rewriting.
-                "x.constructor();")));
+            """
+            class Foo {
+              constructor() { }
+            }
+
+            // We need at least one normal call to trigger rewriting.
+            x.constructor();
+            """));
   }
 
   @Test
   public void testRewrite_definedUsingClassMember_staticMethod() {
     test(
         srcs(
-            lines(
-                "class Foo {", //
-                "  static bar() { return 5; }",
-                "}",
-                "",
-                // We need at least one normal call to trigger rewriting.
-                "x.bar();")),
+            """
+            class Foo {
+              static bar() { return 5; }
+            }
+
+            // We need at least one normal call to trigger rewriting.
+            x.bar();
+            """),
         expected(
-            lines(
-                "var JSCompiler_StaticMethods_bar = function(JSCompiler_StaticMethods_bar$self) {",
-                "  return 5;",
-                "};",
-                "class Foo { }", //
-                "",
-                "JSCompiler_StaticMethods_bar(x);")));
+            """
+            var JSCompiler_StaticMethods_bar = function(JSCompiler_StaticMethods_bar$self) {
+              return 5;
+            };
+            class Foo { }
+
+            JSCompiler_StaticMethods_bar(x);
+            """));
   }
 
   @Test
   public void testRewrite_definedUsingAssignment_staticMethod_onClass() {
     test(
         srcs(
-            lines(
-                "class Foo { }", //
-                "Foo.bar = function() { return 5; }",
-                "",
-                // We need at least one normal call to trigger rewriting.
-                "x.bar();")),
+            """
+            class Foo { }
+            Foo.bar = function() { return 5; }
+
+            // We need at least one normal call to trigger rewriting.
+            x.bar();
+            """),
         expected(
-            lines(
-                "class Foo { }", //
-                "",
-                "var JSCompiler_StaticMethods_bar = function(JSCompiler_StaticMethods_bar$self) {",
-                "  return 5;",
-                "};",
-                "",
-                "JSCompiler_StaticMethods_bar(x);")));
+            """
+            class Foo { }
+
+            var JSCompiler_StaticMethods_bar = function(JSCompiler_StaticMethods_bar$self) {
+              return 5;
+            };
+
+            JSCompiler_StaticMethods_bar(x);
+            """));
   }
 
   @Test
@@ -1077,43 +1263,47 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
     disableCompareJsDoc(); // multistage compilation simplifies jsdoc
     test(
         srcs(
-            lines(
-                annotation,
-                "function Foo() { }", //
-                "Foo.bar = function() { return 5; }",
-                "",
+            annotation
+                + """
+                function Foo() { }
+                Foo.bar = function() { return 5; }
+
                 // We need at least one normal call to trigger rewriting.
-                "x.bar();")),
+                x.bar();
+                """),
         expected(
-            lines(
-                "function Foo() { }", //
-                "",
-                "var JSCompiler_StaticMethods_bar = function(JSCompiler_StaticMethods_bar$self) {",
-                "  return 5;",
-                "};",
-                "",
-                "JSCompiler_StaticMethods_bar(x);")));
+            """
+            function Foo() { }
+
+            var JSCompiler_StaticMethods_bar = function(JSCompiler_StaticMethods_bar$self) {
+              return 5;
+            };
+
+            JSCompiler_StaticMethods_bar(x);
+            """));
   }
 
   @Test
   public void testRewrite_definedUsingClassMember_staticMethod_usingThis() {
     test(
         srcs(
-            lines(
-                "class Foo {", //
-                "  static bar() { return this; }",
-                "}",
-                "",
-                // We need at least one normal call to trigger rewriting.
-                "x.bar();")),
+            """
+            class Foo {
+              static bar() { return this; }
+            }
+
+            // We need at least one normal call to trigger rewriting.
+            x.bar();
+            """),
         expected(
-            lines(
-                "var JSCompiler_StaticMethods_bar = function(JSCompiler_StaticMethods_bar$self) {",
-                "  return JSCompiler_StaticMethods_bar$self;",
-                "};",
-                "class Foo { }", //
-                "",
-                "JSCompiler_StaticMethods_bar(x);")));
+            """
+            var JSCompiler_StaticMethods_bar = function(JSCompiler_StaticMethods_bar$self) {
+              return JSCompiler_StaticMethods_bar$self;
+            };
+            class Foo { }
+
+            JSCompiler_StaticMethods_bar(x);
+            """));
   }
 
   @Test
@@ -1121,80 +1311,87 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
     // TODO(b/120452418): Add rewriting support for this.
     testSame(
         srcs(
-            lines(
-                "class Foo {", //
-                // Don't use `super.bar()` because that might effect the test.
-                "  static bar() { return super.x; }",
-                "}",
-                "",
-                // We need at least one normal call to trigger rewriting.
-                "x.bar();")));
+            """
+            class Foo {
+            // Don't use `super.bar()` because that might effect the test.
+              static bar() { return super.x; }
+            }
+
+            // We need at least one normal call to trigger rewriting.
+            x.bar();
+            """));
   }
 
   @Test
   public void testRewrite_callWithSuperReceiver_passesThis() {
     test(
         srcs(
-            lines(
-                "class Foo {", //
-                // Don't use `super.bar()` because that might effect the test.
-                "  bar() { return super.qux(); }",
-                "}",
-                "",
-                "class Tig {",
-                "  qux() { return 5; }",
-                "}")),
+            """
+            class Foo {
+            // Don't use `super.bar()` because that might effect the test.
+              bar() { return super.qux(); }
+            }
+
+            class Tig {
+              qux() { return 5; }
+            }
+            """),
         expected(
-            lines(
-                "class Foo {", //
-                "  bar() { return JSCompiler_StaticMethods_qux(this); }",
-                "}",
-                "",
-                "var JSCompiler_StaticMethods_qux = function(JSCompiler_StaticMethods_qux$self) {",
-                "  return 5;",
-                "};",
-                "class Tig { }")));
+            """
+            class Foo {
+              bar() { return JSCompiler_StaticMethods_qux(this); }
+            }
+
+            var JSCompiler_StaticMethods_qux = function(JSCompiler_StaticMethods_qux$self) {
+              return 5;
+            };
+            class Tig { }
+            """));
   }
 
   @Test
   public void testNoRewrite_inClassWithLocalName_asClassName() {
     testSame(
         srcs(
-            lines(
-                "const Qux = class Foo {", //
-                // TODO(nickreid): Add rewriting support for this so long as the local name is not
-                // referenced.
-                "  bar() { return 5; }",
-                "}",
-                "",
-                // We need at least one normal call to trigger rewriting.
-                "x.bar();")));
+            """
+            const Qux = class Foo {
+            // TODO(nickreid): Add rewriting support for this so long as the local name is not
+            // referenced.
+              bar() { return 5; }
+            }
+
+            // We need at least one normal call to trigger rewriting.
+            x.bar();
+            """));
   }
 
   @Test
   public void testPropDefinition_notOnQualifiedName_doesNotCrash() {
     testSame(
         srcs(
-            lines(
-                "class Qux { }", //
-                "",
-                "new Qux().prop = function() { }")));
+            """
+            class Qux { }
+
+            new Qux().prop = function() { }
+            """));
   }
 
   @Test
   public void testRewriteDeclWithConstJSDoc() {
     test(
-        lines(
-            "class C {", //
-            "  /** @const */ foo() {}",
-            "}",
-            "o.foo();"),
-        lines(
-            "/** @const */",
-            "var JSCompiler_StaticMethods_foo =",
-            "  function(JSCompiler_StaticMethods_foo$self) {};",
-            "class C {}",
-            "JSCompiler_StaticMethods_foo(o)"));
+        """
+        class C {
+          /** @const */ foo() {}
+        }
+        o.foo();
+        """,
+        """
+        /** @const */
+        var JSCompiler_StaticMethods_foo =
+          function(JSCompiler_StaticMethods_foo$self) {};
+        class C {}
+        JSCompiler_StaticMethods_foo(o)
+        """);
   }
 
   @Test
@@ -1211,6 +1408,8 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
 
   @Test
   public void testNoRewriteSet1() {
+    // TODO(bradfordcsmith): Stop normalizing the expected output or document why it is necessary.
+    enableNormalizeExpectedOutput();
     // Getters and setter require special handling.
     String source = "function a(){}; a.prototype = {set foo(a){}}; var o = new a; o.foo()";
     testSame(source);
@@ -1218,6 +1417,8 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
 
   @Test
   public void testNoRewriteSet2() {
+    // TODO(bradfordcsmith): Stop normalizing the expected output or document why it is necessary.
+    enableNormalizeExpectedOutput();
     // Getters and setter require special handling.
     String source = "function a(){}; a.prototype = {set foo(a){}}; var o = new a; o.foo = 1";
     testSame(source);
@@ -1237,46 +1438,224 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
   public void testRewrite_nestedFunction_hasThisBoundCorrectly() {
     test(
         srcs(
-            lines(
-                "class Foo {", //
-                "  bar() {",
-                "    return function() { return this; };",
-                "  }",
-                "}",
-                "",
-                // We need at least one normal call to trigger rewriting.
-                "x.bar();")),
+            """
+            class Foo {
+              bar() {
+                return function() { return this; };
+              }
+            }
+
+            // We need at least one normal call to trigger rewriting.
+            x.bar();
+            """),
         expected(
-            lines(
-                "var JSCompiler_StaticMethods_bar = function(JSCompiler_StaticMethods_bar$self) {",
-                "  return function() { return this; };",
-                "};",
-                "class Foo { }",
-                "",
-                "JSCompiler_StaticMethods_bar(x);")));
+            """
+            var JSCompiler_StaticMethods_bar = function(JSCompiler_StaticMethods_bar$self) {
+              return function() { return this; };
+            };
+            class Foo { }
+
+            JSCompiler_StaticMethods_bar(x);
+            """));
   }
 
   @Test
   public void testRewrite_nestedArrow_hasThisBoundCorrectly() {
+    // TODO(bradfordcsmith): Stop normalizing the expected output or document why it is necessary.
+    enableNormalizeExpectedOutput();
     test(
         srcs(
-            lines(
-                "class Foo {", //
-                "  bar() {",
-                "    return () => this;",
-                "  }",
-                "}",
-                "",
-                // We need at least one normal call to trigger rewriting.
-                "x.bar();")),
+            """
+            class Foo {
+              bar() {
+                return () => this;
+              }
+            }
+
+            // We need at least one normal call to trigger rewriting.
+            x.bar();
+            """),
         expected(
-            lines(
-                "var JSCompiler_StaticMethods_bar = function(JSCompiler_StaticMethods_bar$self) {",
-                "  return () => JSCompiler_StaticMethods_bar$self;",
-                "};",
-                "class Foo { }",
-                "",
-                "JSCompiler_StaticMethods_bar(x);")));
+            """
+            var JSCompiler_StaticMethods_bar = function(JSCompiler_StaticMethods_bar$self) {
+              return () => JSCompiler_StaticMethods_bar$self;
+            };
+            class Foo { }
+
+            JSCompiler_StaticMethods_bar(x);
+            """));
+  }
+
+  @Test
+  public void testRewrite_nestedClass_instanceFieldInitializer() {
+    test(
+        srcs(
+            """
+            class Foo {
+              bar() {
+                class Nested {
+                  val = this;
+                }
+                return new Nested();
+              }
+            }
+            new Foo().bar();
+            """),
+        expected(
+            """
+            var JSCompiler_StaticMethods_bar = function(JSCompiler_StaticMethods_bar$self) {
+              class Nested {
+                val = this;
+              }
+              return new Nested();
+            };
+            class Foo { }
+            JSCompiler_StaticMethods_bar(new Foo());
+            """));
+  }
+
+  @Test
+  public void testRewrite_nestedClass_computedFieldInitializer() {
+    test(
+        srcs(
+            """
+            class Foo {
+              bar() {
+                class Nested {
+                  ['c'] = this;
+                }
+                return new Nested();
+              }
+            }
+            new Foo().bar();
+            """),
+        expected(
+            """
+            var JSCompiler_StaticMethods_bar = function(JSCompiler_StaticMethods_bar$self) {
+              class Nested {
+                ['c'] = this;
+              }
+              return new Nested();
+            };
+            class Foo { }
+            JSCompiler_StaticMethods_bar(new Foo());
+            """));
+  }
+
+  @Test
+  public void testRewrite_nestedClass_computedFieldKey() {
+    test(
+        srcs(
+            """
+            class Foo {
+              bar() {
+                class Nested {
+                  [this.key] = 1;
+                }
+                return new Nested();
+              }
+            }
+            new Foo().bar();
+            """),
+        expected(
+            """
+            var JSCompiler_StaticMethods_bar = function(JSCompiler_StaticMethods_bar$self) {
+              class Nested {
+                [JSCompiler_StaticMethods_bar$self.key] = 1;
+              }
+              return new Nested();
+            };
+            class Foo { }
+            JSCompiler_StaticMethods_bar(new Foo());
+            """));
+  }
+
+  @Test
+  public void testRewrite_nestedClass_computedFieldKeyAndValue() {
+    test(
+        srcs(
+            """
+            class Foo {
+              bar() {
+                class Nested {
+                  [this.key] = this;
+                }
+                return new Nested();
+              }
+            }
+            new Foo().bar();
+            """),
+        expected(
+            """
+            var JSCompiler_StaticMethods_bar = function(JSCompiler_StaticMethods_bar$self) {
+              class Nested {
+                [JSCompiler_StaticMethods_bar$self.key] = this;
+              }
+              return new Nested();
+            };
+            class Foo { }
+            JSCompiler_StaticMethods_bar(new Foo());
+            """));
+  }
+
+  @Test
+  public void testRewrite_nestedClass_staticFieldInitializer() {
+    test(
+        srcs(
+            """
+            class Foo {
+              bar() {
+                class Nested {
+                  static val = this;
+                }
+                return Nested;
+              }
+            }
+            new Foo().bar();
+            """),
+        expected(
+            """
+            var JSCompiler_StaticMethods_bar = function(JSCompiler_StaticMethods_bar$self) {
+              class Nested {
+                static val = this;
+              }
+              return Nested;
+            };
+            class Foo { }
+            JSCompiler_StaticMethods_bar(new Foo());
+            """));
+  }
+
+  @Test
+  public void testRewrite_nestedClass_staticBlock() {
+    test(
+        srcs(
+            """
+            class Foo {
+              bar() {
+                class Nested {
+                  static {
+                    this.val = 1;
+                  }
+                }
+                return Nested;
+              }
+            }
+            new Foo().bar();
+            """),
+        expected(
+            """
+            var JSCompiler_StaticMethods_bar = function(JSCompiler_StaticMethods_bar$self) {
+              class Nested {
+                static {
+                  this.val = 1;
+                }
+              }
+              return Nested;
+            };
+            class Foo { }
+            JSCompiler_StaticMethods_bar(new Foo());
+            """));
   }
 
   @Test
@@ -1285,11 +1664,12 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
 
     // Imagine the getter returned a function.
     testSame(
-        lines(
-            "class Foo {", //
-            "  foo() {}",
-            "}",
-            "x.foo();"));
+        """
+        class Foo {
+          foo() {}
+        }
+        x.foo();
+        """);
   }
 
   @Test
@@ -1299,55 +1679,95 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
     // This doesn't actually seem like a risk but it's hard to say, and other optimizations that use
     // optimize calls would be dangerous on setters.
     testSame(
-        lines(
-            "class Foo {", //
-            "  foo() {}",
-            "}",
-            "x.foo();"));
+        """
+        class Foo {
+          foo() {}
+        }
+        x.foo();
+        """);
   }
 
   @Test
   public void testThisProperty() {
+    // TODO(bradfordcsmith): Stop normalizing the expected output or document why it is necessary.
+    enableNormalizeExpectedOutput();
     testSame(
-        lines(
-            "class Foo {", //
-            "  constructor() {",
-            "    this.a = function b() { return 5; };",
-            "    this.plus1 = (arg) => arg + 1;",
-            "    this.tmp = this.plus1(1); ",
-            "  }",
-            "}",
-            "console.log(new Foo().a());"));
+        """
+        class Foo {
+          constructor() {
+            this.a = function b() { return 5; };
+            this.plus1 = (arg) => arg + 1;
+            this.tmp = this.plus1(1);
+          }
+        }
+        console.log(new Foo().a());
+        """);
   }
 
   @Test
   public void testNonStaticClassFieldNoRHS() {
     testSame(
-        lines(
-            "class Foo {", //
-            "  a;",
-            "}",
-            "console.log(new Foo().a);"));
+        """
+        class Foo {
+          a;
+        }
+        console.log(new Foo().a);
+        """);
   }
 
   @Test
   public void testNonStaticClassFieldNonFunction() {
     testSame(
-        lines(
-            "class Foo {", //
-            "  a = 2;",
-            "}",
-            "console.log(new Foo().a);"));
+        """
+        class Foo {
+          a = 2;
+        }
+        console.log(new Foo().a);
+        """);
   }
 
   @Test
   public void testNonStaticClassFieldFunction() {
     testSame(
-        lines(
-            "class Foo {", //
-            "  a = function x() { return 5; };",
-            "}",
-            "console.log(new Foo().a);"));
+        """
+        class Foo {
+          a = function x() { return 5; };
+        }
+        console.log(new Foo().a);
+        """);
+  }
+
+  @Test
+  public void testStaticClassFieldNoRHS() {
+    testSame(
+        """
+        class Foo {
+          static a;
+        }
+        console.log(Foo.a);
+        """);
+  }
+
+  @Test
+  public void testStaticClassFieldNonFunction() {
+    testSame(
+        """
+        class Foo {
+          static a = 2;
+        }
+        console.log(Foo.a);
+        """);
+  }
+
+  @Test
+  public void testStaticClassFieldFunction() {
+    testSame(
+        """
+        class Foo {
+          static a = function x() { return 5; };
+        }
+        console.log(Foo.a);
+        """);
   }
 
   private static class ModuleTestInput {
@@ -1355,7 +1775,10 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
     static final String USE = "x.foo()";
 
     static final String REWRITTEN_DEFINITION =
-        "var JSCompiler_StaticMethods_foo=" + "function(JSCompiler_StaticMethods_foo$self){}";
+        """
+        var JSCompiler_StaticMethods_foo=
+        function(JSCompiler_StaticMethods_foo$self){}
+        """;
     static final String REWRITTEN_USE = "JSCompiler_StaticMethods_foo(x)";
 
     private ModuleTestInput() {}
@@ -1363,7 +1786,7 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
 
   @Test
   public void testRewriteSameModule1() {
-    JSChunk[] modules =
+    JSChunk[] chunks =
         JSChunkGraphBuilder.forStar()
             // m1
             .addChunk(semicolonJoin(ModuleTestInput.DEFINITION, ModuleTestInput.USE))
@@ -1372,7 +1795,7 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
             .build();
 
     test(
-        srcs(modules),
+        srcs(chunks),
         expected(
             // m1
             semicolonJoin(ModuleTestInput.REWRITTEN_DEFINITION, ModuleTestInput.REWRITTEN_USE),
@@ -1382,7 +1805,7 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
 
   @Test
   public void testRewriteSameModule2() {
-    JSChunk[] modules =
+    JSChunk[] chunks =
         JSChunkGraphBuilder.forStar()
             // m1
             .addChunk("")
@@ -1391,7 +1814,7 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
             .build();
 
     test(
-        srcs(modules),
+        srcs(chunks),
         expected(
             // m1
             "",
@@ -1401,7 +1824,7 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
 
   @Test
   public void testRewriteSameModule3() {
-    JSChunk[] modules =
+    JSChunk[] chunks =
         JSChunkGraphBuilder.forStar()
             // m1
             .addChunk(semicolonJoin(ModuleTestInput.USE, ModuleTestInput.DEFINITION))
@@ -1410,7 +1833,7 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
             .build();
 
     test(
-        srcs(modules),
+        srcs(chunks),
         expected(
             // m1
             semicolonJoin(ModuleTestInput.REWRITTEN_USE, ModuleTestInput.REWRITTEN_DEFINITION),
@@ -1420,7 +1843,7 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
 
   @Test
   public void testRewrite_definitionModule_beforeUseModule() {
-    JSChunk[] modules =
+    JSChunk[] chunks =
         JSChunkGraphBuilder.forStar()
             // m1
             .addChunk(ModuleTestInput.DEFINITION)
@@ -1429,7 +1852,7 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
             .build();
 
     test(
-        srcs(modules),
+        srcs(chunks),
         expected(
             // m1
             ModuleTestInput.REWRITTEN_DEFINITION,
@@ -1439,13 +1862,13 @@ public final class DevirtualizeMethodsTest extends CompilerTestCase {
 
   @Test
   public void testNoRewrite_definitionModule_afterUseModule() {
-    JSChunk[] modules =
+    JSChunk[] chunks =
         JSChunkGraphBuilder.forStar()
             .addChunk(ModuleTestInput.USE)
             .addChunk(ModuleTestInput.DEFINITION)
             .build();
 
-    testSame(srcs(modules));
+    testSame(srcs(chunks));
   }
 
   @Override

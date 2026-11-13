@@ -19,25 +19,24 @@ package com.google.javascript.jscomp;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
-import com.google.common.annotations.GwtIncompatible;
 import com.google.common.base.Joiner;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Iterables;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.TreeMultimap;
 import com.google.common.io.CharSource;
 import com.google.common.io.CharStreams;
 import com.google.common.io.Files;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.io.Reader;
-import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
+import org.jspecify.annotations.Nullable;
 
 /**
  * An extension of {@code WarningsGuard} that provides functionality to maintain a list of warnings
@@ -45,12 +44,11 @@ import java.util.regex.Pattern;
  * implementing the {@code level} function. Warnings are defined by the name of the JS file and the
  * first line of warnings description.
  */
-@GwtIncompatible("java.io, java.util.regex")
 public class AllowlistWarningsGuard extends WarningsGuard {
   private static final Splitter LINE_SPLITTER = Splitter.on('\n');
 
   /** The set of allowlisted warnings, same format as {@code formatWarning}. */
-  private final Set<String> allowlist;
+  private final ImmutableSet<String> allowlist;
 
   /** Pattern to match line number in error descriptions. */
   private static final Pattern LINE_NUMBER = Pattern.compile(":-?\\d+");
@@ -76,10 +74,12 @@ public class AllowlistWarningsGuard extends WarningsGuard {
    * Loads legacy warnings list from the set of strings. During development line numbers are changed
    * very often - we just cut them and compare without ones.
    *
+   * <p>Also remove lines starting with "#" or are blank lines.
+   *
    * @return known legacy warnings without line numbers.
    */
-  protected Set<String> normalizeAllowlist(Set<String> allowlist) {
-    Set<String> result = new HashSet<>();
+  public static ImmutableSet<String> normalizeAllowlist(Set<String> allowlist) {
+    Set<String> result = new LinkedHashSet<>();
     for (String line : allowlist) {
       String trimmed = line.trim();
       if (trimmed.isEmpty() || trimmed.charAt(0) == '#') {
@@ -94,11 +94,11 @@ public class AllowlistWarningsGuard extends WarningsGuard {
   }
 
   @Override
-  public CheckLevel level(JSError error) {
-    if (error.getDefaultLevel().equals(CheckLevel.ERROR)) {
+  public @Nullable CheckLevel level(JSError error) {
+    if (error.defaultLevel().equals(CheckLevel.ERROR)) {
       return null;
     }
-    if (containWarning(formatWarning(error))) {
+    if (!allowlist.isEmpty() && containWarning(formatWarning(error))) {
       // If the message matches the guard we use WARNING, so that it
       // - Shows up on stderr, and
       // - Gets caught by the AllowlistBuilder downstream in the pipeline
@@ -106,6 +106,7 @@ public class AllowlistWarningsGuard extends WarningsGuard {
     }
     return null;
   }
+
   /**
    * Determines whether a given warning is included in the allowlist.
    *
@@ -156,7 +157,7 @@ public class AllowlistWarningsGuard extends WarningsGuard {
   // TODO(nicksantos): This is a weird API.
   static Set<String> loadAllowlistedJsWarnings(Reader reader) throws IOException {
     checkNotNull(reader);
-    Set<String> result = new HashSet<>();
+    Set<String> result = new LinkedHashSet<>();
 
     result.addAll(CharStreams.readLines(reader));
 
@@ -164,24 +165,24 @@ public class AllowlistWarningsGuard extends WarningsGuard {
   }
 
   /**
-   * If subclasses want to modify the formatting, they should override
-   * #formatWarning(JSError, boolean), not this method.
+   * If subclasses want to modify the formatting, they should override #formatWarning(JSError,
+   * boolean), not this method.
    */
   protected String formatWarning(JSError error) {
     return formatWarning(error, false);
   }
 
   /**
-   * @param withMetaData If true, include metadata that's useful to humans
-   *     This metadata won't be used for matching the warning.
+   * @param withMetaData If true, include metadata that's useful to humans This metadata won't be
+   *     used for matching the warning.
    */
   protected String formatWarning(JSError error, boolean withMetaData) {
     StringBuilder sb = new StringBuilder();
-    sb.append(normalizeSourceName(error.getSourceName())).append(":");
+    sb.append(normalizeSourceName(error.sourceName())).append(":");
     if (withMetaData) {
       sb.append(error.getLineNumber());
     }
-    List<String> lines = LINE_SPLITTER.splitToList(error.getDescription());
+    List<String> lines = LINE_SPLITTER.splitToList(error.description());
     sb.append("  ").append(lines.get(0));
 
     // Add the rest of the message as a comment.
@@ -215,31 +216,34 @@ public class AllowlistWarningsGuard extends WarningsGuard {
   /** Allowlist builder */
   public class AllowlistBuilder implements ErrorHandler {
     private final Set<JSError> warnings = new LinkedHashSet<>();
-    private String productName = null;
-    private String generatorTarget = null;
-    private String headerNote = null;
+    private @Nullable String productName = null;
+    private @Nullable String generatorTarget = null;
+    private @Nullable String headerNote = null;
 
     /** Fill in your product name to get a fun message! */
+    @CanIgnoreReturnValue
     public AllowlistBuilder setProductName(String name) {
       this.productName = name;
       return this;
     }
 
     /** Fill in instructions on how to generate this allowlist. */
+    @CanIgnoreReturnValue
     public AllowlistBuilder setGeneratorTarget(String name) {
       this.generatorTarget = name;
       return this;
     }
 
     /** A note to include at the top of the allowlist file. */
+    @CanIgnoreReturnValue
     public AllowlistBuilder setNote(String note) {
-      this.headerNote  = note;
+      this.headerNote = note;
       return this;
     }
 
     @Override
     public void report(CheckLevel level, JSError error) {
-      if (error.getDefaultLevel().equals(CheckLevel.ERROR)) {
+      if (error.defaultLevel().equals(CheckLevel.ERROR)) {
         // ERROR-level diagnostics are ignored by AllowlistWarningsGuard (c.f. above getLevel).
         return;
       }
@@ -261,17 +265,18 @@ public class AllowlistWarningsGuard extends WarningsGuard {
      * later.
      */
     public void appendAllowlist(PrintStream out) {
-      out.append(
-          "# This is a list of legacy warnings that have yet to be fixed.\n");
+      out.append("# This is a list of legacy warnings that have yet to be fixed.\n");
 
       if (productName != null && !productName.isEmpty() && !warnings.isEmpty()) {
-        out.append("# Please find some time and fix at least one of them "
-            + "and it will be the happiest day for " + productName + ".\n");
+        out.append(
+            "# Please find some time and fix at least one of them "
+                + "and it will be the happiest day for "
+                + productName
+                + ".\n");
       }
 
       if (generatorTarget != null && !generatorTarget.isEmpty()) {
-        out.append("# When you fix any of these warnings, run "
-            + generatorTarget + " task.\n");
+        out.append("# When you fix any of these warnings, run " + generatorTarget + " task.\n");
       }
 
       if (headerNote != null) {
@@ -280,9 +285,7 @@ public class AllowlistWarningsGuard extends WarningsGuard {
 
       Multimap<DiagnosticType, String> warningsByType = TreeMultimap.create();
       for (JSError warning : warnings) {
-        warningsByType.put(
-            warning.getType(),
-            formatWarning(warning, true /* withLineNumber */));
+        warningsByType.put(warning.type(), formatWarning(warning, true /* withLineNumber */));
       }
 
       for (DiagnosticType type : warningsByType.keySet()) {
@@ -293,7 +296,7 @@ public class AllowlistWarningsGuard extends WarningsGuard {
         out.append("\n# Warning ")
             .append(type.key)
             .append(": ")
-            .println(Iterables.get(LINE_SPLITTER.split(type.format), 0));
+            .println(LINE_SPLITTER.split(type.format).iterator().next());
 
         for (String warning : warningsByType.get(type)) {
           out.println(warning);

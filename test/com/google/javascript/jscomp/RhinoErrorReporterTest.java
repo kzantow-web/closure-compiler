@@ -22,16 +22,12 @@ import static com.google.javascript.jscomp.parsing.JsDocInfoParser.BAD_TYPE_WIKI
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
-import java.util.List;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
-/**
- * Tests for error message filtering.
- *
- */
+/** Tests for error message filtering. */
 @RunWith(JUnit4.class)
 public final class RhinoErrorReporterTest {
   private boolean reportLintWarnings;
@@ -51,15 +47,15 @@ public final class RhinoErrorReporterTest {
 
     reportLintWarnings = true;
 
-    String message =
-        "Missing type declaration.";
-    JSError error = assertWarning(
-        "/** @return */ function f() {}",
-        RhinoErrorReporter.JSDOC_MISSING_TYPE_WARNING,
-        message);
+    String message = "Missing type declaration.";
+    JSError error =
+        assertWarning(
+            "/** @return */ function f() {}",
+            RhinoErrorReporter.JSDOC_MISSING_TYPE_WARNING,
+            message);
 
     assertThat(error.getLineNumber()).isEqualTo(1);
-    assertThat(error.getCharno()).isEqualTo(4);
+    assertThat(error.charno()).isEqualTo(4);
   }
 
   @Test
@@ -80,13 +76,13 @@ public final class RhinoErrorReporterTest {
     assertError(
         "2 ** 3",
         RhinoErrorReporter.LANGUAGE_FEATURE,
-        "This language feature is only supported for ECMASCRIPT_2016 mode or better: "
-            + "exponent operator (**).");
+        """
+        This language feature is only supported for ECMASCRIPT_2016 mode or better: \
+        exponent operator (**).\
+        """);
   }
 
-  /**
-   * Verifies that the compiler emits an error for the given code.
-   */
+  /** Verifies that the compiler emits an error for the given code. */
   private void assertNoWarningOrError(String code) {
     Compiler compiler = parseCode(code);
     assertWithMessage("Expected error").that(compiler.getErrorCount()).isEqualTo(0);
@@ -99,8 +95,8 @@ public final class RhinoErrorReporterTest {
     assertWithMessage("Expected error").that(compiler.getErrorCount()).isEqualTo(1);
 
     JSError error = Iterables.getOnlyElement(compiler.getErrors());
-    assertThat(error.getType()).isEqualTo(type);
-    assertThat(error.getDescription()).isEqualTo(description);
+    assertThat(error.type()).isEqualTo(type);
+    assertThat(error.description()).isEqualTo(description);
     return error;
   }
 
@@ -110,8 +106,8 @@ public final class RhinoErrorReporterTest {
     assertWithMessage("Expected warning").that(compiler.getWarningCount()).isEqualTo(1);
 
     JSError error = Iterables.getOnlyElement(compiler.getWarnings());
-    assertThat(error.getType()).isEqualTo(type);
-    assertThat(error.getDescription()).isEqualTo(description);
+    assertThat(error.type()).isEqualTo(type);
+    assertThat(error.description()).isEqualTo(description);
     return error;
   }
 
@@ -120,23 +116,16 @@ public final class RhinoErrorReporterTest {
     CompilerOptions options = new CompilerOptions();
 
     if (!reportLintWarnings) {
-      options.setWarningLevel(
-          DiagnosticGroups.LINT_CHECKS,
-          CheckLevel.OFF);
+      options.setWarningLevel(DiagnosticGroups.LINT_CHECKS, CheckLevel.OFF);
     } else {
-      options.setWarningLevel(
-          DiagnosticGroups.LINT_CHECKS,
-          CheckLevel.WARNING);
-      options.setWarningLevel(
-          DiagnosticGroups.JSDOC_MISSING_TYPE,
-          CheckLevel.WARNING);
+      options.setWarningLevel(DiagnosticGroups.LINT_CHECKS, CheckLevel.WARNING);
+      options.setWarningLevel(DiagnosticGroups.JSDOC_MISSING_TYPE, CheckLevel.WARNING);
     }
 
     options.setLanguageIn(languageIn);
 
-    List<SourceFile> externs = ImmutableList.of();
-    List<SourceFile> inputs = ImmutableList.of(
-        SourceFile.fromCode("input", code));
+    ImmutableList<SourceFile> externs = ImmutableList.of();
+    ImmutableList<SourceFile> inputs = ImmutableList.of(SourceFile.fromCode("input", code));
     compiler.init(externs, inputs, options);
     compiler.parseInputs();
     return compiler;

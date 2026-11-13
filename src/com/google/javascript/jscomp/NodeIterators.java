@@ -27,6 +27,7 @@ import java.util.Collections;
 import java.util.Deque;
 import java.util.Iterator;
 import java.util.List;
+import org.jspecify.annotations.Nullable;
 
 /**
  * A package for common iteration patterns.
@@ -111,10 +112,8 @@ class NodeIterators {
       return ancestors.peekLast();
     }
 
-    /**
-     * Gets the parent of the node most recently returned by next().
-     */
-    protected Node currentParent() {
+    /** Gets the parent of the node most recently returned by next(). */
+    protected @Nullable Node currentParent() {
       return ancestors.size() >= 2 ? current().getParent() : null;
     }
 
@@ -154,7 +153,7 @@ class NodeIterators {
     private final boolean valueHasSideEffects;
     private final FunctionlessLocalScope iterator;
     private final String varName;
-    private Node lookAhead;
+    private @Nullable Node lookAhead;
 
     /**
      * The name is a bit of a misnomer; this works with let and const as well.
@@ -186,7 +185,6 @@ class NodeIterators {
     }
 
     /**
-     * @param compiler
      * @param iterator The iterator to use while inspecting the node
      */
     private LocalVarMotion(
@@ -246,17 +244,20 @@ class NodeIterators {
         // Reject anything that might read state
         boolean readsState = false;
 
-        if (// Any read of a different variable.
-            (nextNode.isName() && !varName.equals(nextNode.getString()))
+        if ( // Any read of a different variable.
+        (nextNode.isName() && !varName.equals(nextNode.getString()))
             // Any read of a property.
-            || (nextNode.isGetProp() || nextNode.isGetElem())) {
+            || (nextNode.isGetProp()
+                || nextNode.isGetElem()
+                || nextNode.isOptChainGetProp()
+                || nextNode.isOptChainGetElem())) {
 
           // If this is a simple assign, we'll be ok.
           if (nextParent == null || !NodeUtil.isNameDeclOrSimpleAssignLhs(nextNode, nextParent)) {
             readsState = true;
           }
 
-        } else if (nextNode.isCall() || nextNode.isNew()) {
+        } else if (nextNode.isCall() || nextNode.isNew() || nextNode.isOptChainCall()) {
           // This isn't really an important case. In most cases when we use
           // CALL or NEW, we're invoking it on a NAME or a GETPROP. And in the
           // few cases where we're not, it's because we have an anonymous

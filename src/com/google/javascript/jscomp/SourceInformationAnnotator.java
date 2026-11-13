@@ -19,7 +19,7 @@ package com.google.javascript.jscomp;
 import static com.google.common.base.Preconditions.checkState;
 
 import com.google.javascript.rhino.Node;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Annotates nodes with information from their original input file before the compiler performs work
@@ -35,9 +35,9 @@ import javax.annotation.Nullable;
  * </ul>
  */
 public final class SourceInformationAnnotator extends NodeTraversal.AbstractPostOrderCallback {
-  @Nullable private final String sourceFileToCheck;
+  private final @Nullable String sourceFileToCheck;
 
-  private SourceInformationAnnotator(String sourceFileToCheck) {
+  private SourceInformationAnnotator(@Nullable String sourceFileToCheck) {
     this.sourceFileToCheck = sourceFileToCheck;
   }
 
@@ -63,7 +63,7 @@ public final class SourceInformationAnnotator extends NodeTraversal.AbstractPost
 
     // Annotate the original name.
     if (isStringNodeRequiringOriginalName(n)) {
-      setOriginalName(n, n.getString());
+      setOriginalName(n, n);
       return;
     }
 
@@ -80,26 +80,25 @@ public final class SourceInformationAnnotator extends NodeTraversal.AbstractPost
    * post-mangling and in source maps.
    */
   public static boolean isStringNodeRequiringOriginalName(Node node) {
-    switch (node.getToken()) {
-      case GETPROP:
-      case OPTCHAIN_GETPROP:
-      case NAME:
-        return true;
-
-      case MEMBER_FUNCTION_DEF:
-      case GETTER_DEF:
-      case SETTER_DEF:
-      case STRING_KEY:
-        return node.getParent().isObjectLit() && !node.isQuotedString();
-
-      default:
-        return false;
-    }
+    return switch (node.getToken()) {
+      case GETPROP, OPTCHAIN_GETPROP, NAME -> true;
+      case MEMBER_FUNCTION_DEF, GETTER_DEF, SETTER_DEF, STRING_KEY ->
+          node.getParent().isObjectLit() && !node.isQuotedStringKey();
+      default -> false;
+    };
   }
 
   private static void setOriginalName(Node n, String name) {
     if (!name.isEmpty() && n.getOriginalName() == null) {
       n.setOriginalName(name);
+    }
+  }
+
+  // Set the original name from the "getString" of the supplied node.
+  // This avoids having to check for if the string is interned.
+  private static void setOriginalName(Node n, Node name) {
+    if (!name.getString().isEmpty() && n.getOriginalName() == null) {
+      n.setOriginalNameFromName(name);
     }
   }
 }

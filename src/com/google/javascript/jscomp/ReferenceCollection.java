@@ -23,7 +23,8 @@ import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
-import javax.annotation.Nullable;
+import java.util.Objects;
+import org.jspecify.annotations.Nullable;
 
 /**
  * A collection of references. Can be subclassed to apply checks or store additional state when
@@ -50,7 +51,7 @@ public final class ReferenceCollection implements Iterable<Reference>, Serializa
    * before it's assigned. It just means that we don't have enough information to make a definitive
    * judgment.
    */
-  protected boolean isWellDefined() {
+  boolean isWellDefined() {
     int size = references.size();
     if (size == 0) {
       return false;
@@ -74,14 +75,48 @@ public final class ReferenceCollection implements Iterable<Reference>, Serializa
     return true;
   }
 
-  /** Whether the variable is escaped into an inner function. */
+  /** Whether the variable is escaped into an inner function or deferred class field initializer. */
   boolean isEscaped() {
+    Scope closureScope = null;
+    for (Reference ref : references) {
+      Scope refClosureScope = getEnclosingClosureScope(ref.getScope());
+      if (closureScope == null) {
+        closureScope = refClosureScope;
+      } else if (closureScope != refClosureScope) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static @Nullable Scope getEnclosingClosureScope(Scope scope) {
+    for (Scope s = scope; s != null; s = s.getParent()) {
+      if (s.isHoistScope()
+          || ((s.isMemberFieldDefScope() || s.isComputedFieldDefRhsScope())
+              && !s.getRootNode().isStaticMember())) {
+        return s;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Whether `this` is rebound in any reference's scope before reaching the declaration's hoist
+   * scope.
+   */
+  boolean isThisRebound() {
     Scope hoistScope = null;
     for (Reference ref : references) {
+      Scope refHoistScope = ref.getScope().getClosestHoistScope();
       if (hoistScope == null) {
-        hoistScope = ref.getScope().getClosestHoistScope();
-      } else if (hoistScope != ref.getScope().getClosestHoistScope()) {
+        hoistScope = refHoistScope;
+      } else if (hoistScope != refHoistScope) {
         return true;
+      }
+      for (Scope s = ref.getScope(); s != hoistScope && s != null; s = s.getParent()) {
+        if (AbstractScope.ImplicitVar.THIS.isMadeByScope(s)) {
+          return true;
+        }
       }
     }
     return false;
@@ -126,19 +161,27 @@ public final class ReferenceCollection implements Iterable<Reference>, Serializa
    * @return The reference that provides the value for the variable at the time of the first read,
    *     if known, otherwise null.
    *     <p>This is either the variable declaration ("var a = ...") or first reference following the
-   *     declaration if it is an assignment.
+   *     declaration if it is an assignment in the same {@link JSChunk}.
    */
-  Reference getInitializingReference() {
+  @Nullable Reference getInitializingReference() {
     if (isInitializingDeclarationAt(0)) {
       return references.get(0);
-    } else if (isInitializingAssignmentAt(1)) {
+    } else if (isInitializingAssignmentAt(1)
+        // Check that these references are in the same file as a way of ensuring they are in the
+        // same chunk: checking for the same chunk would also be reasonable, but is slightly more
+        // complicated and as of time of writing, didn't seem to help code size in practice.
+        && areInSameFile(0, 1)) {
       return references.get(1);
     }
     return null;
   }
 
+  private boolean areInSameFile(int ref0, int ref1) {
+    return Objects.equals(references.get(ref0).getInputId(), references.get(ref1).getInputId());
+  }
+
   /** Constants are allowed to be defined after their first use. */
-  Reference getInitializingReferenceForConstants() {
+  @Nullable Reference getInitializingReferenceForConstants() {
     int size = references.size();
     for (int i = 0; i < size; i++) {
       if (isInitializingDeclarationAt(i) || isInitializingAssignmentAt(i)) {
@@ -148,7 +191,9 @@ public final class ReferenceCollection implements Iterable<Reference>, Serializa
     return null;
   }
 
-  /** @return Whether the variable is only assigned a value once for its lifetime. */
+  /**
+   * @return Whether the variable is only assigned a value once for its lifetime.
+   */
   boolean isAssignedOnceInLifetime() {
     Reference ref = getOneAndOnlyAssignment();
     if (ref == null) {
@@ -163,7 +208,13 @@ public final class ReferenceCollection implements Iterable<Reference>, Serializa
           return false;
         }
         break;
-      } else if (block.isLoop()) {
+      }
+
+      if (block.getRoot() == ref.getSymbol().getScope().getRootNode()) {
+        break;
+      }
+
+      if (block.isLoop()) {
         return false;
       }
     }
@@ -171,12 +222,21 @@ public final class ReferenceCollection implements Iterable<Reference>, Serializa
     return true;
   }
 
+  /** Returns whether the variable is ever referenced weakly. */
+  boolean isReferencedWeakly() {
+    for (Reference ref : references) {
+      if (NodeUtil.isGoogWeakUsageCall(ref.getParent())) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /**
    * @return The one and only assignment. Returns null if the number of assignments is not exactly
    *     one.
    */
-  @Nullable
-  Reference getOneAndOnlyAssignment() {
+  @Nullable Reference getOneAndOnlyAssignment() {
     Reference assignment = null;
     int size = references.size();
     for (int i = 0; i < size; i++) {
@@ -192,7 +252,9 @@ public final class ReferenceCollection implements Iterable<Reference>, Serializa
     return assignment;
   }
 
-  /** @return Whether the variable is never assigned a value. */
+  /**
+   * @return Whether the variable is never assigned a value.
+   */
   boolean isNeverAssigned() {
     int size = references.size();
     for (int i = 0; i < size; i++) {

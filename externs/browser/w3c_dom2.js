@@ -35,7 +35,7 @@ Document.prototype.getElementById = function(s) {};
 /**
  * @param {?string} namespaceURI
  * @param {string} qualifiedName
- * @param {string=} opt_typeExtension
+ * @param {(string|!ElementCreationOptions)=} opt_typeExtension
  * @return {!Element}
  * @see https://www.w3.org/TR/2000/CR-DOM-Level-2-20000510/core.html#ID-DocCrElNS
  */
@@ -103,6 +103,9 @@ Document.prototype.importNode = function(externalNode, deep) {};
  */
 function HTMLCollection() {}
 
+/** @override */
+HTMLCollection.prototype[Symbol.iterator] = function() {};
+
 /**
  * @type {number}
  * @see http://www.w3.org/TR/2000/CR-DOM-Level-2-20000510/html.html#ID-40057551
@@ -131,6 +134,9 @@ HTMLCollection.prototype.namedItem = function(name) {};
  * @see https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#htmloptionscollection
  */
 function HTMLOptionsCollection() {}
+
+/** @override */
+HTMLOptionsCollection.prototype[Symbol.iterator] = function() {};
 
 /**
  * @type {number}
@@ -326,6 +332,21 @@ NodeIterator.prototype.nextNode = function() {};
  */
 NodeIterator.prototype.previousNode = function() {};
 
+/** @type {NodeFilter} */
+NodeIterator.prototype.filter;
+
+/** @type {boolean} */
+NodeIterator.prototype.pointerBeforeReferenceNode;
+
+/** @type {Node} */
+NodeIterator.prototype.referenceNode;
+
+/** @type {Node} */
+NodeIterator.prototype.root;
+
+/** @type {number} */
+NodeIterator.prototype.whatToShow;
+
 /**
  * @interface
  * @see http://www.w3.org/TR/DOM-Level-2-Traversal-Range/traversal.html#Traversal-TreeWalker
@@ -408,6 +429,18 @@ function HTMLElement() {}
 
 /**
  * @type {string}
+ * @see https://developer.mozilla.org/en-US/docs/Web/API/HTMLElement/accessKeyLabel
+ */
+HTMLElement.prototype.accessKeyLabel;
+
+/**
+ * @type {string}
+ * @see https://developer.mozilla.org/en-US/docs/Web/API/HTMLElement/writingSuggestions
+ */
+HTMLElement.prototype.writingSuggestions;
+
+/**
+ * @type {string}
  * @see http://www.w3.org/TR/2000/CR-DOM-Level-2-20000510/html.html#ID-78276800
  */
 HTMLElement.prototype.title;
@@ -443,6 +476,54 @@ HTMLElement.prototype.className;
  * @override
  */
 HTMLElement.prototype.click = function() {};
+
+/**
+ * @type {string}
+ * @see https://developer.mozilla.org/en-US/docs/Web/API/HTMLElement/outerText
+ */
+HTMLElement.prototype.outerText;
+
+/**
+ * @type {string|null}
+ * @see https://developer.mozilla.org/en-US/docs/Web/API/HTMLElement/popover
+ */
+HTMLElement.prototype.popover;
+
+/** @record */
+function ShowPopoverOptions() {}
+
+/** @type {!HTMLElement|undefined} */
+ShowPopoverOptions.prototype.source;
+
+/**
+ * @record
+ * @extends {ShowPopoverOptions}
+ */
+function TogglePopoverOptions() {}
+
+/** @type {boolean|undefined} */
+TogglePopoverOptions.prototype.force;
+
+/**
+ * @return {undefined}
+ * @see https://developer.mozilla.org/en-US/docs/Web/API/HTMLElement/hidePopover
+ */
+HTMLElement.prototype.hidePopover = function() {};
+
+/**
+ * @param {!ShowPopoverOptions=} opt_options
+ * @return {undefined}
+ * @see https://developer.mozilla.org/en-US/docs/Web/API/HTMLElement/showPopover
+ */
+HTMLElement.prototype.showPopover = function(opt_options) {};
+
+/**
+ * @param {(!TogglePopoverOptions|boolean)=} opt_options
+ * @return {boolean}
+ * @see https://developer.mozilla.org/en-US/docs/Web/API/HTMLElement/togglePopover
+ */
+HTMLElement.prototype.togglePopover = function(opt_options) {};
+
 
 /**
  * @type {number}
@@ -489,6 +570,12 @@ function HTMLLinkElement() {}
  * @see http://www.w3.org/TR/2000/CR-DOM-Level-2-20000510/html.html#ID-87355129
  */
 HTMLLinkElement.prototype.disabled;
+
+/**
+ * @type {string}
+ * @see https://developer.mozilla.org/docs/Web/API/HTMLLinkElement/fetchPriority
+ */
+HTMLLinkElement.prototype.fetchPriority;
 
 /**
  * @type {string}
@@ -713,6 +800,9 @@ HTMLBodyElement.prototype.vLink;
  */
 function HTMLFormControlsCollection() {}
 
+/** @override */
+HTMLFormControlsCollection.prototype[Symbol.iterator] = function() {};
+
 /**
  * @param {string} name
  * @return {T|RadioNodeList<T>|null}
@@ -725,9 +815,17 @@ HTMLFormControlsCollection.prototype.namedItem = function(name) {};
 /**
  * @constructor
  * @extends {HTMLElement}
+ * @implements {Iterable<!Element>}
  * @see http://www.w3.org/TR/2000/CR-DOM-Level-2-20000510/html.html#ID-40002357
  */
 function HTMLFormElement() {}
+
+/**
+ * @return {!IteratorIterable<!Element>}
+ * @nosideeffects
+ * @override
+ */
+HTMLFormElement.prototype[Symbol.iterator] = function() {};
 
 /**
  * @type {!HTMLFormControlsCollection<!HTMLElement>}
@@ -793,9 +891,17 @@ HTMLFormElement.prototype.reset = function() {};
 /**
  * @constructor
  * @extends {HTMLElement}
+ * @implements {Iterable<!HTMLOptionElement>}
  * @see http://www.w3.org/TR/2000/CR-DOM-Level-2-20000510/html.html#ID-94282980
  */
 function HTMLSelectElement() {}
+
+/**
+ * @return {!IteratorIterable<!HTMLOptionElement>}
+ * @nosideeffects
+ * @override
+ */
+HTMLSelectElement.prototype[Symbol.iterator] = function() {};
 
 /**
  * @type {string}
@@ -1122,6 +1228,16 @@ HTMLInputElement.prototype.focus = function() {};
 HTMLInputElement.prototype.select = function() {};
 
 /**
+ * @type {string}
+ */
+HTMLInputElement.prototype.popoverTargetAction;
+
+/**
+ * @type {?Element}
+ */
+HTMLInputElement.prototype.popoverTargetElement;
+
+/**
  * @constructor
  * @extends {HTMLElement}
  * @see http://www.w3.org/TR/2000/CR-DOM-Level-2-20000510/html.html#ID-24874179
@@ -1216,6 +1332,17 @@ HTMLTextAreaElement.prototype.focus = function() {};
 HTMLTextAreaElement.prototype.select = function() {};
 
 /**
+ * @type {string}
+ * @see https://developer.mozilla.org/docs/Web/API/HTMLTextAreaElement/wrap
+ */
+HTMLTextAreaElement.prototype.wrap;
+
+/**
+ * @type {string}
+ */
+HTMLTextAreaElement.prototype.dirName;
+
+/**
  * @constructor
  * @extends {HTMLElement}
  * @see http://www.w3.org/TR/2000/CR-DOM-Level-2-20000510/html.html#ID-34812697
@@ -1263,6 +1390,16 @@ HTMLButtonElement.prototype.type;
  * @see http://www.w3.org/TR/2000/CR-DOM-Level-2-20000510/html.html#ID-72856782
  */
 HTMLButtonElement.prototype.value;
+
+/**
+ * @type {string}
+ */
+HTMLButtonElement.prototype.popoverTargetAction;
+
+/**
+ * @type {?Element}
+ */
+HTMLButtonElement.prototype.popoverTargetElement;
 
 /**
  * @constructor
@@ -1376,6 +1513,9 @@ HTMLOListElement.prototype.start;
  * @see http://www.w3.org/TR/2000/CR-DOM-Level-2-20000510/html.html#ID-40971103
  */
 HTMLOListElement.prototype.type;
+
+/** @type {boolean} */
+HTMLOListElement.prototype.reversed;
 
 /**
  * @constructor
@@ -1710,6 +1850,38 @@ HTMLAnchorElement.prototype.blur = function() {};
 HTMLAnchorElement.prototype.focus = function() {};
 
 /**
+ * @type {string}
+ * @implicitCast
+ * @see https://wicg.github.io/attribution-reporting-api/#idl-index
+ */
+HTMLAnchorElement.prototype.attributionSrc;
+
+/**
+ * @constructor
+ * @implements {IArrayLike<!Element>}
+ * @implements {Iterable<!Element>}
+ */
+function HTMLAllCollection() {}
+
+/** @override */
+HTMLAllCollection.prototype[Symbol.iterator] = function() {};
+
+/** @type {number} */
+HTMLAllCollection.prototype.length;
+
+/**
+ * @param {string} nameOrIndex
+ * @return {!HTMLCollection | !Element | null}
+ */
+HTMLAllCollection.prototype.item = function(nameOrIndex) {};
+
+/**
+ * @param {string} name
+ * @return {!HTMLCollection | !Element | null}
+ */
+HTMLAllCollection.prototype.namedItem = function(name) {};
+
+/**
  * @constructor
  * @extends {HTMLElement}
  * @see http://www.w3.org/TR/2000/CR-DOM-Level-2-20000510/html.html#ID-17701901
@@ -1735,6 +1907,12 @@ HTMLImageElement.prototype.alt;
 HTMLImageElement.prototype.border;
 
 /**
+ * @type {string}
+ * @see https://developer.mozilla.org/docs/Web/API/HTMLImageElement/fetchPriority
+ */
+HTMLImageElement.prototype.fetchPriority;
+
+/**
  * @type {number}
  * @see http://www.w3.org/TR/2000/CR-DOM-Level-2-20000510/html.html#ID-91561496
  */
@@ -1751,6 +1929,12 @@ HTMLImageElement.prototype.hspace;
  * @see http://www.w3.org/TR/2000/CR-DOM-Level-2-20000510/html.html#ID-58983880
  */
 HTMLImageElement.prototype.isMap;
+
+/**
+ * @type {string}
+ * @see https://html.spec.whatwg.org/multipage/embedded-content.html#dom-img-loading
+ */
+HTMLImageElement.prototype.loading;
 
 /**
  * @type {string}
@@ -1794,6 +1978,13 @@ HTMLImageElement.prototype.vspace;
  * @see http://www.w3.org/TR/2000/CR-DOM-Level-2-20000510/html.html#ID-13839076
  */
 HTMLImageElement.prototype.width;
+
+/**
+ * @type {string}
+ * @implicitCast
+ * @see https://wicg.github.io/attribution-reporting-api/#idl-index
+ */
+HTMLImageElement.prototype.attributionSrc;
 
 /**
  * @constructor
@@ -1919,6 +2110,12 @@ HTMLObjectElement.prototype.vspace;
  * @see http://www.w3.org/TR/2000/CR-DOM-Level-2-20000510/html.html#ID-38538620
  */
 HTMLObjectElement.prototype.width;
+
+/**
+ * @return {?Document}
+ * @see https://developer.mozilla.org/docs/Web/API/HTMLObjectElement/getSVGDocument
+ */
+HTMLObjectElement.prototype.getSVGDocument = function() {};
 
 /**
  * @constructor
@@ -2128,6 +2325,12 @@ HTMLScriptElement.prototype.event;
 
 /**
  * @type {string}
+ * @see https://developer.mozilla.org/docs/Web/API/HTMLScriptElement/fetchPriority
+ */
+HTMLScriptElement.prototype.fetchPriority;
+
+/**
+ * @type {string}
  * @see http://www.w3.org/TR/2000/CR-DOM-Level-2-20000510/html.html#ID-66979266
  */
 HTMLScriptElement.prototype.htmlFor;
@@ -2156,6 +2359,13 @@ HTMLScriptElement.prototype.text;
  * @see http://www.w3.org/TR/2000/CR-DOM-Level-2-20000510/html.html#ID-30534818
  */
 HTMLScriptElement.prototype.type;
+
+/**
+ * @type {string}
+ * @implicitCast
+ * @see https://wicg.github.io/attribution-reporting-api/#idl-index
+ */
+HTMLScriptElement.prototype.attributionSrc;
 
 /**
  * @constructor
@@ -2298,6 +2508,12 @@ HTMLTableElement.prototype.deleteTHead = function() {};
  * @see https://www.w3.org/TR/html5/tabular-data.html#htmltableelement
  */
 HTMLTableElement.prototype.insertRow = function(opt_index) {};
+
+/**
+ * @return {!HTMLTableSectionElement}
+ * @see https://developer.mozilla.org/docs/Web/API/HTMLTableElement/createTBody
+ */
+HTMLTableElement.prototype.createTBody = function() {};
 
 /**
  * @constructor
@@ -2690,6 +2906,12 @@ HTMLIFrameElement.prototype.height;
 
 /**
  * @type {string}
+ * @see https://html.spec.whatwg.org/multipage/iframe-embed-object.html#dom-iframe-loading
+ */
+HTMLIFrameElement.prototype.loading;
+
+/**
+ * @type {string}
  * @see http://www.w3.org/TR/2000/CR-DOM-Level-2-20000510/html.html#ID-70472105
  */
 HTMLIFrameElement.prototype.longDesc;
@@ -3035,3 +3257,88 @@ AttributionSourceParams.prototype.attributionReportTo;
  * @see https://github.com/WICG/conversion-measurement-api/tree/main#registering-attribution-sources-for-windowopen-navigations
  */
 AttributionSourceParams.prototype.attributionExpiry;
+
+/**
+ * @constructor
+ * @deprecated
+ * @extends {HTMLElement}
+ */
+function HTMLMarqueeElement() {}
+
+/**
+ * @type {string}
+ * @deprecated
+ */
+HTMLMarqueeElement.prototype.behavior;
+
+/**
+ * @type {string}
+ * @deprecated
+ */
+HTMLMarqueeElement.prototype.bgColor;
+
+/**
+ * @type {string}
+ * @deprecated
+ */
+HTMLMarqueeElement.prototype.direction;
+
+/**
+ * @type {string}
+ * @deprecated
+ */
+HTMLMarqueeElement.prototype.height;
+
+/**
+ * @type {number}
+ * @deprecated
+ */
+HTMLMarqueeElement.prototype.hspace;
+
+/**
+ * @type {number}
+ * @deprecated
+ */
+HTMLMarqueeElement.prototype.loop;
+
+/**
+ * @type {number}
+ * @deprecated
+ */
+HTMLMarqueeElement.prototype.scrollAmount;
+
+/**
+ * @type {number}
+ * @deprecated
+ */
+HTMLMarqueeElement.prototype.scrollDelay;
+
+/**
+ * @type {boolean}
+ * @deprecated
+ */
+HTMLMarqueeElement.prototype.trueSpeed;
+
+/**
+ * @type {number}
+ * @deprecated
+ */
+HTMLMarqueeElement.prototype.vspace;
+
+/**
+ * @type {string}
+ * @deprecated
+ */
+HTMLMarqueeElement.prototype.width;
+
+/**
+ * @return {undefined}
+ * @deprecated
+ */
+HTMLMarqueeElement.prototype.start = function() {};
+
+/**
+ * @return {undefined}
+ * @deprecated
+ */
+HTMLMarqueeElement.prototype.stop = function() {};

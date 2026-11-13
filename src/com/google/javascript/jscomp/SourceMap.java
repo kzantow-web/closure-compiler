@@ -30,7 +30,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Collects information mapping the generated (compiled) source back to its original source for
@@ -95,8 +95,7 @@ public final class SourceMap {
      * @param location the location to transform
      * @return the transformed location or null if not transformed
      */
-    @Nullable
-    String map(String location);
+    @Nullable String map(String location);
   }
 
   /** Simple {@link LocationMapping} that strips a prefix from a location. */
@@ -110,7 +109,7 @@ public final class SourceMap {
     }
 
     @Override
-    public String map(String location) {
+    public @Nullable String map(String location) {
       if (location.startsWith(prefix)) {
         return replacement + location.substring(prefix.length());
       }
@@ -123,9 +122,9 @@ public final class SourceMap {
 
     @Override
     public boolean equals(Object other) {
-      if (other instanceof PrefixLocationMapping) {
-        return ((PrefixLocationMapping) other).prefix.equals(prefix)
-            && ((PrefixLocationMapping) other).replacement.equals(replacement);
+      if (other instanceof PrefixLocationMapping prefixLocationMapping) {
+        return prefixLocationMapping.prefix.equals(prefix)
+            && prefixLocationMapping.replacement.equals(replacement);
       } else {
         return false;
       }
@@ -140,15 +139,37 @@ public final class SourceMap {
   private final SourceMapGenerator generator;
   private List<? extends LocationMapping> prefixMappings = ImmutableList.of();
   private final Map<String, String> sourceLocationFixupCache = new LinkedHashMap<>();
+
   /**
    * A mapping derived from input source maps. Maps back to input sources that inputs to this
    * compilation job have been generated from, and used to create a source map that maps all the way
    * back to original inputs. {@code null} if no such mapping is wanted.
    */
-  @Nullable private SourceFileMapping mapping;
+  private @Nullable SourceFileMapping mapping;
 
   private SourceMap(SourceMapGenerator generator) {
     this.generator = generator;
+  }
+
+  /**
+   * Maintains a mapping from a given node to the position in the source code at which its generated
+   * form was placed. The positions are typically relative to the source file the node is located
+   * in, but might be adjusted if that source is being concatenated to other sources.
+   */
+  public static class Mapping {
+    Node node;
+    FilePosition start;
+    FilePosition end;
+
+    @Override
+    public String toString() {
+      // This toString() representation is used for debugging purposes only.
+      return "Mapping: start " + start + ", end " + end + ", node " + node;
+    }
+  }
+
+  public void addMapping(Mapping mapping) {
+    addMapping(mapping.node, mapping.start, mapping.end);
   }
 
   public void addMapping(
@@ -168,7 +189,17 @@ public final class SourceMap {
 
     if (mapping != null) {
       OriginalMapping sourceMapping = mapping.getSourceMapping(sourceFileName, lineNo, charNo);
-      if (sourceMapping != null) {
+      if (sourceMapping == null) {
+        // The source file does not have a input map. We consider this to be an
+        // original source range and include it in the output map.
+      } else if (sourceMapping.equals(OriginalMapping.getDefaultInstance())) {
+        // The source file does have an input map, but it does not map the
+        // location. We consider this to be a synthetic code range and do not
+        // include it in the output map.
+        // TODO b/452676030 - Report the sourceless mapping.
+        return;
+      } else {
+        // The source file mapped our code range to its original source location.
         sourceFileName = sourceMapping.getOriginalFile();
         lineNo = sourceMapping.getLineNumber();
         charNo = sourceMapping.getColumnPosition();
@@ -197,9 +228,22 @@ public final class SourceMap {
     generator.addSourcesContent(fixupSourceLocation(name), code);
   }
 
-  private static String getOriginalName(Node node) {
+  private static @Nullable String getOriginalName(Node node) {
     if (node.getOriginalName() != null) {
       return node.getOriginalName();
+    }
+    // If this is the name identifier of a function declaration/expression and the name node itself
+    // has no originalName, fall back to the enclosing FUNCTION node's originalName.
+    // This covers functions that were originally anonymous (class methods compiled to prototype
+    // assignments, `var f = function(){}` patterns): SourceInformationAnnotator skips empty-string
+    // NAME nodes but always annotates the FUNCTION node. When the renaming pass later fills in the
+    // NAME, the node's originalName remains null. The FUNCTION node's originalName is the correct
+    // original name to use.
+    if (node.isName()) {
+      Node parent = node.getParent();
+      if (parent != null && parent.isFunction() && parent.getFirstChild() == node) {
+        return parent.getOriginalName();
+      }
     }
     if (node.isMemberFunctionDef()) {
       return node.getFirstChild().getOriginalName();
@@ -259,7 +303,7 @@ public final class SourceMap {
     generator.validate(validate);
   }
 
-  /** @param sourceMapLocationMappings */
+  /** */
   public void setPrefixMappings(List<? extends LocationMapping> sourceMapLocationMappings) {
     this.prefixMappings = sourceMapLocationMappings;
   }

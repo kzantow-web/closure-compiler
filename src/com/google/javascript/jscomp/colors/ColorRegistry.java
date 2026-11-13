@@ -25,6 +25,7 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSetMultimap;
 import com.google.common.collect.MultimapBuilder;
 import com.google.common.collect.SetMultimap;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.util.LinkedHashMap;
 
 /**
@@ -84,17 +85,20 @@ public final class ColorRegistry {
 
     private Builder() {}
 
+    @CanIgnoreReturnValue
     public Builder setNativeColor(Color x) {
       checkState(REQUIRED_IDS.contains(x.getId()), x);
       this.nativeColors.put(x.getId(), x);
       return this;
     }
 
+    @CanIgnoreReturnValue
     public Builder addDisambiguationEdge(Color subtype, Color supertype) {
       this.colorToDisambiguationSupertypeGraph.put(subtype, supertype);
       return this;
     }
 
+    @CanIgnoreReturnValue
     public Builder addMismatchLocation(ColorId id, String location) {
       this.mismatchLocations.put(id, location);
       return this;
@@ -107,11 +111,20 @@ public final class ColorRegistry {
      * from compilation-to-compilation (like whether the "Number" object is invalidating), so should
      * use {@link #setNativeColor}} instead.
      */
+    @CanIgnoreReturnValue
     @VisibleForTesting
     public Builder setDefaultNativeColorsForTesting() {
       for (ColorId id : REQUIRED_IDS) {
         this.setNativeColor(Color.singleBuilder().setId(id).build());
       }
+      // In ES2025 and externs, Generator extends Iterator (inheriting from %IteratorPrototype%).
+      // In real compilations this subtyping edge is populated by ColorPool from the type system;
+      // for testing, we record it explicitly so that passes checking native subtyping (such as
+      // PolyfillUsageFinder or property disambiguation) reflect that Generator is an Iterator
+      // subtype.
+      this.addDisambiguationEdge(
+          this.nativeColors.get(StandardColors.GENERATOR_ID),
+          this.nativeColors.get(StandardColors.ITERATOR_ID));
       return this;
     }
 

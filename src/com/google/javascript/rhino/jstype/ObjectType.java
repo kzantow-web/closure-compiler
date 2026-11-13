@@ -39,6 +39,7 @@
 
 package com.google.javascript.rhino.jstype;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.javascript.jscomp.base.JSCompObjects.identical;
 
@@ -48,14 +49,14 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.Iterables;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.javascript.jscomp.base.Tri;
 import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.jstype.Property.OwnedProperty;
-import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Object type.
@@ -81,7 +82,7 @@ import javax.annotation.Nullable;
  */
 public abstract class ObjectType extends JSType {
   private boolean visited;
-  private JSDocInfo docInfo = null;
+  private @Nullable JSDocInfo docInfo = null;
   private boolean unknown = true;
 
   ObjectType(JSTypeRegistry registry) {
@@ -100,15 +101,23 @@ public abstract class ObjectType extends JSType {
   }
 
   /**
-   * Default getSlot implementation. This gets overridden by FunctionType
-   * for lazily-resolved prototypes.
+   * Default getSlot implementation. This gets overridden by FunctionType for lazily-resolved
+   * prototypes.
    */
-  public Property getSlot(String name) {
+  public @Nullable Property getSlot(Property.Key name) {
     OwnedProperty property = getPropertyMap().findClosest(name);
     return property == null ? null : property.getValue();
   }
 
+  public final @Nullable Property getSlot(String name) {
+    return getSlot(new Property.StringKey(name));
+  }
+
   public final Property getOwnSlot(String name) {
+    return getPropertyMap().getOwnProperty(name);
+  }
+
+  public final Property getOwnSlot(Property.Key name) {
     return getPropertyMap().getOwnProperty(name);
   }
 
@@ -122,7 +131,7 @@ public abstract class ObjectType extends JSType {
    * @see TemplatizedType
    */
   public ImmutableList<JSType> getTemplateTypes() {
-    return null;
+    return ImmutableList.of();
   }
 
   /**
@@ -137,6 +146,7 @@ public abstract class ObjectType extends JSType {
    * Sets the docInfo for this type from the given
    * {@link JSDocInfo}. The {@code JSDocInfo} may be {@code null}.
    */
+  @SuppressWarnings("IdentifierName") // for compatibility with former 3p code
   public void setJSDocInfo(JSDocInfo info) {
     docInfo = info;
   }
@@ -197,8 +207,7 @@ public abstract class ObjectType extends JSType {
    *
    * @return the object's name or {@code null} if this is an anonymous object
    */
-  @Nullable
-  public abstract String getReferenceName();
+  public abstract @Nullable String getReferenceName();
 
   /**
    * INVARIANT: {@code hasReferenceName()} is true if and only if {@code getReferenceName()} returns
@@ -211,18 +220,15 @@ public abstract class ObjectType extends JSType {
   }
 
   /**
-   * Due to the complexity of some of our internal type systems, sometimes
-   * we have different types constructed by the same constructor.
-   * In other parts of the type system, these are called delegates.
-   * We construct these types by appending suffixes to the constructor name.
+   * Due to the complexity of some of our internal type systems, sometimes we have different types
+   * constructed by the same constructor. In other parts of the type system, these are called
+   * delegates. We construct these types by appending suffixes to the constructor name.
    *
-   * The normalized reference name does not have these suffixes, and as such,
-   * recollapses these implicit types back to their real type.  Note that
-   * suffixes such as ".prototype" can be added <i>after</i> the delegate
-   * suffix, so anything after the parentheses must still be retained.
+   * <p>The normalized reference name does not have these suffixes, and as such, recollapses these
+   * implicit types back to their real type. Note that suffixes such as ".prototype" can be added
+   * <i>after</i> the delegate suffix, so anything after the parentheses must still be retained.
    */
-  @Nullable
-  public final String getNormalizedReferenceName() {
+  public final @Nullable String getNormalizedReferenceName() {
     String name = getReferenceName();
     if (name != null) {
       int start = name.indexOf('(');
@@ -284,7 +290,7 @@ public abstract class ObjectType extends JSType {
    */
   public abstract FunctionType getConstructor();
 
-  public FunctionType getSuperClassConstructor() {
+  public @Nullable FunctionType getSuperClassConstructor() {
     ObjectType iproto = getImplicitPrototype();
     if (iproto == null) {
       return null;
@@ -294,13 +300,18 @@ public abstract class ObjectType extends JSType {
   }
 
   /** Returns the closest ancestor that defines the property including this type itself. */
-  public final ObjectType getClosestDefiningType(String propertyName) {
-    OwnedProperty property = getPropertyMap().findClosest(propertyName);
+  public final @Nullable ObjectType getClosestDefiningType(String propertyName) {
+    OwnedProperty property = getPropertyMap().findClosest(new Property.StringKey(propertyName));
     return property == null ? null : property.getOwner();
   }
 
   /** Returns the closest definition of the property including this type itself. */
   public final OwnedProperty findClosestDefinition(String propertyName) {
+    return findClosestDefinition(new Property.StringKey(propertyName));
+  }
+
+  /** Returns the closest definition of the property including this type itself. */
+  public final OwnedProperty findClosestDefinition(Property.Key propertyName) {
     return getPropertyMap().findClosest(propertyName);
   }
 
@@ -345,12 +356,28 @@ public abstract class ObjectType extends JSType {
    */
   public final boolean defineDeclaredProperty(String propertyName,
       JSType type, Node propertyNode) {
-    boolean result = defineProperty(propertyName, type, false, propertyNode);
-    // All property definitions go through this method
-    // or defineInferredProperty. Because the properties defined an an
-    // object can affect subtyping, it's slightly more efficient
-    // to register this after defining the property.
-    registry.registerPropertyOnType(propertyName, this);
+    return defineDeclaredProperty(new Property.StringKey(propertyName), type, propertyNode);
+  }
+
+  /**
+   * Defines a property whose type is explicitly declared by the programmer.
+   *
+   * @param propertyName the property's name
+   * @param type the type
+   * @param propertyNode the node corresponding to the declaration of property which might later be
+   *     accessed using {@code getPropertyNode}.
+   */
+  @CanIgnoreReturnValue
+  public final boolean defineDeclaredProperty(
+      Property.Key propertyName, JSType type, Node propertyNode) {
+    boolean result = defineProperty(propertyName, type, /* inferred= */ false, propertyNode);
+    if (propertyName.kind().equals(Property.KeyKind.STRING)) {
+      // All property definitions go through this method
+      // or defineInferredProperty. Because the properties defined an an
+      // object can affect subtyping, it's slightly more efficient
+      // to register this after defining the property.
+      registry.registerPropertyOnType(propertyName.string(), this);
+    }
     return result;
   }
 
@@ -366,13 +393,30 @@ public abstract class ObjectType extends JSType {
 
   /**
    * Defines a property whose type is inferred.
+   *
    * @param propertyName the property's name
    * @param type the type
-   * @param propertyNode the node corresponding to the inferred definition of
-   *        property that might later be accessed using {@code getPropertyNode}.
+   * @param propertyNode the node corresponding to the inferred definition of property that might
+   *     later be accessed using {@code getPropertyNode}.
    */
-  public final boolean defineInferredProperty(String propertyName,
-      JSType type, Node propertyNode) {
+  @CanIgnoreReturnValue
+  public final boolean defineInferredProperty(
+      Property.Key propertyName, JSType type, Node propertyNode) {
+    checkArgument(
+        propertyName.string() != null,
+        "Symbol-based property keys are not supported for inferred properties.");
+    return defineInferredProperty(propertyName.string(), type, propertyNode);
+  }
+
+  /**
+   * Defines a property whose type is inferred.
+   *
+   * @param propertyName the property's name
+   * @param type the type
+   * @param propertyNode the node corresponding to the inferred definition of property that might
+   *     later be accessed using {@code getPropertyNode}.
+   */
+  public final boolean defineInferredProperty(String propertyName, JSType type, Node propertyNode) {
     if (hasProperty(propertyName)) {
       if (isPropertyTypeDeclared(propertyName)) {
         // We never want to hide a declared property with an inferred property.
@@ -397,109 +441,176 @@ public abstract class ObjectType extends JSType {
   }
 
   /**
-   * Defines a property.<p>
+   * Defines a property.
    *
-   * For clarity, callers should prefer {@link #defineDeclaredProperty} and
-   * {@link #defineInferredProperty}.
+   * <p>For clarity, callers should prefer {@link #defineDeclaredProperty} and {@link
+   * #defineInferredProperty}.
    *
    * @param propertyName the property's name
    * @param type the type
    * @param inferred {@code true} if this property's type is inferred
-   * @param propertyNode the node that represents the definition of property.
-   *        Depending on the actual sub-type the node type might be different.
-   *        The general idea is to have an estimate of where in the source code
-   *        this property is defined.
-   * @return True if the property was registered successfully, false if this
-   *        conflicts with a previous property type declaration.
+   * @param propertyNode the node that represents the definition of property. Depending on the
+   *     actual sub-type the node type might be different. The general idea is to have an estimate
+   *     of where in the source code this property is defined.
+   * @return True if the property was registered successfully, false if this conflicts with a
+   *     previous property type declaration.
    */
-  abstract boolean defineProperty(String propertyName, JSType type,
-      boolean inferred, Node propertyNode);
-
-  /**
-   * Removes the declared or inferred property from this ObjectType.
-   *
-   * @param propertyName the property's name
-   * @return true if the property was removed successfully. False if the
-   *         property did not exist, or could not be removed.
-   */
-  public boolean removeProperty(String propertyName) {
-    return false;
+  final boolean defineProperty(
+      String propertyName, JSType type, boolean inferred, Node propertyNode) {
+    return defineProperty(new Property.StringKey(propertyName), type, inferred, propertyNode);
   }
 
   /**
-   * Gets the node corresponding to the definition of the specified property.
-   * This could be the node corresponding to declaration of the property or the
-   * node corresponding to the first reference to this property, e.g.,
-   * "this.propertyName" in a constructor. Note this is mainly intended to be
-   * an estimate of where in the source code a property is defined. Sometime
-   * the returned node is not even part of the global AST but in the AST of the
-   * JsDoc that defines a type.
+   * Defines a property.
+   *
+   * <p>For clarity, callers should prefer {@link #defineDeclaredProperty} and {@link
+   * #defineInferredProperty}.
+   *
+   * @param propertyName the property's name
+   * @param type the type
+   * @param inferred {@code true} if this property's type is inferred
+   * @param propertyNode the node that represents the definition of property. Depending on the
+   *     actual sub-type the node type might be different. The general idea is to have an estimate
+   *     of where in the source code this property is defined.
+   * @return True if the property was registered successfully, false if this conflicts with a
+   *     previous property type declaration.
+   */
+  @CanIgnoreReturnValue
+  abstract boolean defineProperty(
+      Property.Key propertyName, JSType type, boolean inferred, Node propertyNode);
+
+  /**
+   * Gets the node corresponding to the definition of the specified property. This could be the node
+   * corresponding to declaration of the property or the node corresponding to the first reference
+   * to this property, e.g., "this.propertyName" in a constructor. Note this is mainly intended to
+   * be an estimate of where in the source code a property is defined. Sometime the returned node is
+   * not even part of the global AST but in the AST of the JsDoc that defines a type.
    *
    * @param propertyName the name of the property
    * @return the {@code Node} corresponding to the property or null.
    */
-  public final Node getPropertyNode(String propertyName) {
+  public final @Nullable Node getPropertyNode(String propertyName) {
+    return getPropertyNode(new Property.StringKey(propertyName));
+  }
+
+  public final @Nullable Node getPropertyNode(Property.Key propertyName) {
     Property p = getSlot(propertyName);
     return p == null ? null : p.getNode();
   }
 
   public final Node getPropertyDefSite(String propertyName) {
+    return getPropertyDefSite(new Property.StringKey(propertyName));
+  }
+
+  public final Node getPropertyDefSite(Property.Key propertyName) {
     return getPropertyNode(propertyName);
   }
 
-  public final JSDocInfo getPropertyJSDocInfo(String propertyName) {
+  @SuppressWarnings("IdentifierName") // for compatibility with former 3p code
+  public final @Nullable JSDocInfo getPropertyJSDocInfo(String propertyName) {
+    return this.getPropertyJSDocInfo(new Property.StringKey(propertyName));
+  }
+
+  @SuppressWarnings("IdentifierName") // for compatibility with former 3p code
+  public final @Nullable JSDocInfo getPropertyJSDocInfo(Property.Key propertyName) {
     Property p = getSlot(propertyName);
     return p == null ? null : p.getJSDocInfo();
   }
 
   /**
-   * Gets the docInfo on the specified property on this type.  This should not
-   * be implemented recursively, as you generally need to know exactly on
-   * which type in the prototype chain the JSDocInfo exists.
+   * Gets the docInfo on the specified property on this type. This should not be implemented
+   * recursively, as you generally need to know exactly on which type in the prototype chain the
+   * JSDocInfo exists.
    */
-  public final JSDocInfo getOwnPropertyJSDocInfo(String propertyName) {
+  @SuppressWarnings("IdentifierName") // for compatibility with former 3p code
+  public final @Nullable JSDocInfo getOwnPropertyJSDocInfo(String propertyName) {
+    return getOwnPropertyJSDocInfo(new Property.StringKey(propertyName));
+  }
+
+  /**
+   * Gets the docInfo on the specified property on this type. This should not be implemented
+   * recursively, as you generally need to know exactly on which type in the prototype chain the
+   * JSDocInfo exists.
+   */
+  @SuppressWarnings("IdentifierName") // for compatibility with former 3p code
+  public final @Nullable JSDocInfo getOwnPropertyJSDocInfo(Property.Key propertyName) {
     Property p = getOwnSlot(propertyName);
     return p == null ? null : p.getJSDocInfo();
   }
 
-  public final Node getOwnPropertyDefSite(String propertyName) {
+  public final @Nullable Node getOwnPropertyDefSite(String propertyName) {
+    return getOwnPropertyDefSite(new Property.StringKey(propertyName));
+  }
+
+  public final @Nullable Node getOwnPropertyDefSite(Property.Key propertyName) {
     Property p = getOwnSlot(propertyName);
     return p == null ? null : p.getNode();
   }
 
   /**
-   * Sets the docInfo for the specified property from the
-   * {@link JSDocInfo} on its definition.
-   * @param info {@code JSDocInfo} for the property definition. May be
-   *        {@code null}.
+   * Sets the docInfo for the specified property from the {@link JSDocInfo} on its definition.
+   *
+   * @param info {@code JSDocInfo} for the property definition. May be {@code null}.
    */
-  public void setPropertyJSDocInfo(String propertyName, JSDocInfo info) {
+  @SuppressWarnings("IdentifierName") // for compatibility with former 3p code
+  public final void setPropertyJSDocInfo(String propertyName, JSDocInfo info) {
+    setPropertyJSDocInfo(new Property.StringKey(propertyName), info);
+  }
+
+  /**
+   * Sets the docInfo for the specified property from the {@link JSDocInfo} on its definition.
+   *
+   * @param info {@code JSDocInfo} for the property definition. May be {@code null}.
+   */
+  @SuppressWarnings("IdentifierName") // for compatibility with former 3p code
+  public void setPropertyJSDocInfo(Property.Key propertyName, JSDocInfo info) {
     // by default, do nothing
   }
 
   /** Sets the node where the property was defined. */
-  public void setPropertyNode(String propertyName, Node defSite) {
+  public final void setPropertyNode(String propertyName, Node defSite) {
+    setPropertyNode(new Property.StringKey(propertyName), defSite);
+  }
+
+  /** Sets the node where the property was defined. */
+  public void setPropertyNode(Property.Key propertyName, Node defSite) {
     // by default, do nothing
   }
 
   @Override
-  protected JSType findPropertyTypeWithoutConsideringTemplateTypes(String propertyName) {
+  protected @Nullable JSType findPropertyTypeWithoutConsideringTemplateTypes(
+      Property.Key propertyName) {
     return hasProperty(propertyName) ? getPropertyType(propertyName) : null;
   }
 
   /**
-   * Gets the property type of the property whose name is given. If the
-   * underlying object does not have this property, the Unknown type is
-   * returned to indicate that no information is available on this property.
+   * Gets the property type of the property whose name is given. If the underlying object does not
+   * have this property, the Unknown type is returned to indicate that no information is available
+   * on this property.
    *
-   * This gets overridden by FunctionType for lazily-resolved call() and
-   * bind() functions.
+   * <p>This gets overridden by FunctionType for lazily-resolved call() and bind() functions.
    *
-   * @return the property's type or {@link UnknownType}. This method never
-   *         returns {@code null}.
+   * @return the property's type or {@link UnknownType}. This method never returns {@code null}.
    */
-  public JSType getPropertyType(String propertyName) {
-    StaticTypedSlot slot = getSlot(propertyName);
+  public final JSType getPropertyType(String propertyName) {
+    return getPropertyType(new Property.StringKey(propertyName));
+  }
+
+  /**
+   * Gets the property type of the property whose name is given. If the underlying object does not
+   * have this property, the Unknown type is returned to indicate that no information is available
+   * on this property.
+   *
+   * <p>This gets overridden by FunctionType for lazily-resolved call() and bind() functions.
+   *
+   * @return the property's type or {@link UnknownType}. This method never returns {@code null}.
+   */
+  public JSType getPropertyType(Property.Key propertyName) {
+    @Nullable StaticTypedSlot slot = getSlot(propertyName);
+    return getPropertyTypeFromSlot(slot);
+  }
+
+  private JSType getPropertyTypeFromSlot(StaticTypedSlot slot) {
     if (slot == null) {
       if (isNoResolvedType() || isCheckedUnknownType()) {
         return getNativeType(JSTypeNative.CHECKED_UNKNOWN_TYPE);
@@ -512,7 +623,7 @@ public abstract class ObjectType extends JSType {
   }
 
   @Override
-  public HasPropertyKind getPropertyKind(String propertyName, boolean autobox) {
+  public HasPropertyKind getPropertyKind(Property.Key propertyName, boolean autobox) {
     // Unknown types have all properties.
     return HasPropertyKind.of(isEmptyType() || isUnknownType() || getSlot(propertyName) != null);
   }
@@ -522,6 +633,14 @@ public abstract class ObjectType extends JSType {
    * the object.  Returns false even if it is declared on a supertype.
    */
   public final HasPropertyKind getOwnPropertyKind(String propertyName) {
+    return getOwnPropertyKind(new Property.StringKey(propertyName));
+  }
+
+  /**
+   * Checks whether the property whose name is given is present directly on the object. Returns
+   * false even if it is declared on a supertype.
+   */
+  public final HasPropertyKind getOwnPropertyKind(Property.Key propertyName) {
     return getOwnSlot(propertyName) != null
         ? HasPropertyKind.KNOWN_PRESENT
         : HasPropertyKind.ABSENT;
@@ -532,7 +651,19 @@ public abstract class ObjectType extends JSType {
    * the object.  Returns false even if it is declared on a supertype.
    */
   public final boolean hasOwnProperty(String propertyName) {
+    return hasOwnProperty(new Property.StringKey(propertyName));
+  }
+
+  /**
+   * Checks whether the property whose name is given is present directly on the object. Returns
+   * false even if it is declared on a supertype.
+   */
+  public final boolean hasOwnProperty(Property.Key propertyName) {
     return !getOwnPropertyKind(propertyName).equals(HasPropertyKind.ABSENT);
+  }
+
+  public Set<KnownSymbolType> getOwnPropertyKnownSymbols() {
+    return getPropertyMap().getOwnKnownSymbols();
   }
 
   /**
@@ -548,9 +679,30 @@ public abstract class ObjectType extends JSType {
   }
 
   /**
+   * Returns the names of all the properties directly on this type.
+   */
+  public final ImmutableSet<Property.Key> getOwnPropertyKeys() {
+    Set<String> ownPropertyNames = this.getOwnPropertyNames();
+    Set<KnownSymbolType> ownSymbols = this.getOwnPropertyKnownSymbols();
+    ImmutableSet.Builder<Property.Key> ownPropertyKeys = ImmutableSet.builder();
+    for (String propertyName : ownPropertyNames) {
+      ownPropertyKeys.add(new Property.StringKey(propertyName));
+    }
+    for (KnownSymbolType symbol : ownSymbols) {
+      ownPropertyKeys.add(new Property.SymbolKey(symbol));
+    }
+    return ownPropertyKeys.build();
+  }
+
+  /**
    * Checks whether the property's type is inferred.
    */
   public final boolean isPropertyTypeInferred(String propertyName) {
+    return isPropertyTypeInferred(new Property.StringKey(propertyName));
+  }
+
+  /** Checks whether the property's type is inferred. */
+  public final boolean isPropertyTypeInferred(Property.Key propertyName) {
     StaticTypedSlot slot = getSlot(propertyName);
     return slot == null ? false : slot.isTypeInferred();
   }
@@ -559,6 +711,11 @@ public abstract class ObjectType extends JSType {
    * Checks whether the property's type is declared.
    */
   public final boolean isPropertyTypeDeclared(String propertyName) {
+    return isPropertyTypeDeclared(new Property.StringKey(propertyName));
+  }
+
+  /** Checks whether the property's type is declared. */
+  public final boolean isPropertyTypeDeclared(Property.Key propertyName) {
     StaticTypedSlot slot = getSlot(propertyName);
     return slot == null ? false : !slot.isTypeInferred();
   }
@@ -573,6 +730,11 @@ public abstract class ObjectType extends JSType {
    * Whether the given property is declared on this object.
    */
   public final boolean hasOwnDeclaredProperty(String name) {
+    return hasOwnProperty(name) && isPropertyTypeDeclared(name);
+  }
+
+  /** Whether the given property is declared on this object. */
+  public final boolean hasOwnDeclaredProperty(Property.Key name) {
     return hasOwnProperty(name) && isPropertyTypeDeclared(name);
   }
 
@@ -591,7 +753,15 @@ public abstract class ObjectType extends JSType {
 
   /** Returns a list of properties defined or inferred on this type and any of its supertypes. */
   public final ImmutableSortedSet<String> getPropertyNames() {
-    return getPropertyMap().keySet();
+    return getPropertyMap().getAllKeys().stringKeys();
+  }
+
+  /**
+   * Returns a set of all {@link KnownSymbolType}s properties defined on this type and any of its
+   * supertypes.
+   */
+  public final PropertyMap.AllKeys getAllKeys() {
+    return getPropertyMap().getAllKeys();
   }
 
   @Override
@@ -704,14 +874,13 @@ public abstract class ObjectType extends JSType {
   }
 
   /** Whether this is a built-in object. */
+  @Override
   public boolean isNativeObjectType() {
     return false;
   }
 
-  /**
-   * A null-safe version of JSType#toObjectType.
-   */
-  public static ObjectType cast(JSType type) {
+  /** A null-safe version of JSType#toObjectType. */
+  public static @Nullable ObjectType cast(JSType type) {
     return type == null ? null : type.toObjectType();
   }
 

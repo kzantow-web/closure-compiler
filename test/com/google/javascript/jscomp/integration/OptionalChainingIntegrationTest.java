@@ -16,7 +16,6 @@
 
 package com.google.javascript.jscomp.integration;
 
-import static com.google.javascript.jscomp.base.JSCompStrings.lines;
 
 import com.google.common.collect.ImmutableList;
 import com.google.javascript.jscomp.CompilationLevel;
@@ -35,7 +34,7 @@ import org.junit.runners.JUnit4;
 public final class OptionalChainingIntegrationTest extends IntegrationTestCase {
 
   /** Creates a CompilerOptions object with google coding conventions. */
-  protected CompilerOptions createCompilerOptions() {
+  CompilerOptions createCompilerOptions() {
     CompilerOptions options = new CompilerOptions();
     options.setLanguageIn(LanguageMode.ECMASCRIPT_NEXT);
     options.setLanguageOut(LanguageMode.NO_TRANSPILE);
@@ -57,23 +56,23 @@ public final class OptionalChainingIntegrationTest extends IntegrationTestCase {
     externs = ImmutableList.of(new TestExternsBuilder().addConsole().buildExternsFile("externs"));
     test(
         options,
-        lines(
-            "class MyClass {", //
-            "  method(msg) {",
-            "    console.log(msg);",
-            "  }",
-            "}",
-            "",
-            "/**",
-            " * @param {?MyClass} maybeMyClass",
-            " */",
-            "function maybeLog(maybeMyClass) {",
-            "  maybeMyClass?.method('log message')",
-            "}",
-            "",
-            "maybeLog(null);",
-            "maybeLog(new MyClass());",
-            ""),
+        """
+        class MyClass {
+          method(msg) {
+            console.log(msg);
+          }
+        }
+
+        /**
+         * @param {?MyClass} maybeMyClass
+         */
+        function maybeLog(maybeMyClass) {
+          maybeMyClass?.method('log message')
+        }
+
+        maybeLog(null);
+        maybeLog(new MyClass());
+        """,
         "console.log('log message');");
   }
 
@@ -83,22 +82,22 @@ public final class OptionalChainingIntegrationTest extends IntegrationTestCase {
     externs = ImmutableList.of(new TestExternsBuilder().addConsole().buildExternsFile("externs"));
     test(
         options,
-        lines(
-            "class MyClass {", //
-            "  method() {",
-            "    return 4;",
-            "  }",
-            "}",
-            "",
-            "/**",
-            " * @param {?MyClass} maybeMyClass",
-            " */",
-            "function maybeLog(maybeMyClass) {",
-            "  maybeMyClass?.method()", // optional chaining call
-            "}",
-            "",
-            "maybeLog(new MyClass());",
-            ""),
+        """
+        class MyClass {
+          method() {
+            return 4;
+          }
+        }
+
+        /**
+         * @param {?MyClass} maybeMyClass
+         */
+        function maybeLog(maybeMyClass) {
+          maybeMyClass?.method() // optional chaining call
+        }
+
+        maybeLog(new MyClass());
+        """,
         "");
   }
 
@@ -108,36 +107,37 @@ public final class OptionalChainingIntegrationTest extends IntegrationTestCase {
     externs = ImmutableList.of(new TestExternsBuilder().addConsole().buildExternsFile("externs"));
     test(
         options,
-        lines(
-            "class MyClass {", //
-            "  method() {",
-            "    return 4;",
-            "  }",
-            "}",
-            "let x = (new MyClass()).method();", // regular call gets devirtualized and inlined
-            "console.log(x);",
-            ""),
+        """
+        class MyClass {
+          method() {
+            return 4;
+          }
+        }
+        let x = (new MyClass()).method(); // regular call gets devirtualized and inlined
+        console.log(x);
+        """,
         "console.log(4);");
 
     test(
         options,
-        lines(
-            "class MyClass {", //
-            "  method() {",
-            "    return 4;",
-            "  }",
-            "}",
-            "let x = (new MyClass())?.method();",
-            "console.log(x);",
-            ""),
-        lines(
-            "class a {", //
-            "  a() {",
-            "    return 4;",
-            "  }",
-            "}",
-            // optional call is not devirtualized and not inlined
-            "console.log((new a)?.a());"));
+        """
+        class MyClass {
+          method() {
+            return 4;
+          }
+        }
+        let x = (new MyClass())?.method();
+        console.log(x);
+        """,
+        """
+        class a {
+          a() {
+            return 4;
+          }
+        }
+        // optional call is not devirtualized and not inlined
+        console.log((new a)?.a());
+        """);
   }
 
   @Test
@@ -148,4 +148,31 @@ public final class OptionalChainingIntegrationTest extends IntegrationTestCase {
     // JSC_WRONG_ARGUMENT_COUNT error is reported
     test(options, "var x = x || {}; x.f = function() {}; x?.f(3);", DiagnosticGroups.CHECK_TYPES);
   }
+
+  @Test
+  public void testDirectVsIndirectEval() {
+    CompilerOptions options = createCompilerOptions();
+    options.setFoldConstants(true);
+    externs =
+        ImmutableList.of(
+            new TestExternsBuilder().addExtra("function eval(x) {}").buildExternsFile("externs"));
+    test(
+        options,
+        """
+        function f(a, x) {
+          if (a) {
+            return eval(x);
+          } else {
+            return (0, eval)(x);
+          }
+        }
+        f(true, '1');
+        """,
+        """
+        (function(b, a) {
+          return b ? eval(a) : (0,eval)(a);
+        })(!0, "1");
+        """);
+  }
 }
+

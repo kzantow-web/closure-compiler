@@ -17,7 +17,7 @@ package com.google.javascript.jscomp.parsing.parser;
 
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.javascript.jscomp.parsing.parser.testing.FeatureSetSubject.assertFS;
-import static com.google.javascript.rhino.testing.Asserts.assertThrows;
+import static org.junit.Assert.assertThrows;
 
 import com.google.javascript.jscomp.parsing.parser.FeatureSet.Feature;
 import org.junit.Test;
@@ -50,7 +50,8 @@ public final class FeatureSetTest {
     assertFS(FeatureSet.ALL).contains(FeatureSet.ES_UNSUPPORTED);
     assertFS(FeatureSet.ES_UNSUPPORTED).contains(FeatureSet.ES_UNSTABLE);
     assertFS(FeatureSet.ES_UNSTABLE).contains(FeatureSet.ES_NEXT);
-    assertFS(FeatureSet.ES_NEXT).contains(FeatureSet.ES2021);
+    assertFS(FeatureSet.ES_NEXT).contains(FeatureSet.ES2022);
+    assertFS(FeatureSet.ES2022).contains(FeatureSet.ES2021);
     assertFS(FeatureSet.ES2021).contains(FeatureSet.ES2020);
     assertFS(FeatureSet.ES2020).contains(FeatureSet.ES2019);
     assertFS(FeatureSet.ES2019).contains(FeatureSet.ES2018);
@@ -64,6 +65,7 @@ public final class FeatureSetTest {
 
   @Test
   public void testEsModuleOrdering() {
+    assertFS(FeatureSet.ES2022_MODULES.without(Feature.MODULES)).equals(FeatureSet.ES2022);
     assertFS(FeatureSet.ES2021_MODULES.without(Feature.MODULES)).equals(FeatureSet.ES2021);
     assertFS(FeatureSet.ES2020_MODULES.without(Feature.MODULES)).equals(FeatureSet.ES2020);
     assertFS(FeatureSet.ES2019_MODULES.without(Feature.MODULES)).equals(FeatureSet.ES2019);
@@ -92,24 +94,25 @@ public final class FeatureSetTest {
     assertThat(FeatureSet.ES2020_MODULES.version()).isEqualTo("es_2020");
     assertThat(FeatureSet.ES2021.version()).isEqualTo("es_2021");
     assertThat(FeatureSet.ES2021_MODULES.version()).isEqualTo("es_2021");
+    assertThat(FeatureSet.ES2022.version()).isEqualTo("es_2022");
+    assertThat(FeatureSet.ES2022_MODULES.version()).isEqualTo("es_2022");
     assertThat(FeatureSet.ALL.version()).isEqualTo("all");
   }
 
   @Test
   public void testEsNextAndNewer() {
-    // ES_NEXT, ES_UNSTABLE, and ES_UNSUPPORTED are moving targets that may or may not have any
-    // unique features.  If any of these `FeatureSet`s are identical to a lower FeatureSet,
-    // `version()` will return the lowest equivalent version that contains features.
-    // This could be es_XXX, es_next, etc. and will change as new features are added and removed
-    // from these `FeatureSet`s.
+    // ES_NEXT and ES_UNSTABLE contain *_RUNTIME features to make these feature sets NOT moving
+    // targets because polyfills can use "es_next" or "es_unstable" as their fromLang and we don't
+    // want to incorrectly prune the polyfills in the case that no features remain in the set.
     assertThat(FeatureSet.ES_NEXT.version()).isEqualTo("es_next");
     assertThat(FeatureSet.ES_UNSTABLE.version()).isEqualTo("es_unstable");
-    assertThat(FeatureSet.ES_UNSUPPORTED.version())
-        .isEqualTo("es_unstable"); // as ES_UNSUPPORTED is currently empty.
+
+    // ES_UNSUPPORTED is a moving target that may not have any unique features in which case it will
+    // resolve to "es_unstable". This will change as new features are added and removed.
+    assertThat(FeatureSet.ES_UNSUPPORTED.version()).isEqualTo("es_unsupported");
   }
 
   @Test
-
   public void testValueOf() {
     assertFS(FeatureSet.valueOf("es3")).equals(FeatureSet.ES3);
     assertFS(FeatureSet.valueOf("es5")).equals(FeatureSet.ES5);
@@ -121,6 +124,7 @@ public final class FeatureSetTest {
     assertFS(FeatureSet.valueOf("es_2019")).equals(FeatureSet.ES2019);
     assertFS(FeatureSet.valueOf("es_2020")).equals(FeatureSet.ES2020);
     assertFS(FeatureSet.valueOf("es_2021")).equals(FeatureSet.ES2021);
+    assertFS(FeatureSet.valueOf("es_2022")).equals(FeatureSet.ES2022);
     assertFS(FeatureSet.valueOf("es_next")).equals(FeatureSet.ES_NEXT);
     assertFS(FeatureSet.valueOf("es_unstable")).equals(FeatureSet.ES_UNSTABLE);
     assertFS(FeatureSet.valueOf("es_unsupported")).equals(FeatureSet.ES_UNSUPPORTED);

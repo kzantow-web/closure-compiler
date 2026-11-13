@@ -15,19 +15,18 @@
  */
 package com.google.javascript.jscomp;
 
+import static com.google.common.base.Preconditions.checkState;
 
+import com.google.common.collect.ImmutableMap;
 import com.google.javascript.jscomp.CompilerOptions.LanguageMode;
-import com.google.javascript.jscomp.testing.NoninjectingCompiler;
 import com.google.javascript.jscomp.testing.TestExternsBuilder;
+import com.google.javascript.rhino.Node;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
-/**
- * Test cases for {@link Es6ForOfConverter}
- *
- */
+/** Test cases for {@link Es6ForOfConverter} */
 @RunWith(JUnit4.class)
 public final class Es6ForOfConverterTest extends CompilerTestCase {
 
@@ -38,183 +37,394 @@ public final class Es6ForOfConverterTest extends CompilerTestCase {
     super(EXTERNS_BASE);
   }
 
-  @Override
   @Before
-  public void setUp() throws Exception {
-    super.setUp();
+  public void customSetUp() throws Exception {
+    enableNormalize();
     setAcceptedLanguage(LanguageMode.ECMASCRIPT_2015);
     setLanguageOut(LanguageMode.ECMASCRIPT3);
     enableTypeCheck();
     enableTypeInfoValidation();
     replaceTypesWithColors();
     enableMultistageCompilation();
+    setGenericNameReplacements(
+        ImmutableMap.of(
+            "KEY", "$jscomp$key$",
+            "ITER", "$jscomp$iter$"));
   }
 
   @Override
   protected CompilerPass getProcessor(final Compiler compiler) {
-    return new Es6ForOfConverter(compiler);
+    PhaseOptimizer optimizer = new PhaseOptimizer(compiler, null);
+    optimizer.addOneTimePass(
+        makePassFactory(
+            "injectTranspilationRuntimeLibraries", InjectTranspilationRuntimeLibraries::new));
+    optimizer.addOneTimePass(makePassFactory("es6ForOfConverter", Es6ForOfConverter::new));
+    return optimizer;
   }
 
   @Test
-  public void testForOf() {
-
+  public void testForOfLoop() {
     // With array literal and declaring new bound variable.
     test(
         "for (var i of [1,2,3]) { console.log(i); }",
-        lines(
-            "for (var $jscomp$iter$0 = $jscomp.makeIterator([1,2,3]),",
-            "    $jscomp$key$i = $jscomp$iter$0.next();",
-            "    !$jscomp$key$i.done; $jscomp$key$i = $jscomp$iter$0.next()) {",
-            "  var i = $jscomp$key$i.value;",
-            "  {",
-            "    console.log(i);",
-            "  }",
-            "}"));
+        """
+        var i;
+        var ITER$0 = (0, $jscomp.makeIterator)([1,2,3]);
+        var KEY$1$i = ITER$0.next();
+        try {
+          for (;
+              !KEY$1$i.done; KEY$1$i = ITER$0.next()) {
+             i = KEY$1$i.value;
+            {
+              console.log(i);
+            }
+          }
+        } finally {
+          $jscomp.iteratorClose(ITER$0, KEY$1$i);
+        }
+        """);
 
     // With simple assign instead of var declaration in bound variable.
     test(
         "for (i of [1,2,3]) { console.log(i); }",
-        lines(
-            "for (var $jscomp$iter$0 = $jscomp.makeIterator([1,2,3]),",
-            "    $jscomp$key$i = $jscomp$iter$0.next();",
-            "    !$jscomp$key$i.done; $jscomp$key$i = $jscomp$iter$0.next()) {",
-            "  i = $jscomp$key$i.value;",
-            "  {",
-            "    console.log(i);",
-            "  }",
-            "}"));
+        """
+        var ITER$0 = (0, $jscomp.makeIterator)([1,2,3])
+        var KEY$1$i = ITER$0.next();
+        try {
+          for (;
+              !KEY$1$i.done; KEY$1$i = ITER$0.next()) {
+            i = KEY$1$i.value;
+            {
+              console.log(i);
+            }
+          }
+        } finally {
+          $jscomp.iteratorClose(ITER$0, KEY$1$i);
+        }
+        """);
 
     // With name instead of array literal.
     test(
         "for (var i of arr) { console.log(i); }",
-        lines(
-            "for (var $jscomp$iter$0 = $jscomp.makeIterator(arr),",
-            "    $jscomp$key$i = $jscomp$iter$0.next();",
-            "    !$jscomp$key$i.done; $jscomp$key$i = $jscomp$iter$0.next()) {",
-            "  var i = $jscomp$key$i.value;",
-            "  {",
-            "    console.log(i);",
-            "  }",
-            "}"));
+        """
+        var i;
+        var ITER$0 = (0, $jscomp.makeIterator)(arr)
+        var KEY$1$i = ITER$0.next();
+        try {
+          for (;
+              !KEY$1$i.done; KEY$1$i = ITER$0.next()) {
+             i = KEY$1$i.value;
+            {
+              console.log(i);
+            }
+          }
+        } finally {
+          $jscomp.iteratorClose(ITER$0, KEY$1$i);
+        }
+        """);
+
+    // for of with const initializer
+    test(
+        "for (const i of [1,2,3]) { console.log(i); }",
+        """
+        var ITER$0 = (0, $jscomp.makeIterator)([1,2,3]);
+        var KEY$1$i = ITER$0.next();
+        try {
+          for (;
+              !KEY$1$i.done; KEY$1$i = ITER$0.next()) {
+            const i = KEY$1$i.value;
+            {
+              console.log(i);
+            }
+          }
+        } finally {
+          $jscomp.iteratorClose(ITER$0, KEY$1$i);
+        }
+        """);
+
+    // multiple for-of loops with the const initializer name
+    test(
+        "for (const i of [1,2,3]) { console.log(i); } for (const i of [4,5,6]) { console.log(i); }",
+        """
+        var ITER$0 = (0, $jscomp.makeIterator)([1,2,3]);
+        var KEY$1$i = ITER$0.next();
+        try {
+          for (;
+              !KEY$1$i.done; KEY$1$i = ITER$0.next()) {
+            const i = KEY$1$i.value;
+            {
+              console.log(i);
+            }
+          }
+        } finally {
+          $jscomp.iteratorClose(ITER$0, KEY$1$i);
+        }
+        var ITER$2 = (0, $jscomp.makeIterator)([4, 5, 6]);
+        var KEY$3$i$jscomp$1 = ITER$2.next();
+        try {
+          for (;
+              !KEY$3$i$jscomp$1.done; KEY$3$i$jscomp$1 = ITER$2.next()) {
+            const i$jscomp$1 = KEY$3$i$jscomp$1.value;
+            {
+              console.log(i$jscomp$1);
+            }
+          }
+        } finally {
+          $jscomp.iteratorClose(ITER$2, KEY$3$i$jscomp$1);
+        }
+        """);
 
     // With empty loop body.
     test(
         "for (var i of [1,2,3]);",
-        lines(
-            "for (var $jscomp$iter$0 = $jscomp.makeIterator([1,2,3]),",
-            "    $jscomp$key$i = $jscomp$iter$0.next();",
-            "    !$jscomp$key$i.done; $jscomp$key$i = $jscomp$iter$0.next()) {",
-            "  var i = $jscomp$key$i.value;",
-            "  {}",
-            "}"));
+        """
+        var i;
+        var ITER$0 = (0, $jscomp.makeIterator)([1,2,3])
+        var KEY$1$i = ITER$0.next();
+        try {
+          for (;
+              !KEY$1$i.done; KEY$1$i = ITER$0.next()) {
+             i = KEY$1$i.value;
+            {}
+          }
+        } finally {
+          $jscomp.iteratorClose(ITER$0, KEY$1$i);
+        }
+        """);
 
     // With no block in for loop body.
     test(
         "for (var i of [1,2,3]) console.log(i);",
-        lines(
-            "for (var $jscomp$iter$0 = $jscomp.makeIterator([1,2,3]),",
-            "    $jscomp$key$i = $jscomp$iter$0.next();",
-            "    !$jscomp$key$i.done; $jscomp$key$i = $jscomp$iter$0.next()) {",
-            "  var i = $jscomp$key$i.value;",
-            "  {",
-            "    console.log(i);",
-            "  }",
-            "}"));
+        """
+        var i;
+        var ITER$0 = (0, $jscomp.makeIterator)([1,2,3]);
+        var KEY$1$i = ITER$0.next();
+        try {
+          for (;
+              !KEY$1$i.done; KEY$1$i = ITER$0.next()) {
+             i = KEY$1$i.value;
+            {
+              console.log(i);
+            }
+          }
+        } finally {
+          $jscomp.iteratorClose(ITER$0, KEY$1$i);
+        }
+        """);
 
     // Iteration var shadows an outer var ()
     test(
         "var i = 'outer'; for (let i of [1, 2, 3]) { alert(i); } alert(i);",
-        lines(
-            "var i = 'outer';",
-            "for (var $jscomp$iter$0 = $jscomp.makeIterator([1,2,3]),",
-            "    $jscomp$key$i = $jscomp$iter$0.next();",
-            "    !$jscomp$key$i.done; $jscomp$key$i = $jscomp$iter$0.next()) {",
-            "  let i = $jscomp$key$i.value;",
-            "  {",
-            "    alert(i);",
-            "  }",
-            "}",
-            "alert(i);"));
+        """
+        var i = 'outer';
+        var ITER$0 = (0, $jscomp.makeIterator)([1,2,3])
+        var KEY$1$i$jscomp$1 = ITER$0.next();
+        try {
+          for (;
+              !KEY$1$i$jscomp$1.done; KEY$1$i$jscomp$1 = ITER$0.next()) {
+            let i$jscomp$1 = KEY$1$i$jscomp$1.value;
+            {
+              alert(i$jscomp$1);
+            }
+          }
+        } finally {
+          $jscomp.iteratorClose(ITER$0, KEY$1$i$jscomp$1);
+        }
+        alert(i);
+        """);
+  }
+
+  @Test
+  public void testConstnessPreservedInNewDeclarations() {
+    test(
+        "for (let CID of [1, 2, 3]) { alert(CID); }",
+"""
+var ITER$0 = (0, $jscomp.makeIterator)([1,2,3])
+var KEY$1$CID = ITER$0.next();
+try {
+  for (;
+      !KEY$1$CID.done; KEY$1$CID = ITER$0.next()) {
+    let CID = KEY$1$CID.value;
+    {
+      alert(CID);
+    }
+  }
+} finally {
+  $jscomp.iteratorClose(ITER$0, KEY$1$CID);
+}
+""");
+    Node script = getLastCompiler().getJsRoot().getOnlyChild();
+    checkState(script.isScript(), script.getToken());
+    Node tryFinally = script.getLastChild();
+    checkState(tryFinally.isTry(), tryFinally.getToken());
+    Node tryBlock = tryFinally.getFirstChild();
+    checkState(tryBlock.isBlock(), tryBlock.getToken());
+    Node forLoop = tryBlock.getFirstChild();
+    checkState(forLoop.isVanillaFor(), forLoop.getToken());
+    Node forBody = forLoop.getLastChild();
+    checkState(forBody.isBlock());
+    Node declaration = forBody.getFirstChild();
+    checkState(declaration.isLet());
+    Node name = declaration.getFirstChild();
+    checkState(name.getString().equals("CID"));
+    checkState(name.getBooleanProp(Node.IS_CONSTANT_NAME));
   }
 
   @Test
   public void testForOfRedeclaredVar() {
     test(
-        lines("for (let x of []) {", "  let x = 0;", "}"),
-        lines(
-            "for(var $jscomp$iter$0=$jscomp.makeIterator([]),",
-            "    $jscomp$key$x=$jscomp$iter$0.next();",
-            "    !$jscomp$key$x.done; $jscomp$key$x=$jscomp$iter$0.next()) {",
-            "  let x = $jscomp$key$x.value;",
-            "  {",
-            "    let x = 0;",
-            "  }",
-            "}"));
+        """
+        for (let x of []) {
+          let x = 0;
+        }
+        """,
+        """
+        var ITER$0=(0, $jscomp.makeIterator)([]);
+        var KEY$1$x=ITER$0.next();
+        try {
+          for(;
+              !KEY$1$x.done; KEY$1$x=ITER$0.next()) {
+            let x = KEY$1$x.value;
+            {
+              let x$jscomp$1 = 0;
+            }
+          }
+        } finally {
+          $jscomp.iteratorClose(ITER$0, KEY$1$x);
+        }
+        """);
   }
 
   @Test
   public void testForOfJSDoc() {
     test(
         "for (/** @type {string} */ let x of []) {}",
-        lines(
-            "for(var $jscomp$iter$0=$jscomp.makeIterator([]),",
-            "    $jscomp$key$x=$jscomp$iter$0.next();",
-            "    !$jscomp$key$x.done;$jscomp$key$x=$jscomp$iter$0.next()) {",
-            "  let x = $jscomp$key$x.value;",
-            "  {}",
-            "}"));
+        """
+        var ITER$0=(0, $jscomp.makeIterator)([]);
+        var KEY$1$x=ITER$0.next();
+        try {
+          for(;
+              !KEY$1$x.done;KEY$1$x=ITER$0.next()) {
+            let x = KEY$1$x.value;
+            {}
+          }
+        } finally {
+          $jscomp.iteratorClose(ITER$0, KEY$1$x);
+        }
+        """);
     test(
         "for (/** @type {string} */ x of []) {}",
-        lines(
-            "for(var $jscomp$iter$0=$jscomp.makeIterator([]),",
-            "    $jscomp$key$x=$jscomp$iter$0.next();",
-            "    !$jscomp$key$x.done;$jscomp$key$x=$jscomp$iter$0.next()) {",
-            "  x = $jscomp$key$x.value;",
-            "  {}",
-            "}"));
+        """
+        var ITER$0=(0, $jscomp.makeIterator)([]);
+        var KEY$1$x=ITER$0.next();
+        try {
+          for(;
+              !KEY$1$x.done;KEY$1$x=ITER$0.next()) {
+            x = KEY$1$x.value;
+            {}
+          }
+        } finally {
+          $jscomp.iteratorClose(ITER$0, KEY$1$x);
+        }
+        """);
   }
 
   @Test
   public void testForOfOnNonIterable() {
     testWarning(
-        lines(
-            "var arrayLike = {",
-            "  0: 'x',",
-            "  1: 'y',",
-            "  length: 2,",
-            "};",
-            "for (var x of arrayLike) {}"),
+        """
+        var arrayLike = {
+          0: 'x',
+          1: 'y',
+          length: 2,
+        };
+        for (var x of arrayLike) {}
+        """,
         TypeValidator.TYPE_MISMATCH_WARNING);
+  }
+
+  @Test
+  public void testLabelForOf() {
+    // Tests if iterator variables come before a single label
+    test(
+        "a: for(var i of [1,2]){console.log(i)}",
+        """
+        var i;
+        var ITER$0 = (0, $jscomp.makeIterator)([1,2]);
+        var KEY$1$i = ITER$0.next();
+        try {
+          a: for (;
+              !KEY$1$i.done; KEY$1$i = ITER$0.next()) {
+             i = KEY$1$i.value;
+            {
+              console.log(i);
+            }
+          }
+        } finally {
+          $jscomp.iteratorClose(ITER$0, KEY$1$i);
+        }
+        """);
+    // Test if the iterator variables come before two labels
+    test(
+        "a: b: for(var x of [1,2]){console.log(x)}",
+        """
+        var x;
+        var ITER$0 = (0, $jscomp.makeIterator)([1,2]);
+        var KEY$1$x = ITER$0.next();
+        try {
+          a: b: for(;
+              !KEY$1$x.done; KEY$1$x = ITER$0.next()) {
+             x = KEY$1$x.value;
+            {
+              console.log(x);
+            }
+          }
+        } finally {
+          $jscomp.iteratorClose(ITER$0, KEY$1$x);
+        }
+        """);
   }
 
   @Test
   public void testForOfWithQualifiedNameInitializer() {
     test(
         "var obj = {a: 0}; for (obj.a of [1,2,3]) { console.log(obj.a); }",
-        lines(
-            "var obj = {a: 0};",
-            "for (var $jscomp$iter$0 = $jscomp.makeIterator([1,2,3]),",
-            "    $jscomp$key$a = $jscomp$iter$0.next();",
-            "    !$jscomp$key$a.done; $jscomp$key$a = $jscomp$iter$0.next()) {",
-            "  obj.a = $jscomp$key$a.value;",
-            "  {",
-            "    console.log(obj.a);",
-            "  }",
-            "}"));
+        """
+        var obj = {a: 0};
+        var ITER$0 = (0, $jscomp.makeIterator)([1,2,3])
+        var KEY$1$a = ITER$0.next();
+        try {
+          for (;
+              !KEY$1$a.done; KEY$1$a = ITER$0.next()) {
+            obj.a = KEY$1$a.value;
+            {
+              console.log(obj.a);
+            }
+          }
+        } finally {
+          $jscomp.iteratorClose(ITER$0, KEY$1$a);
+        }
+        """);
   }
 
   @Test
   public void testForOfWithComplexInitializer() {
     test(
         "function f() { return {}; } for (f()['x' + 1] of [1,2,3]) {}",
-        lines(
-            "function f() { return {}; }",
-            "for (var $jscomp$iter$0 = $jscomp.makeIterator([1,2,3]),",
-            "    $jscomp$key$a = $jscomp$iter$0.next();",
-            "    !$jscomp$key$a.done; $jscomp$key$a = $jscomp$iter$0.next()) {",
-            "  f()['x' + 1] = $jscomp$key$a.value;",
-            "  {}",
-            "}"));
+        """
+        function f() { return {}; }
+        var ITER$0 = (0, $jscomp.makeIterator)([1,2,3]);
+        var KEY$1$a = ITER$0.next();
+        try {
+          for (;
+              !KEY$1$a.done; KEY$1$a = ITER$0.next()) {
+            f()['x' + 1] = KEY$1$a.value;
+            {}
+          }
+        } finally {
+          $jscomp.iteratorClose(ITER$0, KEY$1$a);
+        }
+        """);
   }
 
   @Test
@@ -222,32 +432,111 @@ public final class Es6ForOfConverterTest extends CompilerTestCase {
     test(
         // add only minimal runtime library stubs to prevent AstFactory crash
         externs(
-            lines(
-                "var $jscomp = {};",
-                "/**",
-                " * @param {?} iterable",
-                " * @return {!Iterator<T>}",
-                " * @template T",
-                " */",
-                "$jscomp.makeIterator = function(iterable) {};")),
+            """
+            /** @const */
+            var $jscomp = {};
+            /**
+              * @param {?} iterable
+              * @return {!Iterator<T>}
+              * @template T
+              */
+            $jscomp.makeIterator = function(iterable) {};
+            /**
+              * @param {?} iterator
+              * @param {?} iterResult
+              * @return {void}
+              */
+            $jscomp.iteratorClose = function(iterator, iterResult) {};
+            """),
         srcs("for (let x of [1, 2, 3]) {}"),
         expected(
-            lines(
-                "for (var $jscomp$iter$0 = $jscomp.makeIterator([1,2,3]),",
-                "    $jscomp$key$x = $jscomp$iter$0.next();",
-                "    !$jscomp$key$x.done; $jscomp$key$x = $jscomp$iter$0.next()) {",
-                "  let x = $jscomp$key$x.value;",
-                "  {}",
-                "}")));
+            """
+            var ITER$0 = (0, $jscomp.makeIterator)([1,2,3]);
+            var KEY$1$x = ITER$0.next();
+            try {
+              for (;
+                  !KEY$1$x.done; KEY$1$x = ITER$0.next()) {
+                let x = KEY$1$x.value;
+                {}
+              }
+            } finally {
+              $jscomp.iteratorClose(ITER$0, KEY$1$x);
+            }
+            """));
   }
 
-  @Override
-  protected Compiler createCompiler() {
-    return new NoninjectingCompiler();
+  @Test
+  public void testForOfBreak() {
+    test(
+        "for (var x of [1, 2, 3]) { if (x === 2) break; }",
+        """
+        var x;
+        var ITER$0 = (0, $jscomp.makeIterator)([1, 2, 3]);
+        var KEY$1$x = ITER$0.next();
+        try {
+          for (;
+              !KEY$1$x.done; KEY$1$x = ITER$0.next()) {
+            x = KEY$1$x.value;
+            {
+              if (x === 2) {
+                break;
+              }
+            }
+          }
+        } finally {
+          $jscomp.iteratorClose(ITER$0, KEY$1$x);
+        }
+        """);
   }
 
-  @Override
-  protected  NoninjectingCompiler getLastCompiler() {
-    return (NoninjectingCompiler) super.getLastCompiler();
+  @Test
+  public void testForOfReturn() {
+    test(
+        "function f() { for (var x of [1, 2, 3]) { if (x === 2) return x; } }",
+        """
+        function f() {
+          var x;
+          var ITER$0 = (0, $jscomp.makeIterator)([1, 2, 3]);
+          var KEY$1$x = ITER$0.next();
+          try {
+            for (;
+                !KEY$1$x.done; KEY$1$x = ITER$0.next()) {
+              x = KEY$1$x.value;
+              {
+                if (x === 2) {
+                  return x;
+                }
+              }
+            }
+          } finally {
+            $jscomp.iteratorClose(ITER$0, KEY$1$x);
+          }
+        }
+        """);
+  }
+
+  @Test
+  public void testForOfThrow() {
+    test(
+        "for (var x of [1, 2, 3]) { if (x === 2) throw new Error(); }",
+        """
+        var x;
+        var ITER$0 = (0, $jscomp.makeIterator)([1, 2, 3]);
+        var KEY$1$x = ITER$0.next();
+        try {
+          for (;
+              !KEY$1$x.done; KEY$1$x = ITER$0.next()) {
+            x = KEY$1$x.value;
+            {
+              if (x === 2) {
+                throw new Error();
+              }
+            }
+          }
+        } finally {
+          $jscomp.iteratorClose(ITER$0, KEY$1$x);
+        }
+        """);
   }
 }
+

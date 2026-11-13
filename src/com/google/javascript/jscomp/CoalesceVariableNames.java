@@ -25,8 +25,6 @@ import com.google.javascript.jscomp.AbstractCompiler.LifeCycleStage;
 import com.google.javascript.jscomp.ControlFlowGraph.Branch;
 import com.google.javascript.jscomp.DataFlowAnalysis.LinearFlowState;
 import com.google.javascript.jscomp.LiveVariablesAnalysis.LiveVariableLattice;
-import com.google.javascript.jscomp.NodeTraversal.AbstractPostOrderCallback;
-import com.google.javascript.jscomp.NodeTraversal.ScopedCallback;
 import com.google.javascript.jscomp.NodeUtil.AllVarsDeclaredInFunction;
 import com.google.javascript.jscomp.graph.DiGraph.DiGraphNode;
 import com.google.javascript.jscomp.graph.GraphColoring;
@@ -47,13 +45,20 @@ import java.util.Deque;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Reuse variable names if possible.
  *
- * <p>For example, from <code>var x = 1; print(x); var y = 2; print(y); </code>
- * to <code>var x = 1; print(x); x = 2; print(x)</code>. The benefits are
- * slightly shorter code because of the removed <code>var<code> declaration,
+ * <p>For example, from
+ * <pre>
+ * <code>var x = 1; print(x); var y = 2; print(y); </code>
+ * </pre>
+ * to
+ * <pre>
+ * <code>var x = 1; print(x); x = 2; print(x)</code>
+ * </pre>
+ * The benefits are slightly shorter code because of the removed <code>var<code> declaration,
  * less unique variables in hope for better renaming, and finally better gzip
  * compression.
  *
@@ -63,8 +68,7 @@ import java.util.TreeSet;
  * graph coloring in {@link GraphColoring} to determine which two variables can
  * be merge together safely.
  */
-class CoalesceVariableNames extends AbstractPostOrderCallback
-    implements CompilerPass, ScopedCallback {
+class CoalesceVariableNames extends NodeTraversal.AbstractCfgCallback implements CompilerPass {
 
   private final AbstractCompiler compiler;
   private final MemoizedScopeCreator scopeCreator;
@@ -111,7 +115,7 @@ class CoalesceVariableNames extends AbstractPostOrderCallback
   }
 
   /** Returns populated AllVarsDeclaredInFunction object iff shouldOptimizeScope is true. */
-  private static AllVarsDeclaredInFunction shouldOptimizeScope(NodeTraversal t) {
+  private static @Nullable AllVarsDeclaredInFunction shouldOptimizeScope(NodeTraversal t) {
     // TODO(user): We CAN do this in the global scope, just need to be
     // careful when something is exported. Liveness uses bit-vector for live
     // sets so I don't see compilation time will be a problem for running this
@@ -130,7 +134,7 @@ class CoalesceVariableNames extends AbstractPostOrderCallback
   }
 
   @Override
-  public void enterScope(NodeTraversal t) {
+  public void enterScopeWithCfg(NodeTraversal t) {
     AllVarsDeclaredInFunction allVarsDeclaredInFunction = shouldOptimizeScope(t);
     if (allVarsDeclaredInFunction == null) {
       shouldOptimizeScopeStack.push(false);
@@ -142,7 +146,7 @@ class CoalesceVariableNames extends AbstractPostOrderCallback
     checkState(scope.isFunctionScope(), scope);
 
     // live variables analysis is based off of the control flow graph
-    ControlFlowGraph<Node> cfg = t.getControlFlowGraph();
+    ControlFlowGraph<Node> cfg = getControlFlowGraph(compiler);
 
     liveness =
         new LiveVariablesAnalysis(
@@ -177,7 +181,7 @@ class CoalesceVariableNames extends AbstractPostOrderCallback
   }
 
   @Override
-  public void exitScope(NodeTraversal t) {
+  public void exitScopeWithCfg(NodeTraversal t) {
     if (!shouldOptimizeScopeStack.pop()) {
       return;
     }
@@ -210,13 +214,7 @@ class CoalesceVariableNames extends AbstractPostOrderCallback
       // Rename.
       n.setString(coalescedVar.getName());
       compiler.reportChangeToEnclosingScope(n);
-
-      if (NodeUtil.isNameDeclaration(parent)
-          || (NodeUtil.getEnclosingType(n, Token.DESTRUCTURING_LHS) != null
-              && NodeUtil.isLhsByDestructuring(n))) {
-        makeDeclarationVar(coalescedVar);
-        removeVarDeclaration(n);
-      }
+      updateDeclarationsPostCoalescing(n, coalescedVar, var, parent);
     } else {
       // This code block is slow but since usePseudoName is for debugging,
       // we should not sacrifice performance for non-debugging compilation to
@@ -226,7 +224,7 @@ class CoalesceVariableNames extends AbstractPostOrderCallback
         // Look for all the variables that can be merged (in the graph by now)
         // and it is merged with the current coalescedVar.
         if (colorings.peek().getGraph().getNode(iVar) != null
-            && coalescedVar.equals(colorings.peek().getPartitionSuperNode(iVar))) {
+            && colorings.peek().haveSameColor(iVar, coalescedVar)) {
           allMergedNames.add(iVar.getName());
         }
       }
@@ -246,14 +244,71 @@ class CoalesceVariableNames extends AbstractPostOrderCallback
       n.setString(pseudoName);
       compiler.reportChangeToEnclosingScope(n);
 
-      if (!vNode.getValue().equals(coalescedVar)
-          && (NodeUtil.isNameDeclaration(parent)
-              || (NodeUtil.getEnclosingType(n, Token.DESTRUCTURING_LHS) != null
-                  && NodeUtil.isLhsByDestructuring(n)))) {
-        makeDeclarationVar(coalescedVar);
-        removeVarDeclaration(n);
+      if (vNode.getValue().equals(coalescedVar)) {
+        return;
       }
+      updateDeclarationsPostCoalescing(n, coalescedVar, var, parent);
     }
+  }
+
+  /**
+   * Updates declarations of the given name node and the coalesced variable. Firstly, it converts
+   * the coalesced variable's declaration into a `var` if it is a `const` or a `let`. Secondly, it
+   * removes the declaration of the given name node if it is under a parent which is a name
+   * declaration or if the given name is a destructuring LHS name under a destructuring LHS
+   * declaration.
+   *
+   * <p>For example, when coalescing the names `a` and `b` below, it changes:
+   *
+   * <pre>
+   *   const a = 1;
+   *   const [{prop: b} = {prop: undefined}] = [{prop: 10}]; // declares `b`
+   * </pre>
+   *
+   * to
+   *
+   * <pre>
+   *   var a = 1;
+   *   [{prop: a} = {prop: undefined}] = [{prop: 10}]; // coalescing renames `b` to `a` and this
+   *                                                   // method undeclares it by removing the
+   *                                                   // `const`
+   * </pre>
+   *
+   * @param n The name node which is getting coalesced with the coalescedVar
+   * @param coalescedVar the first declared variable of a group that is being coalesced
+   * @param originalVar the original variable being coalesced
+   * @param parent The parent node of the name node n
+   */
+  private void updateDeclarationsPostCoalescing(
+      Node n, Var coalescedVar, Var originalVar, Node parent) {
+    checkState(n.isName(), "trying to update the declaration of a non-name node");
+    if (NodeUtil.isNameDeclaration(parent)
+        || (NodeUtil.getEnclosingType(n, Token.DESTRUCTURING_LHS) != null
+            && NodeUtil.isLhsByDestructuring(n)
+            // Consider this to be a destructuring LHS declaration only if we don't hit an
+            // assignment like `[a,b] = [3,4]` first.
+            && !isNameInsideDestructuringAssignment(n))) {
+      // convert the coalesced variable's declaration into a `var` if it is a `const` or a `let`
+      makeDeclarationVar(coalescedVar);
+      // remove the declaration of the given name node as it has been coalesced with coalescedVar
+      removeVarDeclaration(n, originalVar);
+    }
+  }
+
+  /**
+   * Is the given name node inside the LHS of a destructuring pattern assignment like `[a,b,c] =
+   * [1,2,3]`.
+   *
+   * <p>Importantly, for this pass, it means that the name is not inside a declaration like `const
+   * [a,b,c] = [1,2,3]` and must not be undeclared.
+   */
+  private boolean isNameInsideDestructuringAssignment(Node n) {
+    Node enclosingTarget = NodeUtil.getRootTarget(n);
+    if (enclosingTarget.isDestructuringPattern() && enclosingTarget.getParent().isAssign()) {
+      // This is a destructuring pattern assignment.
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -266,7 +321,6 @@ class CoalesceVariableNames extends AbstractPostOrderCallback
    * that ensures any interfering variables are marked in different color groups, while variables
    * that can safely be coalesced are assigned the same color group.
    *
-   * @param cfg
    * @param escaped we don't want to coalesce any escaped variables
    * @return graph with variable nodes and edges representing variable interference
    */
@@ -392,15 +446,16 @@ class CoalesceVariableNames extends AbstractPostOrderCallback
    */
   private boolean isInMultipleLvalueDecl(Var v) {
     Token declarationType = v.declarationType();
-    switch (declarationType) {
-      case LET:
-      case CONST:
-      case VAR:
+    return switch (declarationType) {
+      case LET, CONST, VAR -> {
         Node nameDecl = NodeUtil.getEnclosingNode(v.getNode(), NodeUtil::isNameDeclaration);
-        return NodeUtil.findLhsNodesInNode(nameDecl).size() > 1;
-      default:
-        return false;
-    }
+
+        int[] count = {0}; // for lambda access
+        NodeUtil.visitLhsNodesInNode(nameDecl, (lhs) -> count[0]++);
+        yield count[0] > 1;
+      }
+      default -> false;
+    };
   }
 
   /**
@@ -413,8 +468,9 @@ class CoalesceVariableNames extends AbstractPostOrderCallback
    * https://bugs.webkit.org/show_bug.cgi?id=182414 Another
    *
    * @param name name node of the variable being coalesced
+   * @param originalVar the original variable being coalesced
    */
-  private static void removeVarDeclaration(Node name) {
+  private void removeVarDeclaration(Node name, Var originalVar) {
     Node var = NodeUtil.getEnclosingNode(name, NodeUtil::isNameDeclaration);
     Node parent = var.getParent();
 
@@ -447,9 +503,19 @@ class CoalesceVariableNames extends AbstractPostOrderCallback
         }
         var.replaceWith(assign);
 
+      } else if (isUninitializedLetNameInLoopBodyAndLive(name, originalVar)) {
+        name.detach();
+        Node undefinedValue = astFactory.createUndefinedValue().srcrefTree(name);
+        Node assign = IR.assign(name, undefinedValue).srcref(name);
+        if (!parent.isVanillaFor()) {
+          assign = NodeUtil.newExpr(assign);
+        }
+        var.replaceWith(assign);
       } else {
         // convert `let x;` to ``
         // and `for (let x;;) {}` to `for (;;) {}`
+        // We can expect uninitialized declarations at this point and it's okay to remove them
+        // and they've been coalesced with another declaration.
         NodeUtil.removeChild(parent, var);
       }
     }
@@ -517,6 +583,19 @@ class CoalesceVariableNames extends AbstractPostOrderCallback
     }
     // Inside a loop body, but not the loop control node itself
     return NodeUtil.isWithinLoop(letParent);
+  }
+
+  private boolean isUninitializedLetNameInLoopBodyAndLive(Node nameNode, Var originalVar) {
+    if (!isUninitializedLetNameInLoopBody(nameNode)) {
+      return false;
+    }
+    checkState(liveness != null);
+    Node letNode = nameNode.getParent();
+    ControlFlowGraph<Node> cfg = liveness.getCfg();
+    DiGraphNode<Node, Branch> cfgNode = checkNotNull(cfg.getNode(letNode));
+    LinearFlowState<LiveVariableLattice> state = checkNotNull(cfgNode.getAnnotation());
+    int varIndex = liveness.getVarIndex(originalVar.getName());
+    return varIndex >= 0 && state.getOut().isLive(varIndex);
   }
 
   /**
@@ -587,7 +666,7 @@ class CoalesceVariableNames extends AbstractPostOrderCallback
     }
 
     /** Returns whether any LiveRangeChecker would be interested in the node. */
-    public static boolean shouldVisit(Node n) {
+    static boolean shouldVisit(Node n) {
       return (n.isName() || (n.hasChildren() && n.getFirstChild().isName()));
     }
 

@@ -17,10 +17,7 @@
 package com.google.javascript.jscomp;
 
 import static com.google.common.truth.Truth.assertThat;
-import static com.google.common.truth.Truth.assertWithMessage;
-import static com.google.javascript.jscomp.CompilerTestCase.lines;
 
-import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableSet;
 import com.google.javascript.jscomp.parsing.JsDocInfoParser;
 import com.google.javascript.rhino.IR;
@@ -28,16 +25,16 @@ import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.JSTypeExpression;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
-import java.util.function.Function;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
-/** @author moz@google.com (Michael Zhou) */
+/**
+ * @author moz@google.com (Michael Zhou)
+ */
 @RunWith(JUnit4.class)
 public final class JSDocInfoPrinterTest {
-  private static final Joiner LINE_JOINER = Joiner.on('\n');
   private JSDocInfo.Builder builder;
   private JSDocInfoPrinter jsDocInfoPrinter;
 
@@ -67,10 +64,11 @@ public final class JSDocInfoPrinterTest {
     JSDocInfo info = builder.buildAndReset();
     assertThat(jsDocInfoPrinter.print(info))
         .isEqualTo(
-            lines(
-                "/**", //
-                " * @suppress {globalThis,uselessCode} Common description.",
-                " */\n"));
+            """
+            /**
+             * @suppress {globalThis,uselessCode} Common description.
+             */
+            """);
   }
 
   @Test
@@ -81,11 +79,12 @@ public final class JSDocInfoPrinterTest {
     JSDocInfo info = builder.buildAndReset();
     assertThat(jsDocInfoPrinter.print(info))
         .isEqualTo(
-            lines(
-                "/**", //
-                " * @suppress {globalThis,uselessCode} Common description.",
-                " * More on another line.",
-                " */\n"));
+            """
+            /**
+             * @suppress {globalThis,uselessCode} Common description.
+             * More on another line.
+             */
+            """);
   }
 
   @Test
@@ -96,11 +95,12 @@ public final class JSDocInfoPrinterTest {
     JSDocInfo info = builder.buildAndReset();
     assertThat(jsDocInfoPrinter.print(info))
         .isEqualTo(
-            lines(
-                "/**", //
-                " * @suppress {globalThis,uselessCode} Common description.",
-                " * @suppress {const}",
-                " */\n"));
+            """
+            /**
+             * @suppress {globalThis,uselessCode} Common description.
+             * @suppress {const}
+             */
+            """);
   }
 
   @Test
@@ -111,15 +111,15 @@ public final class JSDocInfoPrinterTest {
     JSDocInfo info = builder.buildAndReset();
     assertThat(jsDocInfoPrinter.print(info))
         .isEqualTo(
-            lines(
-                "/**", //
-                // @suppress printed in order in which it is recorded(parsed)
-                " * @suppress {const}",
-                // warnings inside a suppress printed in natural order for consistency
-                " * @suppress {globalThis,uselessCode} Common description.",
-                " */\n"));
+            // @suppress printed in order in which it is recorded(parsed)
+            // warnings inside a suppress printed in natural order for consistency
+            """
+            /**
+             * @suppress {const}
+             * @suppress {globalThis,uselessCode} Common description.
+             */
+            """);
   }
-
 
   @Test
   public void testFinal() {
@@ -134,11 +134,11 @@ public final class JSDocInfoPrinterTest {
     JSDocInfo info = builder.buildAndReset();
     assertThat(jsDocInfoPrinter.print(info))
         .isEqualTo(
-            LINE_JOINER.join(
-                "/**", //
-                " * @desc foo",
-                " */",
-                ""));
+            """
+            /**
+             * @desc foo
+             */
+            """);
   }
 
   @Test
@@ -147,12 +147,12 @@ public final class JSDocInfoPrinterTest {
     JSDocInfo info = builder.buildAndReset();
     assertThat(jsDocInfoPrinter.print(info))
         .isEqualTo(
-            LINE_JOINER.join(
-                "/**", //
-                " * @desc foo",
-                " * bar",
-                " */",
-                ""));
+            """
+            /**
+             * @desc foo
+             * bar
+             */
+            """);
   }
 
   @Test
@@ -171,12 +171,12 @@ public final class JSDocInfoPrinterTest {
 
     assertThat(jsDocInfoPrinter.print(info))
         .isEqualTo(
-            lines(
-                "/**", //
-                " * @template T",
-                " * @template U",
-                " */",
-                ""));
+            """
+            /**
+             * @template T
+             * @template U
+             */
+            """);
   }
 
   @Test
@@ -188,11 +188,11 @@ public final class JSDocInfoPrinterTest {
 
     assertThat(jsDocInfoPrinter.print(info))
         .isEqualTo(
-            lines(
-                "/**", //
-                " * @template {!Array<number>} T",
-                " */",
-                ""));
+            """
+            /**
+             * @template {!Array<number>} T
+             */
+            """);
   }
 
   @Test
@@ -204,11 +204,11 @@ public final class JSDocInfoPrinterTest {
 
     assertThat(jsDocInfoPrinter.print(info))
         .isEqualTo(
-            lines(
-                "/**", //
-                " * @template {?Array<number>} T",
-                " */",
-                ""));
+            """
+            /**
+             * @template {?Array<number>} T
+             */
+            """);
   }
 
   @Test
@@ -220,11 +220,11 @@ public final class JSDocInfoPrinterTest {
 
     assertThat(jsDocInfoPrinter.print(info))
         .isEqualTo(
-            lines(
-                "/**", //
-                " * @template T",
-                " */",
-                ""));
+            """
+            /**
+             * @template T
+             */
+            """);
   }
 
   @Test
@@ -238,12 +238,12 @@ public final class JSDocInfoPrinterTest {
 
     assertThat(jsDocInfoPrinter.print(info))
         .isEqualTo(
-            lines(
-                "/**", //
-                " * @template {!Array<number>} T",
-                " * @template {boolean} U",
-                " */",
-                ""));
+            """
+            /**
+             * @template {!Array<number>} T
+             * @template {boolean} U
+             */
+            """);
   }
 
   @Test
@@ -260,15 +260,15 @@ public final class JSDocInfoPrinterTest {
 
     assertThat(jsDocInfoPrinter.print(info))
         .isEqualTo(
-            lines(
-                "/**",
-                " * @template {!Object} T",
-                " * @template S",
-                " * @template R",
-                " * @template {*} U",
-                " * @template Q",
-                " */",
-                ""));
+            """
+            /**
+             * @template {!Object} T
+             * @template S
+             * @template R
+             * @template {*} U
+             * @template Q
+             */
+            """);
   }
 
   @Test
@@ -557,13 +557,13 @@ public final class JSDocInfoPrinterTest {
     JSDocInfo info = builder.buildAndReset();
     assertThat(jsDocInfoPrinter.print(info))
         .isEqualTo(
-            LINE_JOINER.join(
-                "/**",
-                " * @param {number} foo A number for foo",
-                " * @param {string} bar A multline",
-                " *     description for bar",
-                " */",
-                ""));
+            """
+            /**
+             * @param {number} foo A number for foo
+             * @param {string} bar A multline
+             *     description for bar
+             */
+            """);
   }
 
   @Test
@@ -573,7 +573,12 @@ public final class JSDocInfoPrinterTest {
     builder.recordReturnDescription("The return value");
     JSDocInfo info = builder.buildAndReset();
     assertThat(jsDocInfoPrinter.print(info))
-        .isEqualTo(LINE_JOINER.join("/**", " * @return {boolean} The return value", " */", ""));
+        .isEqualTo(
+            """
+            /**
+             * @return {boolean} The return value
+             */
+            """);
   }
 
   @Test
@@ -591,16 +596,16 @@ public final class JSDocInfoPrinterTest {
     JSDocInfo info = builder.buildAndReset();
     assertThat(jsDocInfoPrinter.print(info))
         .isEqualTo(
-            LINE_JOINER.join(
-                "/**",
-                " * Description of the thing",
-                " *",
-                " * @param {number} foo A number for foo",
-                " * @param {string} bar A multline",
-                " *     description for bar",
-                " * @return {boolean} The return value",
-                " */",
-                ""));
+            """
+            /**
+             * Description of the thing
+             *
+             * @param {number} foo A number for foo
+             * @param {string} bar A multline
+             *     description for bar
+             * @return {boolean} The return value
+             */
+            """);
   }
 
   @Test
@@ -612,12 +617,12 @@ public final class JSDocInfoPrinterTest {
     JSDocInfo info = builder.buildAndReset();
     assertThat(jsDocInfoPrinter.print(info))
         .isEqualTo(
-            LINE_JOINER.join(
-                "/**",
-                " * @type {string}",
-                " * @deprecated See {@link otherClass} for more info.",
-                " */",
-                ""));
+            """
+            /**
+             * @type {string}
+             * @deprecated See {@link otherClass} for more info.
+             */
+            """);
   }
 
   @Test
@@ -627,7 +632,13 @@ public final class JSDocInfoPrinterTest {
         new JSTypeExpression(JsDocInfoParser.parseTypeString("string"), "<testDeprecated>"));
     JSDocInfo info = builder.buildAndReset();
     assertThat(jsDocInfoPrinter.print(info))
-        .isEqualTo(LINE_JOINER.join("/**", " * @type {string}", " * @deprecated", " */", ""));
+        .isEqualTo(
+            """
+            /**
+             * @type {string}
+             * @deprecated
+             */
+            """);
   }
 
   // Tests that a {@code @see} is sufficient to populate a JSDocInfo.
@@ -636,7 +647,12 @@ public final class JSDocInfoPrinterTest {
     builder.recordReference("SomeClassName for more details");
     JSDocInfo info = builder.buildAndReset();
     assertThat(jsDocInfoPrinter.print(info))
-        .isEqualTo(LINE_JOINER.join("/**", " * @see SomeClassName for more details", " */", ""));
+        .isEqualTo(
+            """
+            /**
+             * @see SomeClassName for more details
+             */
+            """);
   }
 
   // Tests that an {@code @Author} is sufficient to populate a JSDocInfo.
@@ -645,7 +661,12 @@ public final class JSDocInfoPrinterTest {
     builder.recordAuthor("John Doe.");
     JSDocInfo info = builder.buildAndReset();
     assertThat(jsDocInfoPrinter.print(info))
-        .isEqualTo(LINE_JOINER.join("/**", " * @author John Doe.", " */", ""));
+        .isEqualTo(
+            """
+            /**
+             * @author John Doe.
+             */
+            """);
   }
 
   @Test
@@ -656,8 +677,12 @@ public final class JSDocInfoPrinterTest {
     JSDocInfo info = builder.buildAndReset();
     assertThat(jsDocInfoPrinter.print(info))
         .isEqualTo(
-            LINE_JOINER.join(
-                "/**", " * @see SomeClassName for more details", " * @type {string}", " */", ""));
+            """
+            /**
+             * @see SomeClassName for more details
+             * @type {string}
+             */
+            """);
   }
 
   @Test
@@ -667,72 +692,114 @@ public final class JSDocInfoPrinterTest {
     builder.recordAuthor("John Doe.");
     JSDocInfo info = builder.buildAndReset();
     assertThat(jsDocInfoPrinter.print(info))
-        .isEqualTo(LINE_JOINER.join("/**", " * @author John Doe.", " * @type {string}", " */", ""));
+        .isEqualTo(
+            """
+            /**
+             * @author John Doe.
+             * @type {string}
+             */
+            """);
   }
 
   @Test
   public void testExterns() {
-    testSameFileoverview("/** @externs */ ");
+    builder.recordExterns();
+    JSDocInfo info = builder.buildAndReset();
+    assertThat(jsDocInfoPrinter.print(info)).isEqualTo("/** @externs */ ");
   }
 
   @Test
   public void testTypeSummary() {
-    testSameFileoverview("/** @typeSummary */ ");
+    builder.recordTypeSummary();
+    JSDocInfo info = builder.buildAndReset();
+    assertThat(jsDocInfoPrinter.print(info)).isEqualTo("/** @typeSummary */ ");
   }
 
   @Test
   public void testExport() {
-    testSame("/** @export */ ");
+    builder.recordExport();
+    JSDocInfo info = builder.buildAndReset();
+    assertThat(jsDocInfoPrinter.print(info)).isEqualTo("/** @export */ ");
   }
 
   @Test
   public void testAbstract() {
-    testSame("/** @abstract */ ");
+    builder.recordAbstract();
+    JSDocInfo info = builder.buildAndReset();
+    assertThat(jsDocInfoPrinter.print(info)).isEqualTo("/** @abstract */ ");
   }
 
   @Test
   public void testImplicitCast() {
-    testSame("/** @implicitCast */ ");
-  }
-
-  @Test
-  public void testNoCollapse() {
-    testSame("/** @nocollapse */ ");
+    builder.recordImplicitCast();
+    JSDocInfo info = builder.buildAndReset();
+    assertThat(jsDocInfoPrinter.print(info)).isEqualTo("/** @implicitCast */ ");
   }
 
   @Test
   public void testClosurePrimitive() {
-    testSame("/** @closurePrimitive {testPrimitive} */ ");
+    builder.recordClosurePrimitiveId("testPrimitive");
+    JSDocInfo info = builder.buildAndReset();
+    assertThat(jsDocInfoPrinter.print(info)).isEqualTo("/** @closurePrimitive {testPrimitive} */ ");
   }
 
   @Test
-  public void testNgInect() {
-    testSame("/** @ngInject */ ");
+  public void testNoCollapse() {
+    builder.recordNoCollapse();
+    JSDocInfo info = builder.buildAndReset();
+    assertThat(jsDocInfoPrinter.print(info)).isEqualTo("/** @nocollapse */ ");
+  }
+
+  @Test
+  public void testNgInject() {
+    builder.recordNgInject(true);
+    JSDocInfo info = builder.buildAndReset();
+    assertThat(jsDocInfoPrinter.print(info)).isEqualTo("/** @ngInject */ ");
+  }
+
+  @Test
+  public void testLegacyNamedTsExport() {
+    assertThat(builder.recordLegacyNamedTsExport()).isTrue();
+    JSDocInfo info = builder.buildAndReset();
+    assertThat(jsDocInfoPrinter.print(info)).isEqualTo("/** @legacyNamedTsExport */ ");
   }
 
   @Test
   public void testTsType() {
-    testSame("/** @tsType ():string */ ");
-    testSame("/** @tsType ():string @tsType (x:string):number */ ");
+    builder.recordTsType("():string");
+    JSDocInfo info = builder.buildAndReset();
+
+    assertThat(jsDocInfoPrinter.print(info)).isEqualTo("/** @tsType ():string */ ");
   }
 
-  private void testSame(String jsdoc) {
-    test(jsdoc, jsdoc);
+  @Test
+  public void testTsType_multipleTsTypes() {
+    builder.recordTsType("():string");
+    builder.recordTsType("(x:string):number");
+    JSDocInfo info = builder.buildAndReset();
+
+    assertThat(jsDocInfoPrinter.print(info))
+        .isEqualTo("/** @tsType ():string @tsType (x:string):number */ ");
   }
 
-  private void testSameFileoverview(String jsdoc) {
-    test(jsdoc, jsdoc, JsDocInfoParser::parseFileOverviewJsdoc);
-  }
-
-  private void test(String input, String output) {
-    test(input, output, JsDocInfoParser::parseJsdoc);
-  }
-
-  private void test(String input, String output, Function<String, JSDocInfo> parser) {
-    assertThat(input).startsWith("/**");
-    String contents = input.substring("/**".length());
-    JSDocInfo info = parser.apply(contents);
-    assertWithMessage("Parse error on parsing JSDoc: " + input).that(info).isNotNull();
-    assertThat(jsDocInfoPrinter.print(info)).isEqualTo(output);
+  @Test
+  public void testPolymer() {
+    builder.recordPolymer();
+    builder.recordPolymerBehavior();
+    builder.recordMixinFunction();
+    builder.recordMixinClass();
+    builder.recordCustomElement();
+    JSDocInfo info = builder.buildAndReset();
+    assertThat(jsDocInfoPrinter.print(info))
+        .isEqualTo(
+            """
+            /**
+             * @polymer
+             * @polymerBehavior
+             * @mixinFunction
+             * @mixinClass
+             * @customElement
+             */
+            """);
   }
 }

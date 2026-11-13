@@ -19,9 +19,9 @@ package com.google.javascript.jscomp;
 import com.google.common.collect.ImmutableMap;
 import com.google.javascript.rhino.ErrorReporter;
 import com.google.javascript.rhino.Msg;
-import java.util.Map;
 import java.util.Map.Entry;
 import java.util.regex.Pattern;
+import org.jspecify.annotations.Nullable;
 
 /**
  * An error reporter for serializing Rhino errors into our error format.
@@ -58,7 +58,7 @@ class RhinoErrorReporter {
       DiagnosticType.disabled("JSC_JSDOC_IMPORT_TYPE_WARNING", "{0}");
 
   static final DiagnosticType TOO_MANY_TEMPLATE_PARAMS =
-      DiagnosticType.disabled("JSC_TOO_MANY_TEMPLATE_PARAMS", "{0}");
+      DiagnosticType.warning("JSC_TOO_MANY_TEMPLATE_PARAMS", "{0}");
 
   // Special-cased errors, so that they can be configured via the
   // warnings API.
@@ -101,8 +101,9 @@ class RhinoErrorReporter {
           "JSC_INVALID_OCTAL_LITERAL",
           "This style of octal literal is not supported in strict mode.");
 
+  // This check should only be enabled in the lintChecks DiagnosticGroup as part of the linter
   static final DiagnosticType STRING_CONTINUATION =
-      DiagnosticType.warning("JSC_STRING_CONTINUATION", "{0}");
+      DiagnosticType.disabled("JSC_STRING_CONTINUATION", "{0}");
 
   static final DiagnosticType LANGUAGE_FEATURE =
       DiagnosticType.error("JSC_LANGUAGE_FEATURE", "{0}.");
@@ -121,8 +122,13 @@ class RhinoErrorReporter {
           "Bounded generic type error. "
               + "{0} assigned to template type {1} is not a subtype of bound {2}");
 
+  static final DiagnosticType CLOSURE_UNAWARE_ANNOTATION_PRESENT =
+      DiagnosticType.disabled(
+          "JSC_CLOSURE_UNAWARE_ANNOTATION_PRESENT",
+          Msg.JSDOC_CLOSURE_UNAWARE_CODE_INVALID.format());
+
   // A map of Rhino messages to their DiagnosticType.
-  private static final Map<Pattern, DiagnosticType> typeMap =
+  private static final ImmutableMap<Pattern, DiagnosticType> typeMap =
       ImmutableMap.<Pattern, DiagnosticType>builder()
           // Trailing comma
           .put(
@@ -161,6 +167,7 @@ class RhinoErrorReporter {
               JSDOC_IMPORT_TYPE_WARNING)
           // Type annotation errors.
           .put(Pattern.compile("^Bad type annotation.*"), TYPE_PARSE_ERROR)
+          .put(Pattern.compile("constructed type must be an object type"), TYPE_PARSE_ERROR)
           // Parse tree too deep.
           .put(Pattern.compile("Too deep recursion while parsing"), PARSE_TREE_TOO_DEEP)
           // Old-style octal literals
@@ -175,6 +182,9 @@ class RhinoErrorReporter {
               Pattern.compile("Bounded generic semantics are currently still in development"),
               UNSUPPORTED_BOUNDED_GENERIC_TYPES)
           .put(Pattern.compile("^Bounded generic type error.*"), BOUNDED_GENERIC_TYPE_ERROR)
+          .put(
+              replacePlaceHolders(Msg.JSDOC_CLOSURE_UNAWARE_CODE_INVALID.format()),
+              CLOSURE_UNAWARE_ANNOTATION_PRESENT)
           .buildOrThrow();
 
   private final ErrorHandler internalReporter;
@@ -209,7 +219,7 @@ class RhinoErrorReporter {
         null, makeError(message, sourceName, line, lineOffset, CheckLevel.ERROR));
   }
 
-  protected static DiagnosticType mapError(String message) {
+  protected static @Nullable DiagnosticType mapError(String message) {
     for (Entry<Pattern, DiagnosticType> entry : typeMap.entrySet()) {
       if (entry.getKey().matcher(message).matches()) {
         return entry.getValue();
@@ -223,9 +233,17 @@ class RhinoErrorReporter {
     // Try to see if the message is one of the rhino errors we want to
     // expose as DiagnosticType by matching it with the regex key.
     DiagnosticType type = mapError(message);
-    return (type != null)
-        ? JSError.make(sourceName, line, lineOffset, type, message)
-        : JSError.make(sourceName, line, lineOffset, defaultLevel, PARSE_ERROR, message);
+    JSError.Builder builder =
+        JSError.builder(type != null ? type : PARSE_ERROR, message)
+            .setSourceLocation(sourceName, line, lineOffset);
+
+    // If a specific DiagnosticType is present, its default level overrides the defaultLevel
+    // passed to this method.
+    if (type == null) {
+      builder.setLevel(defaultLevel);
+    }
+
+    return builder.build();
   }
 
   private static class OldRhinoErrorReporter extends RhinoErrorReporter

@@ -23,8 +23,8 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.javascript.rhino.Node;
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -35,6 +35,7 @@ class PhaseOptimizer implements CompilerPass {
 
   private static final Logger logger = Logger.getLogger(PhaseOptimizer.class.getName());
   private final AbstractCompiler compiler;
+  private final ChangeTracker changeTracker;
   private final PerformanceTracker tracker;
   private final List<CompilerPass> passes;
   private boolean inLoop;
@@ -69,9 +70,10 @@ class PhaseOptimizer implements CompilerPass {
   }
 
   static final ImmutableList<String> CODE_REMOVING_PASSES =
-      ImmutableList.of(PassNames.PEEPHOLE_OPTIMIZATIONS, PassNames.REMOVE_UNREACHABLE_CODE);
+      ImmutableList.of(PassNames.PEEPHOLE_OPTIMIZATIONS);
 
   static final int MAX_LOOPS = 100;
+  private static final int UNTRACKED_AST_SIZE = -1;
   static final String OPTIMIZE_LOOP_ERROR =
       "Fixed point loop exceeded the maximum number of iterations.";
 
@@ -88,12 +90,13 @@ class PhaseOptimizer implements CompilerPass {
     this.compiler = comp;
     this.jsRoot = comp.getJsRoot();
     this.tracker = tracker;
+    this.changeTracker = comp.getChangeTracker();
     this.passes = new ArrayList<>();
     this.inLoop = false;
     this.lastChange = START_TIME;
     this.useSizeHeuristicToStopOptimizationLoop =
-        comp.getOptions().useSizeHeuristicToStopOptimizationLoop;
-    int maxIterations = comp.getOptions().optimizationLoopMaxIterations;
+        comp.getOptions().shouldUseSizeHeuristicToStopOptimizationLoop();
+    int maxIterations = comp.getOptions().getMaxOptimizationLoopIterations();
     if (maxIterations > 0 && maxIterations <= MAX_LOOPS) {
       this.optimizationLoopMaxIterations = maxIterations;
     } else {
@@ -199,7 +202,7 @@ class PhaseOptimizer implements CompilerPass {
     try {
       validityCheck.create(compiler).process(externs, root);
       changeVerifier.checkRecordedChanges(passName, jsRoot);
-    } catch (Exception e) {
+    } catch (RuntimeException e) {
       throw new IllegalStateException("Validity checks failed for pass: " + passName, e);
     }
   }
@@ -222,6 +225,7 @@ class PhaseOptimizer implements CompilerPass {
     @Override
     public void process(Node externs, Node root) {
       logger.fine("Running pass " + name);
+      factory.validatePreconditions(compiler.getOptions());
       if (validityCheck != null) {
         // Before running the pass, clone the AST so you can check the
         // changed AST against the clone after the pass finishes.
@@ -279,19 +283,19 @@ class PhaseOptimizer implements CompilerPass {
     private int lastCodeChangeQuery;
 
     ScopedChangeHandler() {
-      this.lastCodeChangeQuery = compiler.getChangeStamp();
+      this.lastCodeChangeQuery = changeTracker.getChangeStamp();
     }
 
     @Override
     public void reportChange() {
-      lastChange = compiler.getChangeStamp();
+      lastChange = changeTracker.getChangeStamp();
     }
 
     private boolean hasCodeChangedSinceLastCall() {
       boolean result = lastChange > lastCodeChangeQuery;
-      lastCodeChangeQuery = compiler.getChangeStamp();
+      lastCodeChangeQuery = changeTracker.getChangeStamp();
       // The next call to the method will happen at a different time
-      compiler.incrementChangeStamp();
+      changeTracker.incrementChangeStamp();
       return result;
     }
   }
@@ -304,7 +308,7 @@ class PhaseOptimizer implements CompilerPass {
   @VisibleForTesting
   class Loop implements CompilerPass {
     private final List<NamedPass> myPasses = new ArrayList<>();
-    private final Set<String> myNames = new HashSet<>();
+    private final Set<String> myNames = new LinkedHashSet<>();
     private ScopedChangeHandler scopeHandler;
     private boolean isCodeRemovalLoop = false;
     private int howmanyIterationsUnderThreshold = 0;
@@ -325,26 +329,27 @@ class PhaseOptimizer implements CompilerPass {
 
       // Set up function-change tracking
       scopeHandler = new ScopedChangeHandler();
-      compiler.addChangeHandler(scopeHandler);
+      changeTracker.addChangeHandler(scopeHandler);
 
       // lastRuns is initialized before each loop. This way, when a pass is run
       // in the 2nd loop for the 1st time, it looks at all scopes.
-      lastRuns = new HashMap<>();
+      lastRuns = new LinkedHashMap<>();
       for (NamedPass pass : myPasses) {
         lastRuns.put(pass, START_TIME);
       }
       // Contains a pass iff it made changes the last time it was run.
-      Set<NamedPass> madeChanges = new HashSet<>();
+      Set<NamedPass> madeChanges = new LinkedHashSet<>();
       // Contains a pass iff it was run during the last inner loop.
-      Set<NamedPass> runInPrevIter = new HashSet<>();
+      Set<NamedPass> runInPrevIter = new LinkedHashSet<>();
       // Contains a pass iff it did not make changes. This set is cleared each time any pass makes
       // changes. The purpose of this is to ensure we do not rerun any passes that did not make
       // changes unless a later run pass did make changes.
-      Set<NamedPass> didNotMakeChanges = new HashSet<>();
+      Set<NamedPass> didNotMakeChanges = new LinkedHashSet<>();
       State state = State.RUN_PASSES_NOT_RUN_IN_PREV_ITER;
       boolean lastIterMadeChanges;
       int count = 1;
-      int astSize = NodeUtil.countAstSize(root);
+      boolean trackAstSize = shouldTrackAstSize();
+      int astSize = trackAstSize ? NodeUtil.countAstSize(root) : UNTRACKED_AST_SIZE;
       int previousAstSize = astSize;
 
       // The loop starts at state RUN_PASSES_NOT_RUN_IN_PREV_ITER and runs all passes.
@@ -373,11 +378,11 @@ class PhaseOptimizer implements CompilerPass {
                     && !didNotMakeChanges.contains(pass))
                 || (state == State.RUN_PASSES_THAT_CHANGED_STH_IN_PREV_ITER
                     && madeChanges.contains(pass))) {
-              compiler.incrementChangeStamp();
+              changeTracker.incrementChangeStamp();
               currentPass = pass;
               pass.process(externs, root);
               runInPrevIter.add(pass);
-              lastRuns.put(pass, compiler.getChangeStamp());
+              lastRuns.put(pass, changeTracker.getChangeStamp());
               if (hasHaltingErrors()) {
                 return;
               } else if (scopeHandler.hasCodeChangedSinceLastCall()) {
@@ -394,7 +399,7 @@ class PhaseOptimizer implements CompilerPass {
           }
 
           previousAstSize = astSize;
-          astSize = NodeUtil.countAstSize(root);
+          astSize = trackAstSize ? NodeUtil.countAstSize(root) : UNTRACKED_AST_SIZE;
           if (state == State.RUN_PASSES_NOT_RUN_IN_PREV_ITER) {
             if (lastIterMadeChanges && isAstSufficientlyChanging(previousAstSize, astSize)) {
               state = State.RUN_PASSES_THAT_CHANGED_STH_IN_PREV_ITER;
@@ -410,7 +415,7 @@ class PhaseOptimizer implements CompilerPass {
         }
       } finally {
         inLoop = false;
-        compiler.removeChangeHandler(scopeHandler);
+        changeTracker.removeChangeHandler(scopeHandler);
       }
     }
 
@@ -431,7 +436,12 @@ class PhaseOptimizer implements CompilerPass {
      * the loop, we should be OK.
      */
     private boolean isAstSufficientlyChanging(int oldAstSize, int newAstSize) {
-      if (useSizeHeuristicToStopOptimizationLoop && this.isCodeRemovalLoop) {
+      if (shouldTrackAstSize()) {
+        checkState(
+            oldAstSize > 0 && newAstSize > 0,
+            "Expected positive AST sizes when size heuristic is active, got old=%s, new=%s",
+            oldAstSize,
+            newAstSize);
         float percentChange = 100 * (Math.abs(newAstSize - oldAstSize) / (float) oldAstSize);
         if (percentChange < 0.05) {
           this.howmanyIterationsUnderThreshold++;
@@ -445,6 +455,10 @@ class PhaseOptimizer implements CompilerPass {
 
     boolean isPopulated() {
       return !myPasses.isEmpty();
+    }
+
+    private boolean shouldTrackAstSize() {
+      return useSizeHeuristicToStopOptimizationLoop && this.isCodeRemovalLoop;
     }
 
     private boolean isCodeRemovalLoop() {

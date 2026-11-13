@@ -54,6 +54,9 @@ public abstract class Config {
     ECMASCRIPT_2019(FeatureSet.ES2019_MODULES),
     ECMASCRIPT_2020(FeatureSet.ES2020_MODULES),
     ECMASCRIPT_2021(FeatureSet.ES2021_MODULES),
+    ECMASCRIPT_2022(FeatureSet.ES2022_MODULES),
+    // NOTE: When adding a new language level here, also update latestEcmaScript() below to return
+    // it.
     ES_NEXT(FeatureSet.ES_NEXT),
     UNSTABLE(FeatureSet.ES_UNSTABLE),
     UNSUPPORTED(FeatureSet.ES_UNSUPPORTED);
@@ -88,7 +91,7 @@ public abstract class Config {
     }
 
     public static LanguageMode latestEcmaScript() {
-      return ECMASCRIPT_2020;
+      return ECMASCRIPT_2021;
     }
   }
 
@@ -99,14 +102,17 @@ public abstract class Config {
     TYPES_ONLY,
     INCLUDE_DESCRIPTIONS_NO_WHITESPACE,
     INCLUDE_DESCRIPTIONS_WITH_WHITESPACE,
-    INCLUDE_ALL_COMMENTS;
+    INCLUDE_ALL_COMMENTS,
+    LICENSE_COMMENTS_ONLY;
 
     boolean shouldParseDescriptions() {
       return this != TYPES_ONLY;
     }
 
     boolean shouldPreserveWhitespace() {
-      return this == INCLUDE_DESCRIPTIONS_WITH_WHITESPACE || this == INCLUDE_ALL_COMMENTS;
+      return this == INCLUDE_DESCRIPTIONS_WITH_WHITESPACE
+          || this == INCLUDE_ALL_COMMENTS
+          || this == LICENSE_COMMENTS_ONLY;
     }
   }
 
@@ -145,6 +151,8 @@ public abstract class Config {
   final ImmutableSet<String> annotationNames() {
     return annotations().keySet();
   }
+
+  public abstract Builder toBuilder();
 
   public static Builder builder() {
     return new AutoValue_Config.Builder()

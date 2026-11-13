@@ -24,12 +24,12 @@ import com.google.javascript.jscomp.graph.DiGraph.DiGraphEdge;
 import com.google.javascript.jscomp.graph.LatticeElement;
 import com.google.javascript.rhino.Node;
 import java.util.BitSet;
-import java.util.HashMap;
-import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Compute the "liveness" of all local variables. A variable is "live" at a point of a program if
@@ -71,7 +71,9 @@ class LiveVariablesAnalysis
   static class LiveVariableLattice implements LatticeElement {
     private final BitSet liveSet;
 
-    /** @param numVars Number of all local variables. */
+    /**
+     * @param numVars Number of all local variables.
+     */
     private LiveVariableLattice(int numVars) {
       this.liveSet = new BitSet(numVars);
     }
@@ -84,8 +86,8 @@ class LiveVariablesAnalysis
     @Override
     public boolean equals(Object other) {
       checkNotNull(other);
-      return (other instanceof LiveVariableLattice)
-          && this.liveSet.equals(((LiveVariableLattice) other).liveSet);
+      return (other instanceof LiveVariableLattice liveVariableLattice)
+          && this.liveSet.equals(liveVariableLattice.liveSet);
     }
 
     // There is only a version of this function with index since var.index will
@@ -128,6 +130,7 @@ class LiveVariablesAnalysis
   private final List<Var> orderedVars;
 
   private final Map<String, Var> allVarsInFn;
+
   /**
    * Live Variables Analysis using the ES6 scope creator. This analysis should only be done on
    * function where jsScope is the function scope. If we call LiveVariablesAnalysis from the
@@ -138,10 +141,8 @@ class LiveVariablesAnalysis
    * function parameters, and it from the function block scope when we are ignoring function
    * parameters.
    *
-   * @param cfg
    * @param jsScope the function scope
    * @param jsScopeChild null or function block scope
-   * @param compiler
    * @param scopeCreator Es6 Scope creator
    * @param allVarsDeclaredInFunction mapping of names to vars of everything reachable in a function
    */
@@ -157,8 +158,8 @@ class LiveVariablesAnalysis
 
     this.jsScope = jsScope;
     this.jsScopeChild = jsScopeChild;
-    this.escaped = new HashSet<>();
-    this.scopeVariables = new HashMap<>();
+    this.escaped = new LinkedHashSet<>();
+    this.scopeVariables = new LinkedHashMap<>();
     this.orderedVars = allVarsDeclaredInFunction.getAllVariablesInOrder();
     this.allVarsInFn = allVarsDeclaredInFunction.getAllVariables();
 
@@ -251,42 +252,30 @@ class LiveVariablesAnalysis
   private void computeGenKill(Node n, BitSet gen, BitSet kill, boolean conditional) {
 
     switch (n.getToken()) {
-      case SCRIPT:
-      case ROOT:
-      case FUNCTION:
-      case BLOCK:
+      case SCRIPT, ROOT, FUNCTION, BLOCK -> {
         return;
-
-      case WHILE:
-      case DO:
-      case IF:
-      case FOR:
+      }
+      case WHILE, DO, IF, FOR -> {
         computeGenKill(NodeUtil.getConditionExpression(n), gen, kill, conditional);
         return;
-
-      case FOR_OF:
-      case FOR_AWAIT_OF:
-      case FOR_IN:
-        {
-          // for (x in y) {...}
-          Node lhs = n.getFirstChild();
-          if (NodeUtil.isNameDeclaration(lhs)) {
-            // for (var x in y) {...}
-            lhs = lhs.getLastChild();
-          }
-
-          // Note that the LHS may never be assigned to or evaluated, like in:
-          //   for (x in []) {}
-          // so should not be killed.
-          computeGenKill(lhs, gen, kill, conditional);
-
-          // rhs is executed only once so we don't go into it every loop.
-          return;
+      }
+      case FOR_OF, FOR_AWAIT_OF, FOR_IN -> {
+        // for (x in y) {...}
+        Node lhs = n.getFirstChild();
+        if (NodeUtil.isNameDeclaration(lhs)) {
+          // for (var x in y) {...}
+          lhs = lhs.getLastChild();
         }
 
-      case LET:
-      case CONST:
-      case VAR:
+        // Note that the LHS may never be assigned to or evaluated, like in:
+        //   for (x in []) {}
+        // so should not be killed.
+        computeGenKill(lhs, gen, kill, conditional);
+
+        // rhs is executed only once so we don't go into it every loop.
+        return;
+      }
+      case LET, CONST, VAR -> {
         for (Node c = n.getFirstChild(); c != null; c = c.getNext()) {
           if (c.isName()) {
             if (c.hasChildren()) {
@@ -298,28 +287,21 @@ class LiveVariablesAnalysis
           } else {
             checkState(c.isDestructuringLhs(), c);
             if (!conditional) {
-              Iterable<Node> allVars = NodeUtil.findLhsNodesInNode(c);
-              for (Node lhsNode : allVars) {
-                addToSetIfLocal(lhsNode, kill);
-              }
+              NodeUtil.visitLhsNodesInNode(c, (lhsNode) -> addToSetIfLocal(lhsNode, kill));
             }
             computeGenKill(c.getFirstChild(), gen, kill, conditional);
             computeGenKill(c.getSecondChild(), gen, kill, conditional);
           }
         }
         return;
-
-      case AND:
-      case OR:
-      case COALESCE:
-      case OPTCHAIN_GETELEM:
-      case OPTCHAIN_GETPROP:
+      }
+      case AND, OR, COALESCE, OPTCHAIN_GETELEM, OPTCHAIN_GETPROP -> {
         computeGenKill(n.getFirstChild(), gen, kill, conditional);
         // May short circuit.
         computeGenKill(n.getLastChild(), gen, kill, true);
         return;
-
-      case OPTCHAIN_CALL:
+      }
+      case OPTCHAIN_CALL -> {
         computeGenKill(n.getFirstChild(), gen, kill, conditional);
         // Unlike OPTCHAIN_GETPROP and OPTCHAIN_GETELEM, the OPTCHAIN_CALLs can have multiple
         // children on rhs which get executed conditionally
@@ -327,15 +309,15 @@ class LiveVariablesAnalysis
           computeGenKill(c, gen, kill, true);
         }
         return;
-
-      case HOOK:
+      }
+      case HOOK -> {
         computeGenKill(n.getFirstChild(), gen, kill, conditional);
         // Assume both sides are conditional.
         computeGenKill(n.getSecondChild(), gen, kill, true);
         computeGenKill(n.getLastChild(), gen, kill, true);
         return;
-
-      case NAME:
+      }
+      case NAME -> {
         if (n.getString().equals("arguments")) {
           markAllParametersEscaped();
         } else if (!NodeUtil.isLhsByDestructuring(n)) {
@@ -344,8 +326,8 @@ class LiveVariablesAnalysis
           addToSetIfLocal(n, gen);
         }
         return;
-
-      default:
+      }
+      default -> {
         if (NodeUtil.isAssignmentOp(n) && n.getFirstChild().isName()) {
           Node lhs = n.getFirstChild();
           if (!conditional) {
@@ -358,12 +340,13 @@ class LiveVariablesAnalysis
           computeGenKill(lhs.getNext(), gen, kill, conditional);
         } else if (n.isAssign() && n.getFirstChild().isDestructuringPattern()) {
           if (!conditional) {
-            Iterable<Node> allVars = NodeUtil.findLhsNodesInNode(n);
-            for (Node child : allVars) {
-              if (child.isName()) {
-                addToSetIfLocal(child, kill);
-              }
-            }
+            NodeUtil.visitLhsNodesInNode(
+                n,
+                (child) -> {
+                  if (child.isName()) {
+                    addToSetIfLocal(child, kill);
+                  }
+                });
           }
           computeGenKill(n.getFirstChild(), gen, kill, conditional);
           computeGenKill(n.getSecondChild(), gen, kill, conditional);
@@ -373,6 +356,7 @@ class LiveVariablesAnalysis
           }
         }
         return;
+      }
     }
   }
 

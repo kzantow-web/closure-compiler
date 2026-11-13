@@ -48,7 +48,7 @@ var MediaKeySystemConfiguration;
 
 /**
  * @param {string} keySystem
- * @param {!Array<!MediaKeySystemConfiguration>} supportedConfigurations
+ * @param {!Array<!MediaKeySystemConfiguration>|!Iterable<!MediaKeySystemConfiguration>} supportedConfigurations
  * @return {!Promise<!MediaKeySystemAccess>}
  * @see https://w3c.github.io/encrypted-media/#navigator-extension-requestmediakeysystemaccess
  */
@@ -110,10 +110,23 @@ MediaKeys.prototype.createSession = function(opt_sessionType) {};
  */
 MediaKeys.prototype.setServerCertificate = function(serverCertificate) {};
 
+/**
+ * @typedef {{
+ *   minHdcpVersion: (string|undefined)
+ * }}
+ */
+var MediaKeyPolicy;
+
+/**
+ * @param {!MediaKeyPolicy=} policy
+ * @return {!Promise<string>}
+ */
+MediaKeys.prototype.getStatusForPolicy = function(policy) {};
 
 
 /**
  * @interface
+ * @extends {Iterable<!Array<!BufferSource|string>>}
  * @see https://w3c.github.io/encrypted-media/#mediakeystatusmap-interface
  */
 function MediaKeyStatusMap() {}
@@ -125,7 +138,7 @@ MediaKeyStatusMap.prototype.size;
 
 /**
  * Array entry 0 is the key, 1 is the value.
- * @return {!Iterator<!Array<!BufferSource|string>>}
+ * @return {!IteratorLike<!Array<!BufferSource|string>>}
  */
 MediaKeyStatusMap.prototype.entries = function() {};
 
@@ -155,16 +168,21 @@ MediaKeyStatusMap.prototype.has = function(keyId) {};
 
 
 /**
- * @return {!Iterator<!BufferSource>}
+ * @return {!IteratorLike<!BufferSource>}
  */
 MediaKeyStatusMap.prototype.keys = function() {};
 
 
 /**
- * @return {!Iterator<string>}
+ * @return {!IteratorLike<string>}
  */
 MediaKeyStatusMap.prototype.values = function() {};
 
+
+/**
+ * @return {!IteratorLike<!Array<!BufferSource|string>>}
+ */
+MediaKeyStatusMap.prototype[Symbol.iterator] = function() {};
 
 
 /**
@@ -233,6 +251,9 @@ MediaKeySession.prototype.removeEventListener = function(
 
 /** @override */
 MediaKeySession.prototype.dispatchEvent = function(evt) {};
+
+/** @type {?function(!Event)} */
+MediaKeySession.prototype.onkeystatuseschange;
 
 /**
  * @record

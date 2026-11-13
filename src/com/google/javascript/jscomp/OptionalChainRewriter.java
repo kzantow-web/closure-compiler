@@ -19,11 +19,12 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.javascript.jscomp.parsing.parser.FeatureSet.Feature;
 import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.Node;
 import java.util.ArrayDeque;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Rewrites a single optional chain as one or more nested hook expressions.
@@ -53,7 +54,7 @@ class OptionalChainRewriter {
   final AstFactory astFactory;
   final TmpVarNameCreator tmpVarNameCreator;
   // If a scope is provided, newly created variables will be declared in that scope
-  @Nullable final Scope scope;
+  final @Nullable Scope scope;
   final Node chainParent;
   final Node wholeChain;
   final Node insertionPoint;
@@ -77,12 +78,14 @@ class OptionalChainRewriter {
       this.astFactory = compiler.createAstFactory();
     }
 
+    @CanIgnoreReturnValue
     Builder setTmpVarNameCreator(TmpVarNameCreator tmpVarNameCreator) {
       this.tmpVarNameCreator = checkNotNull(tmpVarNameCreator);
       return this;
     }
 
     /** Optionally sets a scope in which the rewriter will declare all temporary variables */
+    @CanIgnoreReturnValue
     Builder setScope(Scope scope) {
       this.scope = checkNotNull(scope);
       return this;
@@ -159,6 +162,9 @@ class OptionalChainRewriter {
     // function. However, if it isn't undefined, we have to preserve the correct `this` value
     // for the call.
     if (chainParent.isCall()
+        // If the call is explicitly a free call (e.g. `(0, a?.b)()`), we should not preserve
+        // `this`.
+        && !chainParent.getBooleanProp(Node.FREE_CALL)
         // The chain will have been replaced by optChainReplacement during the rewriting above.
         && optChainReplacement.isFirstChildOf(chainParent)
         // The wholeChain variable will still point to the rewritten final Node of the
@@ -272,7 +278,11 @@ class OptionalChainRewriter {
     // NOTE: convertToNonOptionalChain() above will have made the chain start
     // and all the other nodes in the first segment of the chain non-optional,
     // so fullChainStart.isCall() is the right test here.
-    if (NodeUtil.isNormalGet(receiverNode) && fullChainStart.isCall()) {
+    if (NodeUtil.isNormalGet(receiverNode)
+        && fullChainStart.isCall()
+        // Check !FREE_CALL to ensure we don't treat free calls on property
+        // access (e.g. `(0, expr.prop)?.()`) as method calls.
+        && !fullChainStart.getBooleanProp(Node.FREE_CALL)) {
       // `expr.prop?.(x).y`
       // Needs to become
       // `(t1 = (t0 = expr).prop) == null ? void 0 : t1.call(t0, x).y`
@@ -321,6 +331,7 @@ class OptionalChainRewriter {
     String tempVarName = declareTempVarName(subExpr);
     Node placeholder = IR.empty();
     subExpr.replaceWith(placeholder);
+    subExpr.removeDirectEvalProp();
     Node replacement = astFactory.createAssign(tempVarName, subExpr).srcrefTreeIfMissing(subExpr);
     placeholder.replaceWith(replacement);
     return replacement.getFirstChild().cloneNode();

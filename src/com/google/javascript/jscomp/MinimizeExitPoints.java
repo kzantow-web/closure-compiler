@@ -22,7 +22,7 @@ import com.google.javascript.jscomp.base.Tri;
 import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Transform the structure of the AST so that the number of explicit exits
@@ -31,21 +31,12 @@ import javax.annotation.Nullable;
 class MinimizeExitPoints extends AbstractPeepholeOptimization {
   @Override
   Node optimizeSubtree(Node n) {
+    checkState(this.isASTNormalized(), "MinimizeExitPoints requires the AST to be normalized");
     switch (n.getToken()) {
-      case LABEL:
-        tryMinimizeExits(
-            n.getLastChild(), Token.BREAK, n.getFirstChild().getString());
-        break;
-
-      case FOR:
-      case FOR_IN:
-      case FOR_OF:
-      case FOR_AWAIT_OF:
-      case WHILE:
-        tryMinimizeExits(NodeUtil.getLoopCodeBlock(n), Token.CONTINUE, null);
-        break;
-
-      case DO:
+      case LABEL -> tryMinimizeExits(n.getLastChild(), Token.BREAK, n.getFirstChild().getString());
+      case FOR, FOR_IN, FOR_OF, FOR_AWAIT_OF, WHILE ->
+          tryMinimizeExits(NodeUtil.getLoopCodeBlock(n), Token.CONTINUE, null);
+      case DO -> {
         tryMinimizeExits(NodeUtil.getLoopCodeBlock(n), Token.CONTINUE, null);
 
         Node cond = NodeUtil.getConditionExpression(n);
@@ -55,22 +46,16 @@ class MinimizeExitPoints extends AbstractPeepholeOptimization {
           // as we would a CONTINUE.
           tryMinimizeExits(n.getFirstChild(), Token.BREAK, null);
         }
-        break;
-
-      case BLOCK:
+      }
+      case BLOCK -> {
         if (n.hasParent() && n.getParent().isFunction()) {
           tryMinimizeExits(n, Token.RETURN, null);
         }
-        break;
-
-      case SWITCH:
-        tryMinimizeSwitchExits(n, Token.BREAK, null);
-        break;
-
-        // TODO(johnlenz): Minimize any block that ends in a optimizable statements:
-        //   break, continue, return
-      default:
-        break;
+      }
+      case SWITCH -> tryMinimizeSwitchExits(n, Token.BREAK, null);
+      // TODO(johnlenz): Minimize any block that ends in a optimizable statements:
+      //   break, continue, return
+      default -> {}
     }
     return n;
   }
@@ -200,8 +185,9 @@ class MinimizeExitPoints extends AbstractPeepholeOptimization {
   void tryMinimizeSwitchExits(Node n, Token exitType, @Nullable String labelName) {
     checkState(n.isSwitch());
     // Skipping the switch condition, visit all the children.
-    for (Node c = n.getSecondChild(); c != null; c = c.getNext()) {
-      if (c != n.getLastChild()) {
+    Node switchBody = n.getSecondChild();
+    for (Node c = switchBody.getFirstChild(); c != null; c = c.getNext()) {
+      if (c != switchBody.getLastChild()) {
         tryMinimizeSwitchCaseExits(c, exitType, labelName);
       } else {
         // Last case, the last case block can be optimized more aggressively.

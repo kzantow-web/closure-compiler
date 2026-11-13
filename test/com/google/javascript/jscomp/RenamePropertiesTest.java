@@ -16,29 +16,35 @@
 
 package com.google.javascript.jscomp;
 
+import static com.google.common.base.Strings.nullToEmpty;
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
+import com.google.javascript.rhino.Node;
+import java.util.function.Predicate;
+import org.jspecify.annotations.Nullable;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
-/**
- * {@link RenameProperties} tests.
- *
- */
+/** {@link RenameProperties} tests. */
 @RunWith(JUnit4.class)
 public final class RenamePropertiesTest extends CompilerTestCase {
 
   private static final String EXTERNS =
-      "var window;" +
-      "prop.toString;" +
-      "var google = { gears: { factory: {}, workerPool: {} } };";
+      """
+      var window;
+      prop.toString;
+      var google = { gears: { factory: {}, workerPool: {} } };
+      """;
 
   private RenameProperties renameProperties;
   private boolean generatePseudoNames;
-  private VariableMap prevUsedPropertyMap;
+  private @Nullable VariableMap prevUsedPropertyMap;
+  private @Nullable Predicate<Node> propertyNameFilter = (Node name) -> true;
 
   public RenamePropertiesTest() {
     super(EXTERNS);
@@ -51,42 +57,46 @@ public final class RenamePropertiesTest extends CompilerTestCase {
     generatePseudoNames = false;
     prevUsedPropertyMap = null;
     enableNormalize();
+    // TODO(bradfordcsmith): Stop normalizing the expected output or document why it is necessary.
+    enableNormalizeExpectedOutput();
     enableGatherExternProperties();
-  }
-
-  @Override
-  protected int getNumRepetitions() {
-    // The RenameProperties pass should only be run once over a parse tree.
-    return 1;
   }
 
   @Test
   public void testPrototypeProperties() {
-    test("Bar.prototype.getA = function(){}; bar.getA();" +
-         "Bar.prototype.getB = function(){};" +
-         "Bar.prototype.getC = function(){};",
-         "Bar.prototype.a = function(){}; bar.a();" +
-         "Bar.prototype.b = function(){};" +
-         "Bar.prototype.c = function(){}");
+    test(
+        """
+        Bar.prototype.getA = function(){}; bar.getA();
+        Bar.prototype.getB = function(){};
+        Bar.prototype.getC = function(){};
+        """,
+        """
+        Bar.prototype.a = function(){}; bar.a();
+        Bar.prototype.b = function(){};
+        Bar.prototype.c = function(){}
+        """);
   }
 
   @Test
   public void testPrototypeProperties_optChain() {
     test(
-        lines(
-            "Bar.prototype.getA = function(){}; bar?.getA();",
-            "Bar.prototype.getB = function(){};",
-            "Bar.prototype.getC = function(){};"),
-        lines(
-            "Bar.prototype.a = function(){}; bar?.a();",
-            "Bar.prototype.b = function(){};",
-            "Bar.prototype.c = function(){}"));
+        """
+        Bar.prototype.getA = function(){}; bar?.getA();
+        Bar.prototype.getB = function(){};
+        Bar.prototype.getC = function(){};
+        """,
+        """
+        Bar.prototype.a = function(){}; bar?.a();
+        Bar.prototype.b = function(){};
+        Bar.prototype.c = function(){}
+        """);
   }
 
   @Test
   public void testPrototypePropertiesAsObjLitKeys1() {
-    test("Bar.prototype = {2: function(){}, getA: function(){}}; bar[2]();",
-         "Bar.prototype = {2: function(){}, a: function(){}}; bar[2]();");
+    test(
+        "Bar.prototype = {2: function(){}, getA: function(){}}; bar[2]();",
+        "Bar.prototype = {2: function(){}, a: function(){}}; bar[2]();");
   }
 
   @Test
@@ -95,8 +105,7 @@ public final class RenamePropertiesTest extends CompilerTestCase {
 
     testSame("Bar.prototype = {get 'a'(){}}; bar['a'];");
 
-    test("Bar.prototype = {get getA(){}}; bar.getA;",
-         "Bar.prototype = {get a(){}}; bar.a;");
+    test("Bar.prototype = {get getA(){}}; bar.getA;", "Bar.prototype = {get a(){}}; bar.a;");
   }
 
   @Test
@@ -105,16 +114,16 @@ public final class RenamePropertiesTest extends CompilerTestCase {
 
     testSame("Bar.prototype = {set 'a'(x){}}; bar['a'];");
 
-    test("Bar.prototype = {set getA(x){}}; bar.getA;",
-         "Bar.prototype = {set a(x){}}; bar.a;");
+    test("Bar.prototype = {set getA(x){}}; bar.getA;", "Bar.prototype = {set a(x){}}; bar.a;");
 
     test("Bar.prototype = {set getA(x){}}; bar?.getA;", "Bar.prototype = {set a(x){}}; bar?.a;");
   }
 
   @Test
   public void testMixedQuotedAndUnquotedObjLitKeys1() {
-    test("Bar = {getA: function(){}, 'getB': function(){}}; bar.getA();",
-         "Bar = {a: function(){}, 'getB': function(){}}; bar.a();");
+    test(
+        "Bar = {getA: function(){}, 'getB': function(){}}; bar.getA();",
+        "Bar = {a: function(){}, 'getB': function(){}}; bar.a();");
 
     test(
         "Bar = {getA: function(){}, 'getB': function(){}}; bar?.getA();",
@@ -123,8 +132,9 @@ public final class RenamePropertiesTest extends CompilerTestCase {
 
   @Test
   public void testMixedQuotedAndUnquotedObjLitKeys2() {
-    test("Bar = {getA: function(){}, 'getB': function(){}}; bar.getA();",
-         "Bar = {a: function(){}, 'getB': function(){}}; bar.a();");
+    test(
+        "Bar = {getA: function(){}, 'getB': function(){}}; bar.getA();",
+        "Bar = {a: function(){}, 'getB': function(){}}; bar.a();");
   }
 
   @Test
@@ -135,14 +145,16 @@ public final class RenamePropertiesTest extends CompilerTestCase {
 
   @Test
   public void testOverlappingOriginalAndGeneratedNames() {
-    test("Bar.prototype = {b: function(){}, a: function(){}}; bar.b();",
-         "Bar.prototype = {a: function(){}, b: function(){}}; bar.a();");
+    test(
+        "Bar.prototype = {b: function(){}, a: function(){}}; bar.b();",
+        "Bar.prototype = {a: function(){}, b: function(){}}; bar.a();");
   }
 
   @Test
   public void testRenamePropertiesWithLeadingUnderscores() {
-    test("Bar.prototype = {_getA: function(){}, _b: 0}; bar._getA();",
-         "Bar.prototype = {a: function(){}, b: 0}; bar.a();");
+    test(
+        "Bar.prototype = {_getA: function(){}, _b: 0}; bar._getA();",
+        "Bar.prototype = {a: function(){}, b: 0}; bar.a();");
 
     test(
         "Bar.prototype = {_getA: function(){}, _b: 0}; bar?._getA();",
@@ -151,47 +163,44 @@ public final class RenamePropertiesTest extends CompilerTestCase {
 
   @Test
   public void testPropertyAddedToObject() {
-    test("var foo = {}; foo.prop = '';",
-         "var foo = {}; foo.a = '';");
+    test("var foo = {}; foo.prop = '';", "var foo = {}; foo.a = '';");
   }
 
   @Test
   public void testPropertyAddedToFunction() {
-    test("var foo = function(){}; foo.prop = '';",
-         "var foo = function(){}; foo.a = '';");
+    test("var foo = function(){}; foo.prop = '';", "var foo = function(){}; foo.a = '';");
   }
 
   @Test
   public void testPropertyOfObjectOfUnknownType() {
-    test("var foo = x(); foo.prop = '';",
-         "var foo = x(); foo.a = '';");
+    test("var foo = x(); foo.prop = '';", "var foo = x(); foo.a = '';");
   }
 
   @Test
   public void testSetPropertyOfThis() {
-    test("this.prop = 'bar'",
-         "this.a = 'bar'");
+    test("this.prop = 'bar'", "this.a = 'bar'");
   }
 
   @Test
   public void testReadPropertyOfThis() {
-    test("f(this.prop);",
-         "f(this.a);");
+    test("f(this.prop);", "f(this.a);");
 
     test("f(this?.prop);", "f(this?.a);");
   }
 
   @Test
   public void testObjectLiteralInLocalScope() {
-    test("function x() { var foo = {prop1: 'bar', prop2: 'baz'}; }",
-         "function x() { var foo = {a: 'bar', b: 'baz'}; }");
+    test(
+        "function x() { var foo = {prop1: 'bar', prop2: 'baz'}; }",
+        "function x() { var foo = {a: 'bar', b: 'baz'}; }");
   }
 
   @Test
   public void testIncorrectAttemptToAccessQuotedProperty() {
     // The correct way to call the quoted 'getFoo' method is: bar['getFoo']().
-    test("Bar.prototype = {'B': 0, 'getFoo': function(){}}; bar.getFoo();",
-         "Bar.prototype = {'B': 0, 'getFoo': function(){}}; bar.a();");
+    test(
+        "Bar.prototype = {'B': 0, 'getFoo': function(){}}; bar.getFoo();",
+        "Bar.prototype = {'B': 0, 'getFoo': function(){}}; bar.a();");
   }
 
   @Test
@@ -201,8 +210,9 @@ public final class RenamePropertiesTest extends CompilerTestCase {
 
   @Test
   public void testExternedPropertyName() {
-    test("Bar.prototype = {toString: function(){}, foo: 0}; bar.toString();",
-         "Bar.prototype = {toString: function(){}, a: 0}; bar.toString();");
+    test(
+        "Bar.prototype = {toString: function(){}, foo: 0}; bar.toString();",
+        "Bar.prototype = {toString: function(){}, a: 0}; bar.toString();");
   }
 
   @Test
@@ -212,28 +222,36 @@ public final class RenamePropertiesTest extends CompilerTestCase {
 
   @Test
   public void testAvoidingConflictsBetweenQuotedAndUnquotedPropertyNames() {
-    test("Bar.prototype.foo = function(){}; Bar.prototype['a'] = 0; bar.foo();",
-         "Bar.prototype.b = function(){}; Bar.prototype['a'] = 0; bar.b();");
+    test(
+        "Bar.prototype.foo = function(){}; Bar.prototype['a'] = 0; bar.foo();",
+        "Bar.prototype.b = function(){}; Bar.prototype['a'] = 0; bar.b();");
   }
 
   @Test
   public void testSamePropertyNameQuotedAndUnquoted() {
-    test("Bar.prototype.prop = function(){}; y = {'prop': 0};",
-         "Bar.prototype.a = function(){}; y = {'prop': 0};");
+    test(
+        "Bar.prototype.prop = function(){}; y = {'prop': 0};",
+        "Bar.prototype.a = function(){}; y = {'prop': 0};");
   }
 
   @Test
   public void testStaticAndInstanceMethodWithSameName() {
-    test("Bar = function(){}; Bar.getA = function(){}; " +
-         "Bar.prototype.getA = function(){}; Bar.getA(); bar.getA();",
-         "Bar = function(){}; Bar.a = function(){}; " +
-         "Bar.prototype.a = function(){}; Bar.a(); bar.a();");
+    test(
+        """
+        Bar = function(){}; Bar.getA = function(){};
+        Bar.prototype.getA = function(){}; Bar.getA(); bar.getA();
+        """,
+        """
+        Bar = function(){}; Bar.a = function(){};
+        Bar.prototype.a = function(){}; Bar.a(); bar.a();
+        """);
   }
 
   @Test
   public void testRenamePropertiesFunctionCall1() {
-    test("var foo = {myProp: 0}; f(foo[JSCompiler_renameProperty('myProp')]);",
-         "var foo = {a: 0}; f(foo['a']);");
+    test(
+        "var foo = {myProp: 0}; f(foo[JSCompiler_renameProperty('myProp')]);",
+        "var foo = {a: 0}; f(foo['a']);");
     // JSCompiler does not handle optional calls to `JSCompiler_renameProperty`. The
     // OPTCHAIN_GETELEM is handled consistently with regular GETELEM.
     test(
@@ -243,118 +261,150 @@ public final class RenamePropertiesTest extends CompilerTestCase {
 
   @Test
   public void testRenamePropertiesFunctionCall2() {
-    test("var foo = {myProp: 0}; " +
-         "f(JSCompiler_renameProperty('otherProp.myProp.someProp')); " +
-         "foo.myProp = 1; foo.theirProp = 2; foo.yourProp = 3;",
-         "var foo = {a: 0}; f('b.a.c'); " +
-         "foo.a = 1; foo.d = 2; foo.e = 3;");
+    test(
+        """
+        var foo = {myProp: 0};
+        f(JSCompiler_renameProperty('otherProp.myProp.someProp'));
+        foo.myProp = 1; foo.theirProp = 2; foo.yourProp = 3;
+        """,
+        """
+        var foo = {a: 0}; f('b.a.c');
+        foo.a = 1; foo.d = 2; foo.e = 3;
+        """);
   }
 
   @Test
   public void testRemoveRenameFunctionStubs1() {
-    test("function JSCompiler_renameProperty(x) { return x; }",
-         "");
+    test("function JSCompiler_renameProperty(x) { return x; }", "");
   }
 
   @Test
   public void testRemoveRenameFunctionStubs2() {
-    test("function JSCompiler_renameProperty(x) { return x; }" +
-         "var foo = {myProp: 0}; f(foo[JSCompiler_renameProperty('myProp')]);",
-         "var foo = {a: 0}; f(foo['a']);");
+    test(
+        """
+        function JSCompiler_renameProperty(x) { return x; }
+        var foo = {myProp: 0}; f(foo[JSCompiler_renameProperty('myProp')]);
+        """,
+        "var foo = {a: 0}; f(foo['a']);");
   }
 
   @Test
   public void testGeneratePseudoNames() {
     generatePseudoNames = true;
-    test("var foo={}; foo.bar=1; foo['abc']=2",
-         "var foo={}; foo.$bar$=1; foo['abc']=2");
+    test("var foo={}; foo.bar=1; foo['abc']=2", "var foo={}; foo.$bar$=1; foo['abc']=2");
   }
 
   @Test
-  public void testModules() {
-    String module1Js =
-        "function Bar(){} Bar.prototype.getA=function(x){};"
-            + "var foo;foo.getA(foo);foo.doo=foo;foo.bloo=foo;";
+  public void testChunks() {
+    String chunk1Js =
+        """
+        function Bar(){} Bar.prototype.getA=function(x){};
+        var foo;foo.getA(foo);foo.doo=foo;foo.bloo=foo;
+        """;
 
-    String module2Js =
-        "function Far(){} Far.prototype.getB=function(y){};"
-            + "var too;too.getB(too);too.woo=too;too.bloo=too;";
+    String chunk2Js =
+        """
+        function Far(){} Far.prototype.getB=function(y){};
+        var too;too.getB(too);too.woo=too;too.bloo=too;
+        """;
 
-    String module3Js =
-        "function Car(){} Car.prototype.getC=function(z){};"
-            + "var noo;noo.getC(noo);noo.zoo=noo;noo.cloo=noo;";
+    String chunk3Js =
+        """
+        function Car(){} Car.prototype.getC=function(z){};
+        var noo;noo.getC(noo);noo.zoo=noo;noo.cloo=noo;
+        """;
 
-    JSChunk module1 = new JSChunk("m1");
-    module1.add(SourceFile.fromCode("input1", module1Js));
+    JSChunk chunk1 = new JSChunk("m1");
+    chunk1.add(SourceFile.fromCode("input1", chunk1Js));
 
-    JSChunk module2 = new JSChunk("m2");
-    module2.add(SourceFile.fromCode("input2", module2Js));
+    JSChunk chunk2 = new JSChunk("m2");
+    chunk2.add(SourceFile.fromCode("input2", chunk2Js));
 
-    JSChunk module3 = new JSChunk("m3");
-    module3.add(SourceFile.fromCode("input3", module3Js));
+    JSChunk chunk3 = new JSChunk("m3");
+    chunk3.add(SourceFile.fromCode("input3", chunk3Js));
 
-    JSChunk[] modules = new JSChunk[] {module1, module2, module3};
-    Compiler compiler = compileModules("", modules);
+    JSChunk[] chunks = new JSChunk[] {chunk1, chunk2, chunk3};
+    Compiler compiler = compileChunks("", chunks);
 
     Result result = compiler.getResult();
     assertThat(result.success).isTrue();
 
-    assertThat(compiler.toSource(module1))
+    assertThat(compiler.toSource(chunk1))
         .isEqualTo(
-            "function Bar(){}Bar.prototype.b=function(x){};"
-                + "var foo;foo.b(foo);foo.f=foo;foo.a=foo;");
+            """
+            function Bar(){}Bar.prototype.b=function(x){};\
+            var foo;foo.b(foo);foo.f=foo;foo.a=foo;\
+            """);
 
-    assertThat(compiler.toSource(module2))
+    assertThat(compiler.toSource(chunk2))
         .isEqualTo(
-            "function Far(){}Far.prototype.c=function(y){};"
-                + "var too;too.c(too);too.g=too;too.a=too;");
+            """
+            function Far(){}Far.prototype.c=function(y){};\
+            var too;too.c(too);too.g=too;too.a=too;\
+            """);
 
     // Note that properties that occur most often globally get the earliest
-    // names. The "getC" property, which doesn't occur until module 3, is
+    // names. The "getC" property, which doesn't occur until chunk 3, is
     // renamed to an earlier name in the alphabet than "woo", which appears
-    // in module 2, because "getC" occurs more total times across all modules.
-    // Might be better to give early modules the shortest names, but this is
+    // in chunk 2, because "getC" occurs more total times across all chunks.
+    // Might be better to give early chunks the shortest names, but this is
     // how the pass currently works.
-    assertThat(compiler.toSource(module3))
+    assertThat(compiler.toSource(chunk3))
         .isEqualTo(
-            "function Car(){}Car.prototype.d=function(z){};"
-                + "var noo;noo.d(noo);noo.h=noo;noo.e=noo;");
+            """
+            function Car(){}Car.prototype.d=function(z){};\
+            var noo;noo.d(noo);noo.h=noo;noo.e=noo;\
+            """);
   }
 
   @Test
   public void testPropertyAffinityOff() {
-    test("var foo={};foo.x=1;foo.y=2;foo.z=3;" +
-         "function f1() { foo.z; foo.z; foo.z; foo.y}" +
-         "function f2() {                      foo.x}",
+    test(
+        """
+        var foo={};foo.x=1;foo.y=2;foo.z=3;
+        function f1() { foo.z; foo.z; foo.z; foo.y}
+        function f2() {                      foo.x}
+        """,
+        """
+        var foo={};foo.b=1;foo.c=2;foo.a=3;
+        function f1() { foo.a; foo.a; foo.a; foo.c}
+        function f2() {                      foo.b}
+        """);
 
-
-         "var foo={};foo.b=1;foo.c=2;foo.a=3;" +
-         "function f1() { foo.a; foo.a; foo.a; foo.c}" +
-         "function f2() {                      foo.b}");
-
-    test("var foo={};foo.x=1;foo.y=2;foo.z=3;" +
-        "function f1() { foo.z; foo.z; foo.z; foo.y}" +
-        "function f2() { foo.z; foo.z; foo.z; foo.x}",
-
-
-        "var foo={};foo.b=1;foo.c=2;foo.a=3;" +
-        "function f1() { foo.a; foo.a; foo.a; foo.c}" +
-        "function f2() { foo.a; foo.a; foo.a; foo.b}");
+    test(
+        """
+        var foo={};foo.x=1;foo.y=2;foo.z=3;
+        function f1() { foo.z; foo.z; foo.z; foo.y}
+        function f2() { foo.z; foo.z; foo.z; foo.x}
+        """,
+        """
+        var foo={};foo.b=1;foo.c=2;foo.a=3;
+        function f1() { foo.a; foo.a; foo.a; foo.c}
+        function f2() { foo.a; foo.a; foo.a; foo.b}
+        """);
   }
 
   @Test
   public void testPrototypePropertiesStable() {
     testStableRenaming(
-        "Bar.prototype.getA = function(){}; bar.getA();" +
-        "Bar.prototype.getB = function(){};",
-        "Bar.prototype.a = function(){}; bar.a();" +
-        "Bar.prototype.b = function(){}",
-        "Bar.prototype.get = function(){}; bar.get();" +
-        "Bar.prototype.getA = function(){}; bar.getA();" +
-        "Bar.prototype.getB = function(){};",
-        "Bar.prototype.c = function(){}; bar.c();" +
-        "Bar.prototype.a = function(){}; bar.a();" +
-        "Bar.prototype.b = function(){}");
+        """
+        Bar.prototype.getA = function(){}; bar.getA();
+        Bar.prototype.getB = function(){};
+        """,
+        """
+        Bar.prototype.a = function(){}; bar.a();
+        Bar.prototype.b = function(){}
+        """,
+        """
+        Bar.prototype.get = function(){}; bar.get();
+        Bar.prototype.getA = function(){}; bar.getA();
+        Bar.prototype.getB = function(){};
+        """,
+        """
+        Bar.prototype.c = function(){}; bar.c();
+        Bar.prototype.a = function(){}; bar.a();
+        Bar.prototype.b = function(){}
+        """);
   }
 
   @Test
@@ -371,10 +421,14 @@ public final class RenamePropertiesTest extends CompilerTestCase {
     testStableRenaming(
         "Bar = {getA: function(){}, 'getB': function(){}}; bar.getA();",
         "Bar = {a: function(){}, 'getB': function(){}}; bar.a();",
-        "Bar = {get: function(){}, getA: function(){}, 'getB': function(){}};" +
-        "bar.getA();bar.get();",
-        "Bar = {b: function(){}, a: function(){}, 'getB': function(){}};" +
-        "bar.a();bar.b();");
+        """
+        Bar = {get: function(){}, getA: function(){}, 'getB': function(){}};
+        bar.getA();bar.get();
+        """,
+        """
+        Bar = {b: function(){}, a: function(){}, 'getB': function(){}};
+        bar.a();bar.b();
+        """);
   }
 
   @Test
@@ -382,25 +436,35 @@ public final class RenamePropertiesTest extends CompilerTestCase {
     testStableRenaming(
         "Bar.prototype = {b: function(){}, a: function(){}}; bar.b();",
         "Bar.prototype = {a: function(){}, b: function(){}}; bar.a();",
-        "Bar.prototype = {c: function(){}, b: function(){}, a: function(){}};" +
-        "bar.b();",
-        "Bar.prototype = {c: function(){}, a: function(){}, b: function(){}};" +
-        "bar.a();");
+        """
+        Bar.prototype = {c: function(){}, b: function(){}, a: function(){}};
+        bar.b();
+        """,
+        """
+        Bar.prototype = {c: function(){}, a: function(){}, b: function(){}};
+        bar.a();
+        """);
   }
 
   @Test
   public void testStableWithTrickyExternsChanges() {
-    test("Bar.prototype = {b: function(){}, a: function(){}}; bar.b();",
-         "Bar.prototype = {a: function(){}, b: function(){}}; bar.a();");
+    test(
+        "Bar.prototype = {b: function(){}, a: function(){}}; bar.b();",
+        "Bar.prototype = {a: function(){}, b: function(){}}; bar.a();");
     prevUsedPropertyMap = renameProperties.getPropertyMap();
     String externs = EXTERNS + "prop.b;";
     test(
         externs(externs),
         srcs(
-            "Bar.prototype = {new_f: function(){}, b: function(){}, "
-                + "a: function(){}};bar.b();"),
+            """
+            Bar.prototype = {new_f: function(){}, b: function(){},
+            a: function(){}};bar.b();
+            """),
         expected(
-            "Bar.prototype = {c:function(){}, b:function(){}, a:function(){}};" + "bar.b();"));
+            """
+            Bar.prototype = {c:function(){}, b:function(){}, a:function(){}};
+            bar.b();
+            """));
   }
 
   @Test
@@ -414,10 +478,11 @@ public final class RenamePropertiesTest extends CompilerTestCase {
 
   @Test
   public void testPropertyAddedToObjectStable() {
-    testStableRenaming("var foo = {}; foo.prop = '';",
-                       "var foo = {}; foo.a = '';",
-                       "var foo = {}; foo.prop = ''; foo.a='';",
-                       "var foo = {}; foo.a = ''; foo.b='';");
+    testStableRenaming(
+        "var foo = {}; foo.prop = '';",
+        "var foo = {}; foo.a = '';",
+        "var foo = {}; foo.prop = ''; foo.a='';",
+        "var foo = {}; foo.a = ''; foo.b='';");
   }
 
   @Test
@@ -432,20 +497,28 @@ public final class RenamePropertiesTest extends CompilerTestCase {
   @Test
   public void testRenamePropertiesFunctionCallStable() {
     testStableRenaming(
-        "var foo = {myProp: 0}; " +
-        "f(JSCompiler_renameProperty('otherProp.myProp.someProp')); " +
-        "foo.myProp = 1; foo.theirProp = 2; foo.yourProp = 3;",
-        "var foo = {a: 0}; f('b.a.c'); " +
-        "foo.a = 1; foo.d = 2; foo.e = 3;",
-        "var bar = {newProp: 0}; var foo = {myProp: 0}; " +
-        "f(JSCompiler_renameProperty('otherProp.myProp.someProp')); " +
-        "foo.myProp = 1; foo.theirProp = 2; foo.yourProp = 3;",
-        "var bar = {f: 0}; var foo = {a: 0}; f('b.a.c'); " +
-        "foo.a = 1; foo.d = 2; foo.e = 3;");
+        """
+        var foo = {myProp: 0};
+        f(JSCompiler_renameProperty('otherProp.myProp.someProp'));
+        foo.myProp = 1; foo.theirProp = 2; foo.yourProp = 3;
+        """,
+        """
+        var foo = {a: 0}; f('b.a.c');
+        foo.a = 1; foo.d = 2; foo.e = 3;
+        """,
+        """
+        var bar = {newProp: 0}; var foo = {myProp: 0};
+        f(JSCompiler_renameProperty('otherProp.myProp.someProp'));
+        foo.myProp = 1; foo.theirProp = 2; foo.yourProp = 3;
+        """,
+        """
+        var bar = {f: 0}; var foo = {a: 0}; f('b.a.c');
+        foo.a = 1; foo.d = 2; foo.e = 3;
+        """);
   }
 
-  private void testStableRenaming(String input1, String expected1,
-                                  String input2, String expected2) {
+  private void testStableRenaming(
+      String input1, String expected1, String input2, String expected2) {
     test(input1, expected1);
     prevUsedPropertyMap = renameProperties.getPropertyMap();
     test(input2, expected2);
@@ -491,18 +564,20 @@ public final class RenamePropertiesTest extends CompilerTestCase {
     // TODO (simranarora) A restriction of this pass is that quoted and unquoted property
     // references cannot be mixed.
     test(
-        lines(
-            "var a = {",
-            "  ['val' + ++i]: i,",
-            "  ['val' + ++i]: i",
-            "};",
-            "a.val1;"),
-        lines(
-            "var a = {",
-            "  ['val' + ++i]: i,", // don't rename here
-            "  ['val' + ++i]: i",
-            "};",
-            "a.a;")); // rename here
+        """
+        var a = {
+          ['val' + ++i]: i,
+          ['val' + ++i]: i
+        };
+        a.val1;
+        """,
+        """
+        var a = {
+          ['val' + ++i]: i, // don't rename here
+          ['val' + ++i]: i
+        };
+        a.a;
+        """); // rename here
   }
 
   @Test
@@ -512,45 +587,49 @@ public final class RenamePropertiesTest extends CompilerTestCase {
 
     // Concatination for computed property
     test(
-        lines(
-            "class Bar {",
-            "  constructor(){}",
-            "  ['f'+'oo']() {",
-            "    return 1",
-            "  }",
-            "}",
-            "var bar = new Bar()",
-            "bar.foo();"),
-        lines(
-            "class Bar {",
-            "  constructor(){}",
-            "  ['f'+'oo']() {", //don't rename here
-            "    return 1",
-            "  }",
-            "}",
-            "var bar = new Bar()",
-            "bar.a();")); //rename here
+        """
+        class Bar {
+          constructor(){}
+          ['f'+'oo']() {
+            return 1
+          }
+        }
+        var bar = new Bar()
+        bar.foo();
+        """,
+        """
+        class Bar {
+          constructor(){}
+          ['f'+'oo']() { // don't rename here
+            return 1
+          }
+        }
+        var bar = new Bar()
+        bar.a();
+        """); // rename here
 
     // Without property concatination
     test(
-        lines(
-            "class Bar {",
-            "  constructor(){}",
-            "  ['foo']() {",
-            "    return 1",
-            "  }",
-            "}",
-            "var bar = new Bar()",
-            "bar.foo();"),
-        lines(
-            "class Bar {",
-            "  constructor(){}",
-            "  ['foo']() {", //don't rename here
-            "    return 1",
-            "  }",
-            "}",
-            "var bar = new Bar()",
-            "bar.a();")); //rename here
+        """
+        class Bar {
+          constructor(){}
+          ['foo']() {
+            return 1
+          }
+        }
+        var bar = new Bar()
+        bar.foo();
+        """,
+        """
+        class Bar {
+          constructor(){}
+          ['foo']() { // don't rename here
+            return 1
+          }
+        }
+        var bar = new Bar()
+        bar.a();
+        """); // rename here
   }
 
   @Test
@@ -559,265 +638,491 @@ public final class RenamePropertiesTest extends CompilerTestCase {
     // call inside of getB() refers to a method getA() in the outer scope and not the getA() method
     // inside the Bar class
     test(
-        lines(
-            "function getA() {};",
-            "class Bar {",
-            "  constructor(){}",
-            "  getA() {",
-            "    return 1",
-            "  }",
-            "  getB(x) {",
-            "    getA();",
-            "  }",
-            "}"),
-        lines(
-            "function getA() {};",
-            "class Bar {",
-            "  constructor(){}",
-            "  a() {",
-            "    return 1",
-            "  }",
-            "  b(x) {",
-            "    getA();",
-            "  }",
-            "}"));
+        """
+        function getA() {};
+        class Bar {
+          constructor(){}
+          getA() {
+            return 1
+          }
+          getB(x) {
+            getA();
+          }
+        }
+        """,
+        """
+        function getA() {};
+        class Bar {
+          constructor(){}
+          a() {
+            return 1
+          }
+          b(x) {
+            getA();
+          }
+        }
+        """);
 
     // Call class method inside class scope - due to the scoping rules of javascript,
     // the "this.getA()" call inside of getB() refers to a method getA() in the Bar class and
     // not the getA() method in the outer scope
     test(
-        lines(
-            "function getA() {};",
-            "class Bar {",
-            "  constructor(){}",
-            "  getA() {",
-            "    return 1",
-            "  }",
-            "  getB(x) {",
-            "    this.getA();",
-            "  }",
-            "}"),
-        lines(
-            "function getA() {};",
-            "class Bar {",
-            "  constructor(){}",
-            "  a() {",
-            "    return 1",
-            "  }",
-            "  b(x) {",
-            "    this.a();",
-            "  }",
-            "}"));
+        """
+        function getA() {};
+        class Bar {
+          constructor(){}
+          getA() {
+            return 1
+          }
+          getB(x) {
+            this.getA();
+          }
+        }
+        """,
+        """
+        function getA() {};
+        class Bar {
+          constructor(){}
+          a() {
+            return 1
+          }
+          b(x) {
+            this.a();
+          }
+        }
+        """);
 
     // Call class method outside class scope
     test(
-        lines(
-            "class Bar {",
-            "  constructor(){}",
-            "  getB(x) {}",
-            "}",
-            "var too;",
-            "var too = new Bar();",
-            "too.getB(too);"),
-        lines(
-            "class Bar {",
-            "  constructor(){}",
-            "  a(x) {}",
-            "}",
-            "var too;",
-            "var too = new Bar();",
-            "too.a(too);"));
+        """
+        class Bar {
+          constructor(){}
+          getB(x) {}
+        }
+        var too;
+        var too = new Bar();
+        too.getB(too);
+        """,
+        """
+        class Bar {
+          constructor(){}
+          a(x) {}
+        }
+        var too;
+        var too = new Bar();
+        too.a(too);
+        """);
   }
 
   @Test
   public void testGetSetInClass() {
     test(
-        lines(
-            "class Bar {",
-            "  constructor(foo){",
-            "    this.foo = foo;",
-            "  }",
-            "  get foo() {",
-            "    return this.foo;",
-            "  }",
-            "  set foo(x) {",
-            "    this.foo = x;",
-            "  }",
-            "}",
-            "var barObj = new Bar();",
-            "barObj.foo();",
-            "barObj.foo(1);"),
-        lines(
-            "class Bar {",
-            "  constructor(foo){",
-            "    this.a = foo;",
-            "  }",
-            "  get a() {",
-            "    return this.a;",
-            "  }",
-            "  set a(x) {",
-            "    this.a = x;",
-            "  }",
-            "}",
-            "var barObj = new Bar();",
-            "barObj.a();",
-            "barObj.a(1);"));
+        """
+        class Bar {
+          constructor(foo){
+            this.foo = foo;
+          }
+          get foo() {
+            return this.foo;
+          }
+          set foo(x) {
+            this.foo = x;
+          }
+        }
+        var barObj = new Bar();
+        barObj.foo();
+        barObj.foo(1);
+        """,
+        """
+        class Bar {
+          constructor(foo){
+            this.a = foo;
+          }
+          get a() {
+            return this.a;
+          }
+          set a(x) {
+            this.a = x;
+          }
+        }
+        var barObj = new Bar();
+        barObj.a();
+        barObj.a(1);
+        """);
   }
 
   @Test
   public void testStaticMethodInClass() {
 
     test(
-        lines(
-            "class Bar {",
-            "  static double(n) {",
-            "    return n*2",
-            "  }",
-            "}",
-            "Bar.double(1);"),
-        lines(
-            "class Bar {",
-            "  static a(n) {",
-            "    return n*2",
-            "  }",
-            "}",
-            "Bar.a(1);"));
+        """
+        class Bar {
+          static double(n) {
+            return n*2
+          }
+        }
+        Bar.double(1);
+        """,
+        """
+        class Bar {
+          static a(n) {
+            return n*2
+          }
+        }
+        Bar.a(1);
+        """);
   }
 
   @Test
   public void testClassFields() {
     test(
-        lines(
-            "class Bar {", //
-            "  field = 7;",
-            "}",
-            "var bar = new Bar();",
-            "bar.field;"),
-        lines(
-            "class Bar {", //
-            "  a = 7;",
-            "}",
-            "var bar = new Bar();",
-            "bar.a;"));
+        """
+        class Bar {
+          field = 7;
+        }
+        var bar = new Bar();
+        bar.field;
+        """,
+        """
+        class Bar {
+          a = 7;
+        }
+        var bar = new Bar();
+        bar.a;
+        """);
+  }
+
+  @Test
+  public void testClassFieldsInExterns() {
+    String externs =
+        """
+        class Foo {
+          helloWorld;
+          get bar() {}
+          set baz(v) {}
+        }
+        """;
+    testSame(externs(externs), srcs("new Foo().helloWorld; new Foo().bar; new Foo().baz = 1;"));
   }
 
   @Test
   public void testClassFieldWithFunctionRHS() {
     test(
-        lines(
-            "class Bar {", //
-            "  superClass_ = function f(){};",
-            "}",
-            "var bar = new Bar();",
-            "bar.superClass_;"),
-        lines(
-            "class Bar {", //
-            "  a = function f(){};",
-            "}",
-            "var bar = new Bar();",
-            "bar.a;"));
+        """
+        class Bar {
+          superClass_ = function f(){};
+        }
+        var bar = new Bar();
+        bar.superClass_;
+        """,
+        """
+        class Bar {
+          a = function f(){};
+        }
+        var bar = new Bar();
+        bar.a;
+        """);
   }
 
   @Test
   public void testStaticClassFields() {
     test(
-        lines("class Bar {", "  static field = 1;", "}", "Bar.field;"),
-        lines("class Bar {", "  static a = 1;", "}", "Bar.a;"));
+        """
+        class Bar {
+          static field = 1;
+        }
+        Bar.field;
+        """,
+        """
+        class Bar {
+          static a = 1;
+        }
+        Bar.a;
+        """);
   }
 
   @Test
   public void testClassComputedFields() {
     test(
-        lines(
-            "class Bar {", //
-            "  ['field'] = 1;",
-            "}",
-            "var bar = new Bar()",
-            "bar.field;"),
-        lines(
-            "class Bar {", //
-            "  ['field'] = 1;",
-            "}",
-            "var bar = new Bar()",
-            "bar.a;"));
+        """
+        class Bar {
+          ['field'] = 1;
+        }
+        var bar = new Bar()
+        bar.field;
+        """,
+        """
+        class Bar {
+          ['field'] = 1;
+        }
+        var bar = new Bar()
+        bar.a;
+        """);
   }
 
   @Test
   public void testStaticClassComputedFields() {
     test(
-        lines(
-            "class Bar {", //
-            "  static ['field'] = 1;",
-            "}",
-            "Bar.field;"),
-        lines("class Bar {", "  static ['field'] = 1;", "}", "Bar.a;"));
+        """
+        class Bar {
+          static ['field'] = 1;
+        }
+        Bar.field;
+        """,
+        """
+        class Bar {
+          static ['field'] = 1;
+        }
+        Bar.a;
+        """);
   }
 
   @Test
   public void testClassMixedFields() {
     test(
-        lines(
-            "class Bar {", //
-            "  field = 1;",
-            "  ['field'] = 2;",
-            "  static 1 = 5;",
-            "}",
-            "var bar = new Bar()",
-            "bar.field;"),
-        lines(
-            "class Bar {",
-            "  a = 1;",
-            "  ['field'] = 2;",
-            "  static 1 = 5;",
-            "}",
-            "var bar = new Bar()",
-            "bar.a;"));
+        """
+        class Bar {
+          field = 1;
+          ['field'] = 2;
+          static 1 = 5;
+        }
+        var bar = new Bar()
+        bar.field;
+        """,
+        """
+        class Bar {
+          a = 1;
+          ['field'] = 2;
+          static 1 = 5;
+        }
+        var bar = new Bar()
+        bar.a;
+        """);
   }
 
   @Test
   public void testObjectMethodProperty() {
     // ES5 version
     test(
-        lines(
-            "var foo = { ",
-            "  bar: 1, ",
-            "  myFunc: function myFunc() {",
-            "    return this.bar",
-            "  }",
-            "};",
-            "foo.myFunc();"),
-        lines(
-            "var foo = { ",
-            "  a: 1, ",
-            "  b: function myFunc() {",
-            "    return this.a",
-            "  }",
-            "};",
-            "foo.b();")
-        );
+        """
+        var foo = {
+          bar: 1,
+          myFunc: function myFunc() {
+            return this.bar
+          }
+        };
+        foo.myFunc();
+        """,
+        """
+        var foo = {
+          a: 1,
+          b: function myFunc() {
+            return this.a
+          }
+        };
+        foo.b();
+        """);
 
-    //ES6 version
+    // ES6 version
     test(
-        lines(
-            "var foo = { ",
-            "  bar: 1, ",
-            "  myFunc() {",
-            "    return this.bar",
-            "  }",
-            "};",
-            "foo.myFunc();"),
-        lines(
-            "var foo = { ",
-            "  a: 1, ",
-            "  b() {",
-            "    return this.a",
-            "  }",
-            "};",
-            "foo.b();")
-        );
+        """
+        var foo = {
+          bar: 1,
+          myFunc() {
+            return this.bar
+          }
+        };
+        foo.myFunc();
+        """,
+        """
+        var foo = {
+          a: 1,
+          b() {
+            return this.a
+          }
+        };
+        foo.b();
+        """);
   }
 
-  private Compiler compileModules(String externs, JSChunk[] modules) {
+  @Test
+  public void testPrototypePropertiesUsingFilterFunction() {
+    propertyNameFilter =
+        (node) -> {
+          String name = node.getString();
+          name = nullToEmpty(name);
+          return name.startsWith("get");
+        };
+
+    test(
+        """
+        Bar.prototype.getA = function(){}; bar.getA();
+        Bar.prototype.getB = function(){};
+        Bar.prototype.setC = function(){};
+        """,
+        """
+        Bar.prototype.a = function(){}; bar.a();
+        Bar.prototype.b = function(){};
+        Bar.prototype.setC = function(){}
+        """);
+  }
+
+  @Test
+  public void testPrototypePropertiesUsingFilterOnFilename() {
+    propertyNameFilter =
+        (node) -> {
+          String name = node.getSourceFileName();
+          name = nullToEmpty(name);
+          return name.equals("foo.js");
+        };
+
+    test(
+        srcs(
+            SourceFile.fromCode(
+                "foo.js",
+                """
+                Foo.prototype.getA = function(){};
+                Foo.prototype.getB = function(){};
+                foo.getA();
+                foo.getB();
+                """),
+            SourceFile.fromCode(
+                "bar.js",
+                """
+                Bar.prototype.getA = function(){};
+                bar.getA();
+                """)),
+        expected(
+            SourceFile.fromCode(
+                "foo.js",
+                """
+                Foo.prototype.getA = function(){};
+                Foo.prototype.b = function(){};
+                foo.getA();
+                foo.b();
+                """),
+            SourceFile.fromCode(
+                "bar.js",
+                """
+                Bar.prototype.getA = function(){};
+                bar.getA();
+                """)));
+  }
+
+  @Test
+  public void testPrototypeAndRenameFunctionsFilterOnFilename() {
+    propertyNameFilter =
+        (node) -> {
+          String name = node.getSourceFileName();
+          name = nullToEmpty(name);
+          return name.equals("foo.js");
+        };
+
+    test(
+        srcs(
+            SourceFile.fromCode(
+                "foo.js",
+                """
+                var foo = {myProp: 0, myProp2: 1};
+                f(foo[JSCompiler_renameProperty('myProp')]);
+                f(foo[JSCompiler_renameProperty('myProp2')]);
+                """),
+            SourceFile.fromCode(
+                "bar.js",
+                """
+                var bar = {myProp: 0};
+                f(bar[JSCompiler_renameProperty('myProp')]);
+                """)),
+        expected(
+            SourceFile.fromCode(
+                "foo.js",
+                """
+                var foo = {myProp: 0, b: 1};
+                f(foo['myProp']);
+                f(foo['b']);
+                """),
+            SourceFile.fromCode(
+                "bar.js",
+                """
+                var bar = {myProp: 0};
+                f(bar['myProp']);
+                """)));
+  }
+
+  @Test
+  public void testPrototypeAndRenameFunctionsFilterOnFilename2() {
+    propertyNameFilter =
+        (node) -> {
+          String name = node.getSourceFileName();
+          name = nullToEmpty(name);
+          return name.equals("foo.js");
+        };
+
+    test(
+        srcs(
+            SourceFile.fromCode(
+                "foo.js",
+                """
+                var foo = {myProp: 0, myProp2: 1};
+                f(JSCompiler_renameProperty('otherProp.myProp.someProp'));
+                f(JSCompiler_renameProperty('otherProp.myProp2.someProp'));
+                """),
+            SourceFile.fromCode(
+                "bar.js",
+                """
+                var bar = {myProp: 0};
+                f(JSCompiler_renameProperty('otherProp.myProp.someProp'));
+                """)),
+        expected(
+            SourceFile.fromCode(
+                "foo.js",
+                """
+                var foo = {myProp: 0, d: 1};
+                f('otherProp.myProp.someProp');
+                f('otherProp.d.someProp');
+                """),
+            SourceFile.fromCode(
+                "bar.js",
+                """
+                var bar = {myProp: 0};
+                f('otherProp.myProp.someProp');
+                """)));
+  }
+
+  @Test
+  public void testPrivateClassMembers_knownBug() {
+    // Expected behavior: `RenameProperties` renames private names only to other private names,
+    // and renames `#field in o` like the other uses of `#field`. A private member must stay
+    // private, and each private name in the code must be declared in its class.
+    String js =
+        """
+        class C {
+          #field = 1;
+          #method() { return this.#field; }
+          check(o) { return #field in o ? this.#method() : 0; }
+        }
+        """;
+    String expected =
+        """
+        class C {
+          #a = 1;
+          #b() { return this.#a; }
+          c(o) { return #a in o ? this.#b() : 0; }
+        }
+        """;
+    // TODO(b/236744850): Private names are renamed to public names.
+    // Current behavior: `#field` and `#method` become the public `a` and `b`, and `#field in o`
+    //   is not renamed. So `test(js, expected)` fails.
+    // Why it's a bug: `C` no longer declares `#field`, so `#field in o` is a SyntaxError, and the
+    //   whole script fails to load.
+    // In a full build: `VarCheck` and `RemoveUnusedCode` mishandle `#field in o` before this pass
+    //   runs (see their tests). Without `in`, private names still become public, so a
+    //   subclass's `#x` overwrites its base class's `#x`.
+    var ex = assertThrows(AssertionError.class, () -> test(js, expected));
+    assertThat(ex).hasMessageThat().contains("return #field in o ? this.b() : 0;");
+  }
+
+  private Compiler compileChunks(String externs, JSChunk[] chunks) {
     SourceFile externsInput = SourceFile.fromCode("externs", externs);
 
     CompilerOptions options = new CompilerOptions();
@@ -825,8 +1130,9 @@ public final class RenamePropertiesTest extends CompilerTestCase {
     options.setPropertyRenaming(PropertyRenamingPolicy.ALL_UNQUOTED);
 
     Compiler compiler = new Compiler();
-    compiler.compileModules(
-        ImmutableList.of(externsInput), ImmutableList.copyOf(modules), options);
+    var unused =
+        compiler.compileChunks(
+            ImmutableList.of(externsInput), ImmutableList.copyOf(chunks), options);
     return compiler;
   }
 
@@ -837,8 +1143,29 @@ public final class RenamePropertiesTest extends CompilerTestCase {
             compiler,
             generatePseudoNames,
             prevUsedPropertyMap,
-            null,
-            null,
-            new DefaultNameGenerator());
+            ImmutableSet.<Character>of(),
+            ImmutableSet.<Character>of(),
+            new DefaultNameGenerator(),
+            propertyNameFilter);
+  }
+
+  @Test
+  public void testAvoidingConflictsBetweenQuotedAndUnquotedClassFields() {
+    // TODO(b/571953710): COMPUTED_FIELD_DEF string keys not reserved
+    test(
+        """
+        class C {
+          foo = 1;
+          'a' = alert(2);
+        }
+        new C().foo;
+        """,
+        """
+        class C {
+          a = 1;
+          ["a"] = alert(2);
+        }
+        (new C()).a;
+        """);
   }
 }

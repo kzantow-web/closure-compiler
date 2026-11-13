@@ -25,15 +25,15 @@ import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.QualifiedName;
 import com.google.javascript.rhino.Token;
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Checks variables to see if they are referenced before their declaration, or if they are
  * redeclared in a way that is suspicious (i.e. not dictated by control structures). This is a more
- * aggressive version of {@link VarCheck}, but it lacks the cross-module checks.
+ * aggressive version of {@link VarCheck}, but it lacks the cross-chunk checks.
  */
 class VariableReferenceCheck implements CompilerPass {
 
@@ -69,13 +69,17 @@ class VariableReferenceCheck implements CompilerPass {
       DiagnosticType.disabled(
           "JSC_UNUSED_LOCAL_ASSIGNMENT", "Value assigned to local variable {0} is never read");
 
+  private static final QualifiedName GOOG_REQUIRE = QualifiedName.of("goog.require");
+  private static final QualifiedName GOOG_REQUIRE_TYPE = QualifiedName.of("goog.requireType");
+  private static final QualifiedName GOOG_FORWARD_DECLARE = QualifiedName.of("goog.forwardDeclare");
+
   private final AbstractCompiler compiler;
 
   private final boolean checkUnusedLocals;
 
   // NOTE(nicksantos): It's a lot faster to use a shared Set that
   // we clear after each method call, because the Set never gets too big.
-  private final Set<BasicBlock> blocksWithDeclarations = new HashSet<>();
+  private final Set<BasicBlock> blocksWithDeclarations = new LinkedHashSet<>();
 
   // These types do not permit a block-scoped declaration inside them without an explicit block.
   // e.g. if (b) let x;
@@ -108,7 +112,7 @@ class VariableReferenceCheck implements CompilerPass {
     private final Set<String> varsInFunctionBody;
 
     private ReferenceCheckingBehavior() {
-      varsInFunctionBody = new HashSet<>();
+      varsInFunctionBody = new LinkedHashSet<>();
     }
 
     @Override
@@ -144,7 +148,7 @@ class VariableReferenceCheck implements CompilerPass {
       NodeTraversal.traverse(
           compiler,
           param.getParentNode().getSecondChild(),
-          /**
+          /*
            * Do a shallow check since cases like: {@code
            *   function f(y = () => x, x = 5) { return y(); }
            * } is legal. We are going to miss cases like: {@code
@@ -281,7 +285,7 @@ class VariableReferenceCheck implements CompilerPass {
   /**
    * @return The reference to the hoisted function, if the variable is one
    */
-  private Reference lookForHoistedFunction(List<Reference> references) {
+  private @Nullable Reference lookForHoistedFunction(List<Reference> references) {
     for (Reference reference : references) {
       if (reference.isHoistedFunction()) {
         blocksWithDeclarations.add(reference.getBasicBlock());
@@ -304,22 +308,27 @@ class VariableReferenceCheck implements CompilerPass {
    */
   private boolean checkRedeclaration(
       Var v, Reference reference, Node referenceNode, Reference hoistedFn, BasicBlock basicBlock) {
-    boolean allowDupe =
-        VarCheck.hasDuplicateDeclarationSuppression(compiler, referenceNode, v.getNameNode());
-
     boolean letConstShadowsVar = v.getParentNode().isVar()
         && (reference.isLetDeclaration() || reference.isConstDeclaration());
     boolean isVarNodeSameAsReferenceNode = v.getNode() == reference.getNode();
     // We disallow redeclaration of caught exceptions
     boolean shadowCatchVar = v.getParentNode().isCatch() && !isVarNodeSameAsReferenceNode;
 
-    if (!allowDupe && isRedeclaration(basicBlock)) {
+    if (isRedeclaration(basicBlock)
+        && !VarCheck.hasDuplicateDeclarationSuppression(compiler, referenceNode, v.getNameNode())) {
       final DiagnosticType diagnosticType;
       Node warningNode = referenceNode;
       boolean shadowParam =
           v.isParam()
-              && NodeUtil.isBlockScopedDeclaration(referenceNode)
+              // TODOO - lharker: this won't handle destructuring block scoped declarations. Is this
+              // an actual bug?
+              && NodeUtil.isBlockScopedDeclaration(referenceNode.getParent())
               && v.getScope() == reference.getScope().getParent();
+
+      boolean isFunctionDecl =
+          (v.getParentNode() != null
+              && v.getParentNode().isFunction()
+              && v.getParentNode().getFirstChild() == referenceNode);
 
       if (v.isLet()
           || v.isConst()
@@ -327,7 +336,8 @@ class VariableReferenceCheck implements CompilerPass {
           || letConstShadowsVar
           || shadowCatchVar
           || shadowParam
-          || v.isImport()) {
+          || v.isImport()
+          || isFunctionDecl) {
         // These cases are all hard errors that violate ES6 semantics
         diagnosticType = REDECLARED_VARIABLE_ERROR;
       } else if (reference.getNode().getParent().isCatch()) {
@@ -395,6 +405,12 @@ class VariableReferenceCheck implements CompilerPass {
       }
     }
 
+    // RHS of public fields are not early references
+    Node referenceScopeRoot = reference.getScope().getRootNode();
+    if (referenceScopeRoot.isMemberFieldDef() && !referenceScopeRoot.isStaticMember()) {
+      return false;
+    }
+
     // Only generate warnings for early references in the same function scope/global scope in
     // order to deal with possible forward declarations and recursion
     // e.g. don't warn on:
@@ -449,9 +465,9 @@ class VariableReferenceCheck implements CompilerPass {
         Node lhs = statement.getFirstChild();
         Node rhs = lhs.getFirstChild();
         if (rhs != null
-            && (NodeUtil.isCallTo(rhs, "goog.forwardDeclare")
-                || NodeUtil.isCallTo(rhs, "goog.requireType")
-                || NodeUtil.isCallTo(rhs, "goog.require")
+            && (NodeUtil.isCallTo(rhs, GOOG_FORWARD_DECLARE)
+                || NodeUtil.isCallTo(rhs, GOOG_REQUIRE_TYPE)
+                || NodeUtil.isCallTo(rhs, GOOG_REQUIRE)
                 || rhs.isQualifiedName())) {
           // No warning. module imports will be caught by the unused-require check, and if the
           // right side is a qualified name then this is likely an alias used in type annotations.

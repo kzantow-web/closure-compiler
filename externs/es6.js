@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 The Closure Compiler Authors
+ * Copyright 2025 The Closure Compiler Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,33 +30,162 @@
  */
 
 /**
- * TODO(b/142881197): UNUSED_RETURN_T and UNUSED_NEXT_T are not yet used for
- * anything. https://github.com/google/closure-compiler/issues/3489
- * @interface
+ * The modern ES2025 global Iterator class.
+ * All built-in iterators and helper-equipped iterators inherit from this.
+ *
+ * @constructor
+ * @abstract
+ * @implements {IteratorIterable<T, TReturn, TNext>}
+ * @template T, TReturn, TNext
+ */
+function Iterator() {}
+
+/**
+ * @param {string|!Iterable<T>|!IteratorLike<T>} iterable
+ * @return {!Iterator<T>}
+ * @template T
+ */
+Iterator.from = function(iterable) {};
+
+/**
+ * @override
+ * @param {?=} opt_value
+ * @return {!IIterableResult<T>}
+ */
+Iterator.prototype.next = function(opt_value) {};
+
+/**
+ * @type {((function(T=): !IIterableResult<T>)|undefined)}
+ */
+Iterator.prototype.return;
+
+/**
+ * @type {((function(?=): !IIterableResult<T>)|undefined)}
+ */
+Iterator.prototype.throw;
+
+/**
+ * @template U
+ * @param {function(T, number): U} mapperFn
+ * @return {!Iterator<U>}
+ */
+Iterator.prototype.map = function(mapperFn) {};
+
+/**
+ * @param {function(T, number): *} filtererFn
+ * @return {!Iterator<T>}
+ */
+Iterator.prototype.filter = function(filtererFn) {};
+
+/**
+ * @param {number} limit
+ * @return {!Iterator<T>}
+ */
+Iterator.prototype.take = function(limit) {};
+
+/**
+ * @param {number} limit
+ * @return {!Iterator<T>}
+ */
+Iterator.prototype.drop = function(limit) {};
+
+/**
+ * @template U
+ * @param {function(T, number): (!Iterable<U>|!IteratorLike<U>|!Iterator<U>)}
+ *     mapperFn
+ * @return {!Iterator<U>}
+ */
+Iterator.prototype.flatMap = function(mapperFn) {};
+
+/**
+ * @template U
+ * @param {function(U, T, number): U} reducerFn
+ * @param {U=} initialValue
+ * @return {U}
+ */
+Iterator.prototype.reduce = function(reducerFn, initialValue) {};
+
+/**
+ * @return {!Array<T>}
+ */
+Iterator.prototype.toArray = function() {};
+
+/**
+ * @param {function(T, number): *} callbackFn
+ * @return {void}
+ */
+Iterator.prototype.forEach = function(callbackFn) {};
+
+/**
+ * @param {function(T, number): *} predicate
+ * @return {boolean}
+ */
+Iterator.prototype.some = function(predicate) {};
+
+/**
+ * @param {function(T, number): *} predicate
+ * @return {boolean}
+ */
+Iterator.prototype.every = function(predicate) {};
+
+/**
+ * @param {function(T, number): *} predicate
+ * @return {T|undefined}
+ */
+Iterator.prototype.find = function(predicate) {};
+
+/**
+ * @override
+ * @return {!Iterator<T>}
+ */
+Iterator.prototype[Symbol.iterator] = function() {};
+
+/** @typedef {!Iterator} */
+var ArrayIterator;
+
+/** @typedef {!Iterator} */
+var MapIterator;
+
+/** @typedef {!Iterator} */
+var SetIterator;
+
+/** @typedef {!Iterator} */
+var StringIterator;
+
+/** @typedef {!Iterator} */
+var TypedArrayIterator;
+
+/**
+ * TODO(b/142881197): TReturn and TNext are not yet used for anything.
+ * https://github.com/google/closure-compiler/issues/3489
+ * @constructor
+ * @abstract
  * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Generator
- * @extends {IteratorIterable<VALUE>}
- * @template VALUE, UNUSED_RETURN_T, UNUSED_NEXT_T
+ * @extends {Iterator<T, ?, *>}
+ * @template T, TReturn, TNext
  */
 function Generator() {}
 
 /**
  * @param {?=} opt_value
- * @return {!IIterableResult<VALUE>}
+ * @return {!IIterableResult<T>}
  * @override
  */
 Generator.prototype.next = function(opt_value) {};
 
 /**
- * @param {VALUE} value
- * @return {!IIterableResult<VALUE>}
+ * @override
+ * @param {T=} opt_value
+ * @return {!IIterableResult<T>}
  */
-Generator.prototype.return = function(value) {};
+Generator.prototype.return = function(opt_value) {};
 
 /**
- * @param {?} exception
- * @return {!IIterableResult<VALUE>}
+ * @override
+ * @param {?=} opt_exception
+ * @return {!IIterableResult<T>}
  */
-Generator.prototype.throw = function(exception) {};
+Generator.prototype.throw = function(opt_exception) {};
 
 
 
@@ -183,6 +312,97 @@ Math.clz32 = function(value) {};
  * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Math/fround
  */
 Math.fround = function(value) {};
+
+/**
+ * @param {number} x
+ * @return {number}
+ * @nosideeffects
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Math/f16round
+ */
+Math.f16round = function(x) {};
+
+
+/**
+ * @param {string} string
+ * @return {string}
+ * @nosideeffects
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/RegExp/escape
+ */
+RegExp.escape = function(string) {};
+
+/**
+ * @type {boolean}
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/RegExp/unicodeSets
+ */
+RegExp.prototype.unicodeSets;
+
+// Well-known symbols
+
+/**
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Symbol/hasInstance
+ * @const {symbol}
+ */
+Symbol.hasInstance;
+
+/**
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Symbol/species
+ * @const {symbol}
+ */
+Symbol.species;
+
+/**
+ * @const {symbol}
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Symbol/toPrimitive
+ */
+Symbol.toPrimitive;
+
+/**
+ * @const {symbol}
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Symbol/toStringTag
+ */
+Symbol.toStringTag;
+
+/**
+ * @const {symbol}
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Symbol/unscopables
+ */
+Symbol.unscopables;
+
+/**
+ * @param {string} hint
+ * @return {symbol}
+ * @nosideeffects
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Symbol/toPrimitive
+ */
+Symbol.prototype[Symbol.toPrimitive] = function(hint) {};
+
+/**
+ * @const {string}
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Symbol/toStringTag
+ */
+Symbol.prototype[Symbol.toStringTag];
+
+/**
+ * @param {*} value
+ * @return {boolean}
+ * @nosideeffects
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function/Symbol.hasInstance
+ */
+Function.prototype[Symbol.hasInstance] = function(value) {};
+
+/**
+ * @param {string} hint
+ * @return {(string|number)}
+ * @nosideeffects
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date/Symbol.toPrimitive
+ */
+Date.prototype[Symbol.toPrimitive] = function(hint) {};
+
+/**
+ * @const {string}
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/JSON/Symbol.toStringTag
+ */
+JSONType.prototype[Symbol.toStringTag];
 
 
 /**
@@ -344,6 +564,20 @@ String.prototype.endsWith = function(searchString, opt_position) {};
 String.prototype.includes = function(searchString, opt_position) {};
 
 /**
+ * @return {boolean}
+ * @nosideeffects
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/isWellFormed
+ */
+String.prototype.isWellFormed = function() {};
+
+/**
+ * @return {string}
+ * @nosideeffects
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/toWellFormed
+ */
+String.prototype.toWellFormed = function() {};
+
+/**
  * @this {String|string}
  * @return {string}
  * @nosideeffects
@@ -364,11 +598,20 @@ String.prototype.trimEnd = function() {};
 /**
  * @this {String|string}
  * @param {!RegExp|string} regexp
- * @return {!IteratorIterable<!RegExpResult>}
+ * @return {!StringIterator<!RegExpResult>}
  * @nosideeffects
  * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/matchAll
  */
 String.prototype.matchAll = function(regexp) {};
+
+
+/**
+ * @override
+ * @return {!StringIterator<string>}
+ * @nosideeffects
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/Symbol.iterator
+ */
+String.prototype[Symbol.iterator];
 
 
 /**
@@ -379,14 +622,43 @@ function Transferable() {}
 
 /**
  * @param {number} length The length in bytes
+ * @param {{maxByteLength: (number|undefined)}=} options
  * @constructor
  * @throws {Error}
  * @implements {Transferable}
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer
  */
-function ArrayBuffer(length) {}
+function ArrayBuffer(length, options) {}
 
 /** @type {number} */
 ArrayBuffer.prototype.byteLength;
+
+/** @type {number} */
+ArrayBuffer.prototype.maxByteLength;
+
+/** @type {boolean} */
+ArrayBuffer.prototype.resizable;
+
+/**
+ * @param {number=} newByteLength
+ * @return {undefined}
+ */
+ArrayBuffer.prototype.resize = function(newByteLength) {};
+
+/** @type {boolean} */
+ArrayBuffer.prototype.detached;
+
+/**
+ * @param {number=} newByteLength
+ * @return {!ArrayBuffer}
+ */
+ArrayBuffer.prototype.transfer = function(newByteLength) {};
+
+/**
+ * @param {number=} newByteLength
+ * @return {!ArrayBuffer}
+ */
+ArrayBuffer.prototype.transferToFixedLength = function(newByteLength) {};
 
 /**
  * @param {number} begin
@@ -404,9 +676,16 @@ ArrayBuffer.prototype.slice = function(begin, opt_end) {};
  */
 ArrayBuffer.isView = function(arg) {};
 
+/**
+ * @const {string}
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer/Symbol.toStringTag
+ */
+ArrayBuffer.prototype[Symbol.toStringTag];
+
 
 /**
  * @constructor
+ * @template TArrayBuffer (unused)
  */
 function ArrayBufferView() {}
 
@@ -422,14 +701,27 @@ ArrayBufferView.prototype.byteLength;
 
 /**
  * @param {number} length The length in bytes
+ * @param {{maxByteLength: (number|undefined)}=} options
  * @constructor
  * @throws {Error}
  * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/SharedArrayBuffer
  */
-function SharedArrayBuffer(length) {}
+function SharedArrayBuffer(length, options) {}
 
 /** @type {number} */
 SharedArrayBuffer.prototype.byteLength;
+
+/** @type {boolean} */
+SharedArrayBuffer.prototype.growable;
+
+/** @type {number} */
+SharedArrayBuffer.prototype.maxByteLength;
+
+/**
+ * @param {number=} newByteLength
+ * @return {undefined}
+ */
+SharedArrayBuffer.prototype.grow = function(newByteLength) {};
 
 /**
  * @param {number=} begin
@@ -439,386 +731,23 @@ SharedArrayBuffer.prototype.byteLength;
  */
 SharedArrayBuffer.prototype.slice = function(begin, end) {};
 
+/**
+ * @const {string}
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/SharedArrayBuffer/Symbol.toStringTag
+ */
+SharedArrayBuffer.prototype[Symbol.toStringTag];
+
 
 /**
  * @typedef {!ArrayBuffer|!ArrayBufferView}
  */
 var BufferSource;
 
-
 /**
- * @constructor
- * @implements {IArrayLike<number>}
- * @implements {Iterable<number>}
- * @extends {ArrayBufferView}
+ * @typedef {!ArrayBuffer|!ArrayBufferView}
  */
-function TypedArray() {};
+var AllowSharedBufferSource;
 
-/** @const {number} */
-TypedArray.prototype.BYTES_PER_ELEMENT;
-
-/**
- * NOTE: this is an ES2022 extern.
- * @param {number} index
- * @return {(number|undefined)}
- * @this {THIS}
- * @template THIS
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/at
- */
-TypedArray.prototype.at = function(index) {};
-
-/**
- * @param {number} target
- * @param {number} start
- * @param {number=} opt_end
- * @return {THIS}
- * @this {THIS}
- * @template THIS
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/copyWithin
- */
-TypedArray.prototype.copyWithin = function(target, start, opt_end) {};
-
-/**
- * @return {!IteratorIterable<!Array<number>>}
- * @nosideeffects
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/entries
- */
-TypedArray.prototype.entries = function() {};
-
-/**
- * @param {function(this:S, number, number, !TypedArray) : ?} callback
- * @param {S=} opt_thisArg
- * @return {boolean}
- * @template S
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/every
- */
-TypedArray.prototype.every = function(callback, opt_thisArg) {};
-
-/**
- * @param {number} value
- * @param {number=} opt_begin
- * @param {number=} opt_end
- * @return {THIS}
- * @this {THIS}
- * @template THIS
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/fill
- */
-TypedArray.prototype.fill = function(value, opt_begin, opt_end) {};
-
-/**
- * @param {function(this:S, number, number, !TypedArray) : boolean} callback
- * @param {S=} opt_thisArg
- * @return {THIS}
- * @this {THIS}
- * @template THIS,S
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/filter
- */
-TypedArray.prototype.filter = function(callback, opt_thisArg) {};
-
-/**
- * @param {function(this:S, number, number, !TypedArray) : boolean} callback
- * @param {S=} opt_thisArg
- * @return {(number|undefined)}
- * @template S
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/find
- */
-TypedArray.prototype.find = function(callback, opt_thisArg) {};
-
-/**
- * @param {function(this:S, number, number, !TypedArray) : boolean} callback
- * @param {S=} opt_thisArg
- * @return {number}
- * @template S
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/findIndex
- */
-TypedArray.prototype.findIndex = function(callback, opt_thisArg) {};
-
-/**
- * @param {function(this:S, number, number, !TypedArray) : ?} callback
- * @param {S=} opt_thisArg
- * @return {undefined}
- * @template S
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/forEach
- */
-TypedArray.prototype.forEach = function(callback, opt_thisArg) {};
-
-/**
- * NOTE: this is an ES2016 (ES7) extern.
- * @param {number} searchElement
- * @param {number=} opt_fromIndex
- * @return {boolean}
- * @nosideeffects
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/includes
- */
-TypedArray.prototype.includes = function(searchElement, opt_fromIndex) {};
-
-/**
- * @param {number} searchElement
- * @param {number=} opt_fromIndex
- * @return {number}
- * @nosideeffects
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/indexOf
- */
-TypedArray.prototype.indexOf = function(searchElement, opt_fromIndex) {};
-
-/**
- * @param {string=} opt_separator
- * @return {string}
- * @nosideeffects
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/join
- */
-TypedArray.prototype.join = function(opt_separator) {};
-
-/**
- * @return {!IteratorIterable<number>}
- * @nosideeffects
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/keys
- */
-TypedArray.prototype.keys = function() {};
-
-/**
- * @param {number} searchElement
- * @param {number=} opt_fromIndex
- * @return {number}
- * @nosideeffects
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/lastIndexOf
- */
-TypedArray.prototype.lastIndexOf = function(searchElement, opt_fromIndex) {};
-
-/** @type {number} */
-TypedArray.prototype.length;
-
-/**
- * @param {function(this:S, number, number, !TypedArray) : number} callback
- * @param {S=} opt_thisArg
- * @return {THIS}
- * @this {THIS}
- * @template THIS,S
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/map
- */
-TypedArray.prototype.map = function(callback, opt_thisArg) {};
-
-/**
- * @param {function((number|INIT|RET), number, number, !TypedArray) : RET}
- *     callback
- * @param {INIT=} opt_initialValue
- * @return {RET}
- * @template INIT,RET
- * @nosideeffects
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/reduce
- */
-TypedArray.prototype.reduce = function(callback, opt_initialValue) {};
-
-/**
- * @param {function((number|INIT|RET), number, number, !TypedArray) : RET}
- *     callback
- * @param {INIT=} opt_initialValue
- * @return {RET}
- * @template INIT,RET
- * @nosideeffects
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/reduceRight
- */
-TypedArray.prototype.reduceRight = function(callback, opt_initialValue) {};
-
-/**
- * @return {THIS}
- * @this {THIS}
- * @template THIS
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/reverse
- */
-TypedArray.prototype.reverse = function() {};
-
-/**
- * @param {!ArrayBufferView|!Array<number>} array
- * @param {number=} opt_offset
- * @return {undefined}
- * @throws {!RangeError}
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/set
- */
-TypedArray.prototype.set = function(array, opt_offset) {};
-
-/**
- * @param {number=} opt_begin
- * @param {number=} opt_end
- * @return {THIS}
- * @this {THIS}
- * @template THIS
- * @nosideeffects
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/slice
- */
-TypedArray.prototype.slice = function(opt_begin, opt_end) {};
-
-/**
- * @param {function(this:S, number, number, !TypedArray) : boolean} callback
- * @param {S=} opt_thisArg
- * @return {boolean}
- * @template S
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/some
- */
-TypedArray.prototype.some = function(callback, opt_thisArg) {};
-
-/**
- * @param {(function(number, number) : number)=} opt_compareFunction
- * @return {THIS}
- * @this {THIS}
- * @template THIS
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/sort
- */
-TypedArray.prototype.sort = function(opt_compareFunction) {};
-
-/**
- * @param {number} begin
- * @param {number=} opt_end
- * @return {THIS}
- * @this {THIS}
- * @template THIS
- * @nosideeffects
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/subarray
- */
-TypedArray.prototype.subarray = function(begin, opt_end) {};
-
-/**
- * @return {!IteratorIterable<number>}
- * @nosideeffects
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/values
- */
-TypedArray.prototype.values = function() {};
-
-/**
- * @return {string}
- * @nosideeffects
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/toLocaleString
- * @override
- */
-TypedArray.prototype.toLocaleString = function() {};
-
-/**
- * @return {string}
- * @nosideeffects
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/toString
- * @override
- */
-TypedArray.prototype.toString = function() {};
-
-/** @override */
-TypedArray.prototype[Symbol.iterator] = function() {};
-
-/**
- * @param {number|ArrayBufferView|Array<number>|ArrayBuffer|SharedArrayBuffer}
- *     length or array or buffer
- *     NOTE: We require that at least this first argument be present even though
- *         the ECMAScript spec allows it to be absent, because this is better
- *         for readability and detection of programmer errors.
- * @param {number=} opt_byteOffset
- * @param {number=} opt_length
- * @constructor
- * @extends {TypedArray}
- * @throws {Error}
- * @modifies {arguments} If the user passes a backing array, then indexed
- *     accesses will modify the backing array. JSCompiler does not model
- *     this well. In other words, if you have:
- *     <code>
- *     var x = new ArrayBuffer(1);
- *     var y = new Int8Array(x);
- *     y[0] = 2;
- *     </code>
- *     JSCompiler will not recognize that the last assignment modifies x.
- *     We workaround this by marking all these arrays as @modifies {arguments},
- *     to introduce the possibility that x aliases y.
- */
-function Int8Array(length, opt_byteOffset, opt_length) {}
-
-/** @const {number} */
-Int8Array.BYTES_PER_ELEMENT;
-
-/**
- * @param {string|!IArrayLike<number>|!Iterable<number>} source
- * @param {function(this:S, ?, number): number=} mapFn
- * @param {S=} thisArg
- * @template S
- * @return {!Int8Array}
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/from
- */
-Int8Array.from = function(source, mapFn, thisArg) {};
-
-/**
- * @param {...number} var_args
- * @return {!Int8Array}
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/of
- */
-Int8Array.of = function(var_args) {};
-
-
-/**
- * @param {number|ArrayBufferView|Array<number>|ArrayBuffer|SharedArrayBuffer}
- *     length or array or buffer
- *     NOTE: We require that at least this first argument be present even though
- *         the ECMAScript spec allows it to be absent, because this is better
- *         for readability and detection of programmer errors.
- * @param {number=} opt_byteOffset
- * @param {number=} opt_length
- * @constructor
- * @extends {TypedArray}
- * @throws {Error}
- * @modifies {arguments}
- */
-function Uint8Array(length, opt_byteOffset, opt_length) {}
-
-/** @const {number} */
-Uint8Array.BYTES_PER_ELEMENT;
-
-/**
- * @param {string|!IArrayLike<number>|!Iterable<number>} source
- * @param {function(this:S, ?, number): number=} mapFn
- * @param {S=} thisArg
- * @template S
- * @return {!Uint8Array}
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/from
- */
-Uint8Array.from = function(source, mapFn, thisArg) {};
-
-/**
- * @param {...number} var_args
- * @return {!Uint8Array}
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/of
- */
-Uint8Array.of = function(var_args) {};
-
-
-/**
- * @param {number|ArrayBufferView|Array<number>|ArrayBuffer|SharedArrayBuffer}
- *     length or array or buffer
- *     NOTE: We require that at least this first argument be present even though
- *         the ECMAScript spec allows it to be absent, because this is better
- *         for readability and detection of programmer errors.
- * @param {number=} opt_byteOffset
- * @param {number=} opt_length
- * @constructor
- * @extends {TypedArray}
- * @throws {Error}
- * @modifies {arguments}
- */
-function Uint8ClampedArray(length, opt_byteOffset, opt_length) {}
-
-/** @const {number} */
-Uint8ClampedArray.BYTES_PER_ELEMENT;
-
-/**
- * @param {string|!IArrayLike<number>|!Iterable<number>} source
- * @param {function(this:S, ?, number): number=} mapFn
- * @param {S=} thisArg
- * @template S
- * @return {!Uint8ClampedArray}
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/from
- */
-Uint8ClampedArray.from = function(source, mapFn, thisArg) {};
-
-/**
- * @param {...number} var_args
- * @return {!Uint8ClampedArray}
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/of
- */
-Uint8ClampedArray.of = function(var_args) {};
 
 
 /**
@@ -828,294 +757,6 @@ Uint8ClampedArray.of = function(var_args) {};
  * @see http://www.w3.org/TR/2dcontext/#imagedata
  */
 var CanvasPixelArray;
-
-
-/**
- * @param {number|ArrayBufferView|Array<number>|ArrayBuffer|SharedArrayBuffer}
- *     length or array or buffer
- *     NOTE: We require that at least this first argument be present even though
- *         the ECMAScript spec allows it to be absent, because this is better
- *         for readability and detection of programmer errors.
- * @param {number=} opt_byteOffset
- * @param {number=} opt_length
- * @constructor
- * @extends {TypedArray}
- * @throws {Error}
- * @modifies {arguments}
- */
-function Int16Array(length, opt_byteOffset, opt_length) {}
-
-/** @const {number} */
-Int16Array.BYTES_PER_ELEMENT;
-
-/**
- * @param {string|!IArrayLike<number>|!Iterable<number>} source
- * @param {function(this:S, ?, number): number=} mapFn
- * @param {S=} thisArg
- * @template S
- * @return {!Int16Array}
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/from
- */
-Int16Array.from = function(source, mapFn, thisArg) {};
-
-/**
- * @param {...number} var_args
- * @return {!Int16Array}
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/of
- */
-Int16Array.of = function(var_args) {};
-
-
-/**
- * @param {number|ArrayBufferView|Array<number>|ArrayBuffer|SharedArrayBuffer}
- *     length or array or buffer
- *     NOTE: We require that at least this first argument be present even though
- *         the ECMAScript spec allows it to be absent, because this is better
- *         for readability and detection of programmer errors.
- * @param {number=} opt_byteOffset
- * @param {number=} opt_length
- * @constructor
- * @extends {TypedArray}
- * @throws {Error}
- * @modifies {arguments}
- */
-function Uint16Array(length, opt_byteOffset, opt_length) {}
-
-/** @const {number} */
-Uint16Array.BYTES_PER_ELEMENT;
-
-/**
- * @param {string|!IArrayLike<number>|!Iterable<number>} source
- * @param {function(this:S, ?, number): number=} mapFn
- * @param {S=} thisArg
- * @template S
- * @return {!Uint16Array}
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/from
- */
-Uint16Array.from = function(source, mapFn, thisArg) {};
-
-/**
- * @param {...number} var_args
- * @return {!Uint16Array}
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/of
- */
-Uint16Array.of = function(var_args) {};
-
-
-/**
- * @param {number|ArrayBufferView|Array<number>|ArrayBuffer|SharedArrayBuffer}
- *     length or array or buffer
- *     NOTE: We require that at least this first argument be present even though
- *         the ECMAScript spec allows it to be absent, because this is better
- *         for readability and detection of programmer errors.
- * @param {number=} opt_byteOffset
- * @param {number=} opt_length
- * @constructor
- * @extends {TypedArray}
- * @throws {Error}
- * @modifies {arguments}
- */
-function Int32Array(length, opt_byteOffset, opt_length) {}
-
-/** @const {number} */
-Int32Array.BYTES_PER_ELEMENT;
-
-/**
- * @param {string|!IArrayLike<number>|!Iterable<number>} source
- * @param {function(this:S, ?, number): number=} mapFn
- * @param {S=} thisArg
- * @template S
- * @return {!Int32Array}
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/from
- */
-Int32Array.from = function(source, mapFn, thisArg) {};
-
-/**
- * @param {...number} var_args
- * @return {!Int32Array}
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/of
- */
-Int32Array.of = function(var_args) {};
-
-
-/**
- * @param {number|ArrayBufferView|Array<number>|ArrayBuffer|SharedArrayBuffer}
- *     length or array or buffer
- *     NOTE: We require that at least this first argument be present even though
- *         the ECMAScript spec allows it to be absent, because this is better
- *         for readability and detection of programmer errors.
- * @param {number=} opt_byteOffset
- * @param {number=} opt_length
- * @constructor
- * @extends {TypedArray}
- * @throws {Error}
- * @modifies {arguments}
- */
-function Uint32Array(length, opt_byteOffset, opt_length) {}
-
-/** @const {number} */
-Uint32Array.BYTES_PER_ELEMENT;
-
-/**
- * @param {string|!IArrayLike<number>|!Iterable<number>} source
- * @param {function(this:S, ?, number): number=} mapFn
- * @param {S=} thisArg
- * @template S
- * @return {!Uint32Array}
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/from
- */
-Uint32Array.from = function(source, mapFn, thisArg) {};
-
-/**
- * @param {...number} var_args
- * @return {!Uint32Array}
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/of
- */
-Uint32Array.of = function(var_args) {};
-
-
-/**
- * @param {number|ArrayBufferView|Array<number>|ArrayBuffer|SharedArrayBuffer}
- *     length or array or buffer
- *     NOTE: We require that at least this first argument be present even though
- *         the ECMAScript spec allows it to be absent, because this is better
- *         for readability and detection of programmer errors.
- * @param {number=} opt_byteOffset
- * @param {number=} opt_length
- * @constructor
- * @extends {TypedArray}
- * @throws {Error}
- * @modifies {arguments}
- */
-function Float32Array(length, opt_byteOffset, opt_length) {}
-
-/** @const {number} */
-Float32Array.BYTES_PER_ELEMENT;
-
-/**
- * @param {string|!IArrayLike<number>|!Iterable<number>} source
- * @param {function(this:S, ?, number): number=} mapFn
- * @param {S=} thisArg
- * @template S
- * @return {!Float32Array}
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/from
- */
-Float32Array.from = function(source, mapFn, thisArg) {};
-
-/**
- * @param {...number} var_args
- * @return {!Float32Array}
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/of
- */
-Float32Array.of = function(var_args) {};
-
-
-/**
- * @param {number|ArrayBufferView|Array<number>|ArrayBuffer|SharedArrayBuffer}
- *     length or array or buffer
- *     NOTE: We require that at least this first argument be present even though
- *         the ECMAScript spec allows it to be absent, because this is better
- *         for readability and detection of programmer errors.
- * @param {number=} opt_byteOffset
- * @param {number=} opt_length
- * @constructor
- * @extends {TypedArray}
- * @throws {Error}
- * @modifies {arguments}
- */
-function Float64Array(length, opt_byteOffset, opt_length) {}
-
-/** @const {number} */
-Float64Array.BYTES_PER_ELEMENT;
-
-/**
- * @param {string|!IArrayLike<number>|!Iterable<number>} source
- * @param {function(this:S, ?, number): number=} mapFn
- * @param {S=} thisArg
- * @template S
- * @return {!Float64Array}
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/from
- */
-Float64Array.from = function(source, mapFn, thisArg) {};
-
-/**
- * @param {...number} var_args
- * @return {!Float64Array}
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/of
- */
-Float64Array.of = function(var_args) {};
-
-
-/**
- * @param {number|ArrayBufferView|Array<bigint>|ArrayBuffer|SharedArrayBuffer}
- *     lengthOrArrayOrBuffer
- *     NOTE: We require that at least this first argument be present even though
- *         the ECMAScript spec allows it to be absent, because this is better
- *         for readability and detection of programmer errors.
- * @param {number=} byteOffset
- * @param {number=} bufferLength
- * @constructor
- * @extends {TypedArray}
- * @throws {Error}
- * @modifies {arguments}
- */
-function BigInt64Array(lengthOrArrayOrBuffer, byteOffset, bufferLength) {}
-
-/** @const {number} */
-BigInt64Array.BYTES_PER_ELEMENT;
-
-/**
- * @param {string|!IArrayLike<bigint>|!Iterable<bigint>} source
- * @param {function(this:S, ?, number): bigint=} mapFn
- * @param {S=} thisArg
- * @template S
- * @return {!BigInt64Array}
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/from
- */
-BigInt64Array.from = function(source, mapFn, thisArg) {};
-
-/**
- * @param {...bigint} var_args
- * @return {!BigInt64Array}
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/of
- */
-BigInt64Array.of = function(var_args) {};
-
-
-/**
- * @param {number|ArrayBufferView|Array<bigint>|ArrayBuffer|SharedArrayBuffer}
- *     lengthOrArrayOrBuffer
- *     NOTE: We require that at least this first argument be present even though
- *         the ECMAScript spec allows it to be absent, because this is better
- *         for readability and detection of programmer errors.
- * @param {number=} byteOffset
- * @param {number=} bufferLength
- * @constructor
- * @extends {TypedArray}
- * @throws {Error}
- * @modifies {arguments}
- */
-function BigUint64Array(lengthOrArrayOrBuffer, byteOffset, bufferLength) {}
-
-/** @const {number} */
-BigUint64Array.BYTES_PER_ELEMENT;
-
-/**
- * @param {string|!IArrayLike<bigint>|!Iterable<bigint>} source
- * @param {function(this:S, ?, number): bigint=} mapFn
- * @param {S=} thisArg
- * @template S
- * @return {!BigUint64Array}
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/from
- */
-BigUint64Array.from = function(source, mapFn, thisArg) {};
-
-/**
- * @param {...bigint} var_args
- * @return {!BigUint64Array}
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray/of
- */
-BigUint64Array.of = function(var_args) {};
 
 /**
  * @param {ArrayBuffer|SharedArrayBuffer} buffer
@@ -1173,6 +814,15 @@ DataView.prototype.getInt32 = function(byteOffset, opt_littleEndian) {};
  * @throws {Error}
  */
 DataView.prototype.getUint32 = function(byteOffset, opt_littleEndian) {};
+
+/**
+ * @param {number} byteOffset
+ * @param {boolean=} opt_littleEndian
+ * @return {number}
+ * @throws {Error}
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/DataView/getFloat16
+ */
+DataView.prototype.getFloat16 = function(byteOffset, opt_littleEndian) {};
 
 /**
  * @param {number} byteOffset
@@ -1264,6 +914,17 @@ DataView.prototype.setUint32 = function(byteOffset, value, opt_littleEndian) {};
  * @param {boolean=} opt_littleEndian
  * @throws {Error}
  * @return {undefined}
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/DataView/setFloat16
+ */
+DataView.prototype.setFloat16 = function(
+    byteOffset, value, opt_littleEndian) {};
+
+/**
+ * @param {number} byteOffset
+ * @param {number} value
+ * @param {boolean=} opt_littleEndian
+ * @throws {Error}
+ * @return {undefined}
  */
 DataView.prototype.setFloat32 = function(
     byteOffset, value, opt_littleEndian) {};
@@ -1296,6 +957,12 @@ DataView.prototype.setBigInt64 = function(byteOffset, value, littleEndian) {};
  */
 DataView.prototype.setBigUint64 = function(byteOffset, value, littleEndian) {};
 
+/**
+ * @const {string}
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/DataView/Symbol.toStringTag
+ */
+DataView.prototype[Symbol.toStringTag];
+
 
 /**
  * @see https://github.com/promises-aplus/promises-spec
@@ -1309,7 +976,7 @@ var Thenable;
  * and respective type inference where available.
  * {@see goog.Thenable} inherits from this making all promises
  * interoperate.
- * @interface
+ * @record
  * @struct
  * @template TYPE
  */
@@ -1339,12 +1006,22 @@ IThenable.prototype.then = function(opt_onFulfilled, opt_onRejected) {};
 
 
 /**
+ * NOTE: For consistency with TypeScript, prefer `PromiseLike` over `IThenable`.
+ * @record
+ * @struct
+ * @template TYPE
+ * @extends {IThenable<TYPE>}
+ */
+function PromiseLike() {}
+
+
+/**
  * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise
  * @param {function(
  *             function((TYPE|IThenable<TYPE>|Thenable|null)=),
  *             function(*=))} resolver
  * @constructor
- * @implements {IThenable<TYPE>}
+ * @implements {PromiseLike<TYPE>}
  * @template TYPE
  */
 function Promise(resolver) {}
@@ -1365,6 +1042,16 @@ function Promise(resolver) {}
  * =:
  */
 Promise.resolve = function(opt_value) {};
+
+
+/**
+ * @param {function(this: null, ...*): (TYPE|!PromiseLike<TYPE>)} callbackFn
+ * @param {...*} var_args
+ * @return {!Promise<TYPE>}
+ * @template TYPE
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/try
+ */
+Promise.try = function(callbackFn, var_args) {};
 
 
 /**
@@ -1464,6 +1151,36 @@ Promise.allSettled = function(iterable) {};
  */
 Promise.race = function(iterable) {};
 
+/**
+ * Record type representing the return of Promise.withResolvers.
+ *
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/withResolvers
+ * @record
+ * @template VALUE
+ */
+Promise.PromiseWithResolvers = function() {};
+
+/**
+ * @type {!Promise<VALUE>}
+ */
+Promise.PromiseWithResolvers.prototype.promise;
+
+/**
+ * @type {function((VALUE|IThenable<VALUE>|Thenable)=)}
+ */
+Promise.PromiseWithResolvers.prototype.resolve;
+
+/**
+ * @type {function(*=)}
+ */
+Promise.PromiseWithResolvers.prototype.reject;
+
+/**
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/withResolvers
+ * @return {!Promise.PromiseWithResolvers<VALUE>}
+ * @template VALUE
+ */
+Promise.withResolvers = function() {};
 
 /**
  * @param {?(function(this:void, TYPE):VALUE)=} opt_onFulfilled
@@ -1520,6 +1237,12 @@ Promise.prototype.catch = function(onRejected) {};
  */
 Promise.prototype.finally = function(callback) {};
 
+/**
+ * @const {string}
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/Symbol.toStringTag
+ */
+Promise.prototype[Symbol.toStringTag];
+
 
 /**
  * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/of
@@ -1540,13 +1263,23 @@ Array.of = function(var_args) {};
  */
 Array.from = function(arrayLike, opt_mapFn, opt_this) {};
 
+/**
+ * @type {!Object<string, boolean>}
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/Symbol.unscopables
+ */
+Array.prototype[Symbol.unscopables];
 
-/** @return {!IteratorIterable<number>} */
+
+/**
+ * @override
+ * @return {!ArrayIterator<number>}
+ */
 Array.prototype.keys;
 
 
 /**
- * @return {!IteratorIterable<T>}
+ * @override
+ * @return {!ArrayIterator<T>}
  * @nosideeffects
  * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/values
  */
@@ -1554,13 +1287,24 @@ Array.prototype.values;
 
 
 /**
- * @return {!IteratorIterable<!Array<number|T>>} Iterator of [key, value] pairs.
+ * @override
+ * @return {!ArrayIterator<!Array<number|T>>} Iterator of [key, value] pairs.
  */
 Array.prototype.entries;
 
 
 /**
- * @param {function(this:S, T, number, !Array<T>): boolean} predicateFn
+ * @override
+ * @return {!ArrayIterator<T>}
+ * @nosideeffects
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/Symbol.iterator
+ */
+Array.prototype[Symbol.iterator];
+
+
+/**
+ * @override
+ * @param {function(this:S, T, number, !Array<T>): *} predicateFn
  * @param {S=} opt_this
  * @return {T|undefined}
  * @this {IArrayLike<T>|string}
@@ -1571,7 +1315,8 @@ Array.prototype.find = function(predicateFn, opt_this) {};
 
 
 /**
- * @param {function(this:S, T, number, !Array<T>): boolean} predicateFn
+ * @override
+ * @param {function(this:S, T, number, !Array<T>): *} predicateFn
  * @param {S=} opt_this
  * @return {number}
  * @this {IArrayLike<T>|string}
@@ -1580,6 +1325,30 @@ Array.prototype.find = function(predicateFn, opt_this) {};
  */
 Array.prototype.findIndex = function(predicateFn, opt_this) {};
 
+/**
+ * NOTE: this is an ES2023 extern.
+ * @override
+ * @param {function(this:S, T, number, !Array<T>): boolean} predicateFn
+ * @param {S=} opt_this
+ * @return {T|undefined}
+ * @this {IArrayLike<T>|string}
+ * @template T,S
+ * @see https://tc39.es/ecma262/#sec-array.prototype.findlast
+ */
+Array.prototype.findLast = function(predicateFn, opt_this) {};
+
+
+/**
+ * NOTE: this is an ES2023 extern.
+ * @override
+ * @param {function(this:S, T, number, !Array<T>): boolean} predicateFn
+ * @param {S=} opt_this
+ * @return {number}
+ * @this {IArrayLike<T>|string}
+ * @template T,S
+ * @see https://tc39.es/ecma262/#sec-array.prototype.findlastindex
+ */
+Array.prototype.findLastIndex = function(predicateFn, opt_this) {};
 
 /**
  * @param {T} value
@@ -1607,6 +1376,7 @@ Array.prototype.copyWithin = function(target, start, opt_end) {};
 
 /**
  * NOTE: this is an ES2022 extern.
+ * @override
  * @param {number} index
  * @return {T}
  * @this {!IArrayLike<T>|string}
@@ -1618,6 +1388,7 @@ Array.prototype.at = function(index) {};
 
 /**
  * NOTE: this is an ES2016 (ES7) extern.
+ * @override
  * @param {T} searchElement
  * @param {number=} opt_fromIndex
  * @return {boolean}
@@ -1645,7 +1416,8 @@ Array.prototype.includes = function(searchElement, opt_fromIndex) {};
  * The polyfill for this method provided by closure-compiler does behave as
  * defined in the specification, though.
  *
- * @param {function(this: THIS, T, number, !IArrayLike<T>): !Array<S>}
+ * @override
+ * @param {function(this: THIS, T, number, !IArrayLike<T>): !ReadonlyArray<S>}
  *     callback
  * @param {THIS=} thisArg
  * @return {!Array<S>}
@@ -1656,6 +1428,7 @@ Array.prototype.includes = function(searchElement, opt_fromIndex) {};
 Array.prototype.flatMap = function(callback, thisArg) {};
 
 /**
+ * @override
  * @param {number=} depth
  * @return {!Array<S>}
  * @this {!IArrayLike<T>}
@@ -1663,6 +1436,234 @@ Array.prototype.flatMap = function(callback, thisArg) {};
  * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/flat
  */
 Array.prototype.flat = function(depth) {};
+
+/**
+ * NOTE: this is an ES2023 extern.
+ * @override
+ * @return {!Array<T>}
+ * @this {!IArrayLike<T>}
+ * @template T
+ * @nosideeffects
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/toReversed
+ */
+Array.prototype.toReversed = function() {};
+
+/**
+ * NOTE: this is an ES2023 extern.
+ * @override
+ * @param {function(T, T): number=} compareFn A function that defines the sort
+ *     order.
+ * @return {!Array<T>}
+ * @this {!IArrayLike<T>}
+ * @template VALUE
+ * @nosideeffects
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/toSorted
+ */
+Array.prototype.toSorted = function(compareFn) {};
+
+/**
+ * NOTE: this is an ES2023 extern.
+ * @override
+ * @param {number} start
+ * @param {number=} skipCount
+ * @param {...T} var_toAdd
+ * @return {!Array<T>}
+ * @this {!IArrayLike<T>}
+ * @template T
+ * @nosideeffects
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/toSpliced
+ */
+Array.prototype.toSpliced = function(start, skipCount, var_toAdd) {};
+
+/**
+ * NOTE: this is an ES2023 extern.
+ * @override
+ * @param {number} index
+ * @param {T} value
+ * @return {!Array<T>}
+ * @this {!IArrayLike<T>}
+ * @template T
+ * @nosideeffects
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/with
+ */
+Array.prototype.with = function(index, value) {};
+
+/** @return {!ArrayIterator<number>} */
+ReadonlyArray.prototype.keys;
+
+
+/**
+ * @return {!ArrayIterator<T>}
+ * @nosideeffects
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/values
+ */
+ReadonlyArray.prototype.values;
+
+
+/**
+ * @return {!ArrayIterator<!Array<number|T>>} Iterator of [key, value] pairs.
+ */
+ReadonlyArray.prototype.entries;
+
+
+/**
+ * @return {!ArrayIterator<T>}
+ * @nosideeffects
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/Symbol.iterator
+ */
+ReadonlyArray.prototype[Symbol.iterator];
+
+
+/**
+ * @param {function(this:S, T, number, !Array<T>): *} predicateFn
+ * @param {S=} opt_this
+ * @return {T|undefined}
+ * @this {IArrayLike<T>|string}
+ * @template T,S
+ * @see http://www.ecma-international.org/ecma-262/6.0/#sec-array.prototype.find
+ */
+ReadonlyArray.prototype.find = function(predicateFn, opt_this) {};
+
+
+/**
+ * @param {function(this:S, T, number, !Array<T>): *} predicateFn
+ * @param {S=} opt_this
+ * @return {number}
+ * @this {IArrayLike<T>|string}
+ * @template T,S
+ * @see http://www.ecma-international.org/ecma-262/6.0/#sec-array.prototype.findindex
+ */
+ReadonlyArray.prototype.findIndex = function(predicateFn, opt_this) {};
+
+/**
+ * NOTE: this is an ES2023 extern.
+ * @param {function(this:S, T, number, !Array<T>): boolean} predicateFn
+ * @param {S=} opt_this
+ * @return {T|undefined}
+ * @this {IArrayLike<T>|string}
+ * @template T,S
+ * @see https://tc39.es/ecma262/#sec-array.prototype.findlast
+ */
+ReadonlyArray.prototype.findLast = function(predicateFn, opt_this) {};
+
+
+/**
+ * NOTE: this is an ES2023 extern.
+ * @param {function(this:S, T, number, !Array<T>): boolean} predicateFn
+ * @param {S=} opt_this
+ * @return {number}
+ * @this {IArrayLike<T>|string}
+ * @template T,S
+ * @see https://tc39.es/ecma262/#sec-array.prototype.findlastindex
+ */
+ReadonlyArray.prototype.findLastIndex = function(predicateFn, opt_this) {};
+
+
+/**
+ * NOTE: this is an ES2022 extern.
+ * @param {number} index
+ * @return {T}
+ * @this {!IArrayLike<T>|string}
+ * @template T
+ * @nosideeffects
+ * @see https://tc39.github.io/ecma262/#sec-array.prototype.at
+ */
+ReadonlyArray.prototype.at = function(index) {};
+
+/**
+ * NOTE: this is an ES2016 (ES7) extern.
+ * @param {?} searchElement
+ * @param {number=} opt_fromIndex
+ * @return {boolean}
+ * @this {!IArrayLike<T>|string}
+ * @template T
+ * @nosideeffects
+ * @see https://tc39.github.io/ecma262/#sec-array.prototype.includes
+ */
+ReadonlyArray.prototype.includes = function(searchElement, opt_fromIndex) {};
+
+/**
+ * Generates an array by passing every element of this array to a callback that
+ * returns an array of zero or more elements to be added to the result.
+ *
+ * NOTE: The specified behavior of the method is that the callback can return
+ * either an Array, which will be flattened into the result, or a non-array,
+ * which will simply be included.
+ *
+ * However, while defining that in the type information here is possible it's
+ * very hard to understand both for humans and automated tools other than
+ * closure-compiler that process these files. Also, we think it's best to
+ * encourage writing callbacks that just always return an Array for the sake
+ * of readability.
+ *
+ * The polyfill for this method provided by closure-compiler does behave as
+ * defined in the specification, though.
+ *
+ * @param {function(this: THIS, T, number, !IArrayLike<T>): !ReadonlyArray<S>}
+ *     callback
+ * @param {THIS=} thisArg
+ * @return {!Array<S>}
+ * @this {!IArrayLike<T>}
+ * @template T, THIS, S
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/flatMap
+ */
+ReadonlyArray.prototype.flatMap = function(callback, thisArg) {};
+
+/**
+ * @param {number=} depth
+ * @return {!Array<S>}
+ * @this {!IArrayLike<T>}
+ * @template T, S
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/flat
+ */
+ReadonlyArray.prototype.flat = function(depth) {};
+
+/**
+ * NOTE: this is an ES2023 extern.
+ * @return {!Array<T>}
+ * @this {!IArrayLike<T>}
+ * @template T
+ * @nosideeffects
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/toReversed
+ */
+ReadonlyArray.prototype.toReversed = function() {};
+
+/**
+ * NOTE: this is an ES2023 extern.
+ * @param {function(T, T): number=} compareFn A function that defines the sort
+ *     order.
+ * @return {!Array<T>}
+ * @this {!IArrayLike<T>}
+ * @template T
+ * @nosideeffects
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/toSorted
+ */
+ReadonlyArray.prototype.toSorted = function(compareFn) {};
+
+/**
+ * NOTE: this is an ES2023 extern.
+ * @param {number} start
+ * @param {number=} skipCount
+ * @param {...T} var_toAdd
+ * @return {!Array<T>}
+ * @this {!IArrayLike<T>}
+ * @template T
+ * @nosideeffects
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/toSpliced
+ */
+ReadonlyArray.prototype.toSpliced = function(start, skipCount, var_toAdd) {};
+
+/**
+ * NOTE: this is an ES2023 extern.
+ * @param {number} index
+ * @param {T} value
+ * @return {!Array<T>}
+ * @this {!IArrayLike<T>}
+ * @template T
+ * @nosideeffects
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/with
+ */
+ReadonlyArray.prototype.with = function(index, value) {};
 
 /**
  * @param {!Iterable<*>} errors
@@ -1738,7 +1739,7 @@ Number.parseInt = function(string, radix) {};
 Number.parseFloat = function(string) {};
 
 /**
- * @param {number} value
+ * @param {*} value
  * @return {boolean}
  * @nosideeffects
  * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Number/isNaN
@@ -1746,7 +1747,7 @@ Number.parseFloat = function(string) {};
 Number.isNaN = function(value) {};
 
 /**
- * @param {number} value
+ * @param {*} value
  * @return {boolean}
  * @nosideeffects
  * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Number/isFinite
@@ -1754,7 +1755,7 @@ Number.isNaN = function(value) {};
 Number.isFinite = function(value) {};
 
 /**
- * @param {number} value
+ * @param {*} value
  * @return {boolean}
  * @nosideeffects
  * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Number/isInteger
@@ -1762,7 +1763,7 @@ Number.isFinite = function(value) {};
 Number.isInteger = function(value) {};
 
 /**
- * @param {number} value
+ * @param {*} value
  * @return {boolean}
  * @nosideeffects
  * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Number/isSafeInteger
@@ -1775,6 +1776,7 @@ Number.isSafeInteger = function(value) {};
  * @param {!Object} target
  * @param {...(Object|null|undefined)} var_args
  * @return {!Object}
+ * @modifies {arguments}
  * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/assign
  */
 Object.assign = function(target, var_args) {};
@@ -1801,6 +1803,18 @@ Object.values = function(obj) {};
 Object.entries = function(obj) {};
 
 /**
+ * NOTE: this is an ES2022 extern.
+ * Returns whether the specified object has indicated property as its own
+ * property.
+ * @param {!Object} obj
+ * @param {string|symbol} propertyName
+ * @return {boolean}
+ * @nosideeffects
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/hasOwn
+ */
+Object.hasOwn = function(obj, propertyName) {};
+
+/**
  * @param {!Iterable<*>} iter
  * @return {!Object}
  * https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/fromEntries
@@ -1817,7 +1831,14 @@ Object.fromEntries = function(iter) {};
  */
 Object.getOwnPropertyDescriptors = function(obj) {};
 
-
+/**
+ * @param {!Iterable<T>} items
+ * @param {function(T, number=): (string|symbol|number)} callbackFn
+ * @return {!Object<string|symbol|number, !Array<T>>}
+ * @template T
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/groupBy
+ */
+Object.groupBy = function(items, callbackFn) {};
 
 /**
  * @const
@@ -1948,7 +1969,8 @@ Reflect.setPrototypeOf = function(target, proto) {};
 var Atomics = {};
 
 /**
- * @param {!TypedArray} typedArray
+ * @param {!Int8Array|!Uint8Array|!Int16Array|!Uint16Array|!Int32Array|!Uint32Array|!BigInt64Array|!BigUint64Array}
+ *     typedArray
  * @param {number} index
  * @param {number} value
  * @return {number}
@@ -1956,7 +1978,8 @@ var Atomics = {};
 Atomics.add = function(typedArray, index, value) {};
 
 /**
- * @param {!TypedArray} typedArray
+ * @param {!Int8Array|!Uint8Array|!Int16Array|!Uint16Array|!Int32Array|!Uint32Array|!BigInt64Array|!BigUint64Array}
+ *     typedArray
  * @param {number} index
  * @param {number} value
  * @return {number}
@@ -1964,7 +1987,8 @@ Atomics.add = function(typedArray, index, value) {};
 Atomics.and = function(typedArray, index, value) {};
 
 /**
- * @param {!TypedArray} typedArray
+ * @param {!Int8Array|!Uint8Array|!Int16Array|!Uint16Array|!Int32Array|!Uint32Array|!BigInt64Array|!BigUint64Array}
+ *     typedArray
  * @param {number} index
  * @param {number} expectedValue
  * @param {number} replacementValue
@@ -1974,7 +1998,8 @@ Atomics.compareExchange = function(
     typedArray, index, expectedValue, replacementValue) {};
 
 /**
- * @param {!TypedArray} typedArray
+ * @param {!Int8Array|!Uint8Array|!Int16Array|!Uint16Array|!Int32Array|!Uint32Array|!BigInt64Array|!BigUint64Array}
+ *     typedArray
  * @param {number} index
  * @param {number} value
  * @return {number}
@@ -1988,14 +2013,16 @@ Atomics.exchange = function(typedArray, index, value) {};
 Atomics.isLockFree = function(size) {};
 
 /**
- * @param {!TypedArray} typedArray
+ * @param {!Int8Array|!Uint8Array|!Int16Array|!Uint16Array|!Int32Array|!Uint32Array|!BigInt64Array|!BigUint64Array}
+ *     typedArray
  * @param {number} index
  * @return {number}
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Atomics/load
  */
 Atomics.load = function(typedArray, index) {};
 
 /**
- * @param {!Int32Array} typedArray
+ * @param {!Int32Array|!BigInt64Array} typedArray
  * @param {number} index
  * @param {number=} count
  * @return {number}
@@ -2003,7 +2030,8 @@ Atomics.load = function(typedArray, index) {};
 Atomics.notify = function(typedArray, index, count) {};
 
 /**
- * @param {!TypedArray} typedArray
+ * @param {!Int8Array|!Uint8Array|!Int16Array|!Uint16Array|!Int32Array|!Uint32Array|!BigInt64Array|!BigUint64Array}
+ *     typedArray
  * @param {number} index
  * @param {number} value
  * @return {number}
@@ -2011,7 +2039,8 @@ Atomics.notify = function(typedArray, index, count) {};
 Atomics.or = function(typedArray, index, value) {};
 
 /**
- * @param {!TypedArray} typedArray
+ * @param {!Int8Array|!Uint8Array|!Int16Array|!Uint16Array|!Int32Array|!Uint32Array|!BigInt64Array|!BigUint64Array}
+ *     typedArray
  * @param {number} index
  * @param {number} value
  * @return {number}
@@ -2019,7 +2048,8 @@ Atomics.or = function(typedArray, index, value) {};
 Atomics.store = function(typedArray, index, value) {};
 
 /**
- * @param {!TypedArray} typedArray
+ * @param {!Int8Array|!Uint8Array|!Int16Array|!Uint16Array|!Int32Array|!Uint32Array|!BigInt64Array|!BigUint64Array}
+ *     typedArray
  * @param {number} index
  * @param {number} value
  * @return {number}
@@ -2027,13 +2057,22 @@ Atomics.store = function(typedArray, index, value) {};
 Atomics.sub = function(typedArray, index, value) {};
 
 /**
- * @param {!Int32Array} typedArray
+ * @param {!Int32Array|!BigInt64Array} typedArray
  * @param {number} index
  * @param {number} value
  * @param {number=} timeout
  * @return {string}
  */
 Atomics.wait = function(typedArray, index, value, timeout) {};
+
+/**
+ * @param {!Int32Array|!BigInt64Array} typedArray
+ * @param {number} index
+ * @param {number} value
+ * @param {number=} timeout
+ * @return {{async: boolean, value: (string|!Promise<string>)}}
+ */
+Atomics.waitAsync = function(typedArray, index, value, timeout) {};
 
 /**
  * @param {!Int32Array} typedArray
@@ -2044,7 +2083,8 @@ Atomics.wait = function(typedArray, index, value, timeout) {};
 Atomics.wake = function(typedArray, index, count) {};
 
 /**
- * @param {!TypedArray} typedArray
+ * @param {!Int8Array|!Uint8Array|!Int16Array|!Uint16Array|!Int32Array|!Uint32Array|!BigInt64Array|!BigUint64Array}
+ *     typedArray
  * @param {number} index
  * @param {number} value
  * @return {number}
@@ -2053,70 +2093,69 @@ Atomics.xor = function(typedArray, index, value) {};
 
 
 /**
- * TODO(b/142881197): UNUSED_RETURN_T and UNUSED_NEXT_T are not yet used for
- * anything.
+ * TODO(b/142881197): TReturn and TNext are not yet used for anything.
  * https://github.com/google/closure-compiler/issues/3489
  * @interface
- * @template VALUE, UNUSED_RETURN_T, UNUSED_NEXT_T
+ * @template T, TReturn, TNext
  * @see https://tc39.github.io/proposal-async-iteration/
  */
 function AsyncIterator() {}
 
 /**
  * @param {?=} opt_value
- * @return {!Promise<!IIterableResult<VALUE>>}
+ * @return {!Promise<!IIterableResult<T>>}
  */
 AsyncIterator.prototype.next;
 
 
 /**
  * @interface
- * @template VALUE
+ * @template T, TReturn, TNext
  */
 function AsyncIterable() {}
 
 
 /**
- * @return {!AsyncIterator<VALUE, ?, *>}
+ * @return {!AsyncIterator<T, ?, *>}
  */
 AsyncIterable.prototype[Symbol.asyncIterator] = function() {};
 
 
 /**
  * @interface
- * @extends {AsyncIterator<VALUE, ?, *>}
- * @extends {AsyncIterable<VALUE>}
- * @template VALUE
+ * @extends {AsyncIterator<T, ?, *>}
+ * @extends {AsyncIterable<T>}
+ * @template T
  * @see https://tc39.github.io/proposal-async-iteration/
  */
 function AsyncIteratorIterable() {}
 
 /**
- * TODO(b/142881197): UNUSED_RETURN_T and UNUSED_NEXT_T are not yet used for
- * anything. https://github.com/google/closure-compiler/issues/3489
+ * TODO(b/142881197): TReturn and TNext are not yet used for anything.
+ * https://github.com/google/closure-compiler/issues/3489
  * @interface
  * @see https://tc39.github.io/proposal-async-iteration/
- * @extends {AsyncIteratorIterable<VALUE>}
- * @template VALUE, UNUSED_RETURN_T, UNUSED_NEXT_T
+ * @extends {AsyncIteratorIterable<T, TReturn, TNext>}
+ * @template T, TReturn, TNext
  */
 function AsyncGenerator() {}
 
 /**
  * @param {?=} opt_value
- * @return {!Promise<!IIterableResult<VALUE>>}
+ * @return {!Promise<!IIterableResult<T>>}
  * @override
  */
 AsyncGenerator.prototype.next = function(opt_value) {};
 
 /**
- * @param {VALUE} value
- * @return {!Promise<!IIterableResult<VALUE>>}
+ * @param {T} value
+ * @return {!Promise<!IIterableResult<T>>}
  */
 AsyncGenerator.prototype.return = function(value) {};
 
 /**
  * @param {?} exception
- * @return {!Promise<!IIterableResult<VALUE>>}
+ * @return {!Promise<!IIterableResult<T>>}
  */
 AsyncGenerator.prototype.throw = function(exception) {};
 
@@ -2152,8 +2191,8 @@ function FinalizationRegistry(cleanupCallback) {}
  * @param {TOKEN=} unregisterToken
  * @return {void}
  */
-FinalizationRegistry.prototype.register =
-    function(target, heldValue, unregisterToken) {};
+FinalizationRegistry.prototype.register = function(
+    target, heldValue, unregisterToken) {};
 
 /**
  * @param {TOKEN} unregisterToken
@@ -2165,3 +2204,147 @@ FinalizationRegistry.prototype.unregister = function(unregisterToken) {};
  * @type {!Global}
  */
 var globalThis;
+
+/**
+ * @const {symbol}
+ */
+Symbol.dispose;
+
+/**
+ * @const {symbol}
+ */
+Symbol.asyncDispose;
+
+/**
+ * Wraps an error that suppresses another error, and the error that was
+ * suppressed.
+ *
+ * @constructor
+ * @extends {Error}
+ * @param {?} error The error that resulted in a suppression.
+ * @param {?} suppressed The error that was suppressed.
+ * @param {string=} message The message for the error.
+ * @return {!SuppressedError}
+ * @nosideeffects
+ */
+function SuppressedError(error, suppressed, message) {}
+
+/**
+ * The error that resulted in a suppression.
+ * @type {?}
+ */
+SuppressedError.prototype.error;
+
+/**
+ * The error that was suppressed.
+ * @type {?}
+ */
+SuppressedError.prototype.suppressed;
+
+
+/**
+ * @record
+ */
+function Disposable() {}
+
+/**
+ * @return {void}
+ */
+Disposable.prototype[Symbol.dispose] = function() {};
+
+/**
+ * A DisposableStack is an object that can be used to contain one or more
+ * resources that should be disposed together.
+ *
+ * @constructor
+ */
+function DisposableStack() {}
+
+/**
+ * @type {boolean}
+ */
+DisposableStack.prototype.disposed;
+
+/**
+ * @return {void}
+ */
+DisposableStack.prototype.dispose = function() {};
+/**
+ * @return {void}
+ */
+DisposableStack.prototype[Symbol.dispose] = function() {};
+/**
+ * @param {!Disposable|null|undefined} disposable
+ * @return {!Disposable|null|undefined}
+ */
+DisposableStack.prototype.use = function(disposable) {};
+/**
+ * @template T
+ * @param {T} value
+ * @param {function(T)} onDispose
+ * @return {T}
+ */
+DisposableStack.prototype.adopt = function(value, onDispose) {};
+/**
+ * @param {function(): void} onDispose
+ * @return {void}
+ */
+DisposableStack.prototype.defer = function(onDispose) {};
+/**
+ * @return {!DisposableStack}
+ */
+DisposableStack.prototype.move = function() {};
+
+/**
+ * @record
+ */
+function AsyncDisposable() {}
+
+/**
+ * @return {!Promise<void>}
+ */
+AsyncDisposable.prototype[Symbol.asyncDispose] = function() {};
+
+/**
+ * An AsyncDisposableStack is an object that can be used to contain one or more
+ * resources that should be disposed of together. The resources may be disposed
+ * of asynchronously.
+ *
+ * @constructor
+ */
+function AsyncDisposableStack() {}
+
+/**
+ * @type {boolean}
+ */
+AsyncDisposableStack.prototype.disposed;
+
+/**
+ * @return {!Promise<void>}
+ */
+AsyncDisposableStack.prototype.disposeAsync = function() {};
+/**
+ * @return {!Promise<void>}
+ */
+AsyncDisposableStack.prototype[Symbol.asyncDispose] = function() {};
+/**
+ * @param {!AsyncDisposable|!Disposable|null|undefined} disposable
+ * @return {!AsyncDisposable|!Disposable|null|undefined}
+ */
+AsyncDisposableStack.prototype.use = function(disposable) {};
+/**
+ * @template T
+ * @param {T} value
+ * @param {function(T): (void|!Promise<void>)} onDispose
+ * @return {T}
+ */
+AsyncDisposableStack.prototype.adopt = function(value, onDispose) {};
+/**
+ * @param {function(): (void|!Promise<void>)} onDispose
+ * @return {void}
+ */
+AsyncDisposableStack.prototype.defer = function(onDispose) {};
+/**
+ * @return {!AsyncDisposableStack}
+ */
+AsyncDisposableStack.prototype.move = function() {};

@@ -26,17 +26,16 @@ import com.google.javascript.jscomp.graph.Annotation;
 import com.google.javascript.jscomp.graph.DiGraph.DiGraphEdge;
 import com.google.javascript.jscomp.graph.DiGraph.DiGraphNode;
 import com.google.javascript.jscomp.graph.LatticeElement;
-import com.google.javascript.jscomp.parsing.parser.util.format.SimpleFormat;
 import com.google.javascript.rhino.Node;
 import java.util.ArrayDeque;
 import java.util.Comparator;
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.Queue;
 import java.util.Set;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * A framework to help writing static program analysis.
@@ -127,10 +126,9 @@ abstract class DataFlowAnalysis<N, L extends LatticeElement> {
   }
 
   /**
-   * Returns the control flow graph that this analysis was performed on.
-   * Modifications can be done on this graph, however, the only time that the
-   * annotations are correct is after {@link #analyze()} is called and before
-   * the graph has been modified.
+   * Returns the control flow graph that this analysis was performed on. Modifications can be done
+   * on this graph, however, the only time that the annotations are correct is after {@link
+   * #analyze()} is called and before the graph has been modified.
    */
   final ControlFlowGraph<N> getCfg() {
     return cfg;
@@ -323,21 +321,17 @@ abstract class DataFlowAnalysis<N, L extends LatticeElement> {
 
     final L result;
     switch (inEdges.size()) {
-      case 0:
+      case 0 -> {
         return;
-
-      case 1:
-        result = this.getInputFromEdge(inEdges.get(0));
-        break;
-
-      default:
-        {
-          FlowJoiner<L> joiner = this.createFlowJoiner();
-          for (DiGraphEdge<N, Branch> inEdge : inEdges) {
-            joiner.joinFlow(this.getInputFromEdge(inEdge));
-          }
-          result = joiner.finish();
+      }
+      case 1 -> result = this.getInputFromEdge(inEdges.get(0));
+      default -> {
+        FlowJoiner<L> joiner = this.createFlowJoiner();
+        for (DiGraphEdge<N, Branch> inEdge : inEdges) {
+          joiner.joinFlow(this.getInputFromEdge(inEdge));
         }
+        result = joiner.finish();
+      }
     }
 
     if (this.isForward()) {
@@ -400,7 +394,7 @@ abstract class DataFlowAnalysis<N, L extends LatticeElement> {
 
     @Override
     public final String toString() {
-      return SimpleFormat.format("IN: %s OUT: %s", in, out);
+      return String.format("IN: %s OUT: %s", in, out);
     }
   }
 
@@ -421,6 +415,7 @@ abstract class DataFlowAnalysis<N, L extends LatticeElement> {
       ScopeCreator scopeCreator,
       Map<String, Var> allVarsInFn) {
 
+    // Optimize for Class Static Blocks.
     checkArgument(jsScope.isFunctionScope());
 
     AbstractPostOrderCallback finder =
@@ -428,19 +423,34 @@ abstract class DataFlowAnalysis<N, L extends LatticeElement> {
           @Override
           public void visit(NodeTraversal t, Node n, Node parent) {
 
-            Node enclosingBlock = NodeUtil.getEnclosingFunction(n);
-            if (jsScope.getRootNode() == enclosingBlock || !n.isName() || parent.isFunction()) {
+            if (!n.isName() || parent.isFunction()) {
               return;
             }
 
             String name = n.getString();
             Var var = t.getScope().getVar(name);
-            if (var != null) {
-              Node enclosingScopeNode = NodeUtil.getEnclosingFunction(var.getNode());
 
-              if (enclosingScopeNode == jsScope.getRootNode()) {
-                escaped.add(var);
-              }
+            if (var == null) {
+              return;
+            }
+
+            Scope variableCfgScope = var.getScope().getClosestCfgRootScope();
+
+            // If the current examined scope and var decleration scope are different then var is
+            // 'not escaped'.
+            if (variableCfgScope != jsScope) {
+              return;
+            }
+
+            Scope referenceCfgScope = t.getScope().getClosestCfgRootScope();
+
+            // Variable is referenced outside of declaration scope it is 'escaped'.
+            // Non-static class field initializers are evaluated at instance creation time
+            // (like closures), so variables referenced in non-static class fields must also be
+            // marked as escaped.
+            if (referenceCfgScope != variableCfgScope
+                || isReferencedInNonStaticClassField(t.getScope(), variableCfgScope)) {
+              escaped.add(var);
             }
           }
         };
@@ -454,15 +464,24 @@ abstract class DataFlowAnalysis<N, L extends LatticeElement> {
     // TODO (simranarora) catch variables should not be considered escaped in ES6. Getting rid of
     // the catch check is causing breakages however
     for (Var var : allVarsInFn.values()) {
-      if (var.getParentNode().isCatch()
-          || compiler.getCodingConvention().isExported(var.getName())) {
+      if (var.isCatch() || compiler.getCodingConvention().isExported(var.getName())) {
         escaped.add(var);
       }
     }
   }
 
+  private static boolean isReferencedInNonStaticClassField(Scope refScope, Scope targetScope) {
+    for (Scope s = refScope; s != null && s != targetScope; s = s.getParent()) {
+      Node root = s.getRootNode();
+      if ((root.isMemberFieldDef() || root.isComputedFieldDef()) && !root.isStaticMember()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private static final class UniqueQueue<T> {
-    private final HashSet<T> seenSet = new HashSet<>();
+    private final LinkedHashSet<T> seenSet = new LinkedHashSet<>();
     private final Queue<T> queue;
 
     UniqueQueue(@Nullable Comparator<T> priority) {

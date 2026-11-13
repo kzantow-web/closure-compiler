@@ -32,22 +32,20 @@ import org.junit.runners.JUnit4;
 public final class RewriteObjectSpreadTest extends CompilerTestCase {
 
   public RewriteObjectSpreadTest() {
-    super(new TestExternsBuilder().addObject().build());
+    super(new TestExternsBuilder().addObject().addJSCompLibraries().build());
   }
 
-  @Override
   @Before
-  public void setUp() throws Exception {
-    super.setUp();
+  public void customSetUp() throws Exception {
     setAcceptedLanguage(LanguageMode.ECMASCRIPT_NEXT);
     setLanguageOut(LanguageMode.ECMASCRIPT_2017);
   }
 
   @Before
   public void enableTypeCheckBeforePass() {
+    enableNormalize();
     enableTypeCheck();
     enableTypeInfoValidation();
-    disableCompareSyntheticCode();
     allowExternsChanges();
     replaceTypesWithColors();
     enableMultistageCompilation();
@@ -55,7 +53,12 @@ public final class RewriteObjectSpreadTest extends CompilerTestCase {
 
   @Override
   protected CompilerPass getProcessor(Compiler compiler) {
-    return new RewriteObjectSpread(compiler);
+    PhaseOptimizer optimizer = new PhaseOptimizer(compiler, null);
+    optimizer.addOneTimePass(
+        makePassFactory(
+            "injectTranspilationRuntimeLibraries", InjectTranspilationRuntimeLibraries::new));
+    optimizer.addOneTimePass(makePassFactory("rewriteObjectSpread", RewriteObjectSpread::new));
+    return optimizer;
   }
 
   @Test
@@ -77,16 +80,24 @@ public final class RewriteObjectSpreadTest extends CompilerTestCase {
   }
 
   @Test
+  public void testObjectLiteralWithSpread_es5Out_emitsJscompAssign() {
+    setLanguageOut(LanguageMode.ECMASCRIPT5);
+    test("({first, ...spread});", "(0, $jscomp.assign)({}, {first}, spread)");
+  }
+
+  @Test
   public void testTyping_ofSpreadResult_isObject() {
     test(
-        lines(
-            "const first = 0;", //
-            "const spread = {bar: 'str', qux: false};",
-            "const obj = ({first, ...spread});"),
-        lines(
-            "const first = 0;", //
-            "const spread = {bar: 'str', qux: false};",
-            "const obj = Object.assign({}, {first}, spread)"));
+        """
+        const first = 0;
+        const spread = {bar: 'str', qux: false};
+        const obj = ({first, ...spread});
+        """,
+        """
+        const first = 0;
+        const spread = {bar: 'str', qux: false};
+        const obj = Object.assign({}, {first}, spread)
+        """);
 
     Compiler lastCompiler = getLastCompiler();
 

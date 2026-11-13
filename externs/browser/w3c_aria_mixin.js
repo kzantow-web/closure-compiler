@@ -1,5 +1,5 @@
 /*
- * Copyright 2022 The Closure Compiler Authors.
+ * Copyright 2025 The Closure Compiler Authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -50,6 +50,22 @@ ARIAMixin.prototype.ariaAtomic;
 ARIAMixin.prototype.ariaAutoComplete;
 
 /**
+ * @type {?Element}
+ * @see https://www.w3.org/TR/wai-aria-1.2/#aria-activedescendant
+ */
+ARIAMixin.prototype.ariaActiveDescendantElement;
+
+/**
+ * @type {string|undefined}
+ */
+ARIAMixin.prototype.ariaBrailleLabel;
+
+/**
+ * @type {string|undefined}
+ */
+ARIAMixin.prototype.ariaBrailleRoleDescription;
+
+/**
  * @type {string|undefined}
  * @see https://www.w3.org/TR/wai-aria-1.2/#aria-busy
  */
@@ -75,9 +91,20 @@ ARIAMixin.prototype.ariaColIndex;
 
 /**
  * @type {string|undefined}
+ */
+ARIAMixin.prototype.ariaColIndexText;
+
+/**
+ * @type {string|undefined}
  * @see https://www.w3.org/TR/wai-aria-1.2/#aria-colspan
  */
 ARIAMixin.prototype.ariaColSpan;
+
+/**
+ * @type {?Array<!Element>}
+ * @see https://www.w3.org/TR/wai-aria-1.2/#aria-controls
+ */
+ARIAMixin.prototype.ariaControlsElements;
 
 /**
  * @type {string|undefined}
@@ -87,9 +114,32 @@ ARIAMixin.prototype.ariaCurrent;
 
 /**
  * @type {string|undefined}
+ */
+ARIAMixin.prototype.ariaDescription;
+
+/**
+ * @type {?Array<!Element>}
+ * @see https://www.w3.org/TR/wai-aria-1.2/#aria-describedby
+ */
+ARIAMixin.prototype.ariaDescribedByElements;
+
+/**
+ * @type {?Array<!Element>}
+ * @see https://www.w3.org/TR/wai-aria-1.2/#aria-details
+ */
+ARIAMixin.prototype.ariaDetailsElements;
+
+/**
+ * @type {string|undefined}
  * @see https://www.w3.org/TR/wai-aria-1.2/#aria-disabled
  */
 ARIAMixin.prototype.ariaDisabled;
+
+/**
+ * @type {?Array<!Element>}
+ * @see https://www.w3.org/TR/wai-aria-1.2/#aria-flowto
+ */
+ARIAMixin.prototype.ariaFlowToElements;
 
 /**
  * @type {string|undefined}
@@ -129,6 +179,12 @@ ARIAMixin.prototype.ariaKeyShortcuts;
 ARIAMixin.prototype.ariaLabel;
 
 /**
+ * @type {?Array<!Element>}
+ * @see https://www.w3.org/TR/wai-aria-1.2/#aria-labelledby
+ */
+ARIAMixin.prototype.ariaLabelledByElements;
+
+/**
  * @type {string|undefined}
  * @see https://www.w3.org/TR/wai-aria-1.2/#aria-level
  */
@@ -165,6 +221,12 @@ ARIAMixin.prototype.ariaMultiSelectable;
 ARIAMixin.prototype.ariaOrientation;
 
 /**
+ * @type {?Array<!Element>}
+ * @see https://www.w3.org/TR/wai-aria-1.2/#aria-owns
+ */
+ARIAMixin.prototype.ariaOwnsElements;
+
+/**
  * @type {string|undefined}
  * @see https://www.w3.org/TR/wai-aria-1.2/#aria-placeholder
  */
@@ -187,6 +249,9 @@ ARIAMixin.prototype.ariaPressed;
  * @see https://www.w3.org/TR/wai-aria-1.2/#aria-readonly
  */
 ARIAMixin.prototype.ariaReadOnly;
+
+/** @type {string|undefined} */
+ARIAMixin.prototype.ariaRelevant;
 
 /**
  * @type {string|undefined}
@@ -211,6 +276,11 @@ ARIAMixin.prototype.ariaRowCount;
  * @see https://www.w3.org/TR/wai-aria-1.2/#aria-rowindex
  */
 ARIAMixin.prototype.ariaRowIndex;
+
+/**
+ * @type {string|undefined}
+ */
+ARIAMixin.prototype.ariaRowIndexText;
 
 /**
  * @type {string|undefined}

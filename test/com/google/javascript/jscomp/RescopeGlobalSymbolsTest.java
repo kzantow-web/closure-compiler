@@ -16,8 +16,11 @@
 
 package com.google.javascript.jscomp;
 
+import static com.google.common.truth.Truth.assertThat;
 import static com.google.javascript.jscomp.deps.ModuleLoader.LOAD_WARNING;
+import static org.junit.Assert.assertThrows;
 
+import com.google.javascript.jscomp.CompilerOptions.LanguageMode;
 import com.google.javascript.jscomp.testing.JSChunkGraphBuilder;
 import org.junit.Before;
 import org.junit.Test;
@@ -30,18 +33,124 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
 
   private static final String NAMESPACE = "_";
 
-  private boolean assumeCrossModuleNames = true;
+  private boolean assumeCrossChunkNames = true;
+  private CompilerOptions.OptimizeLocalAccess optimizeLocalAccess =
+      CompilerOptions.OptimizeLocalAccess.DISABLED;
 
   @Override
   protected CompilerPass getProcessor(Compiler compiler) {
-    return new RescopeGlobalSymbols(compiler, NAMESPACE, false, assumeCrossModuleNames);
+    return new RescopeGlobalSymbols(
+        compiler, NAMESPACE, false, assumeCrossChunkNames, optimizeLocalAccess);
   }
 
   @Override
   @Before
   public void setUp() throws Exception {
     super.setUp();
-    assumeCrossModuleNames = true;
+    assumeCrossChunkNames = true;
+    optimizeLocalAccess = CompilerOptions.OptimizeLocalAccess.DISABLED;
+  }
+
+  @Test
+  public void testRescopeGlobalSymbolsRewriteCallback() {
+    // RescopeGlobalSymbolsRewriteCallback is the callback used under the hood
+    // by RescopeGlobalSymbols. We can test it implicitly by checking that
+    // global symbols are rewritten to be properties of the namespace.
+    test("var a = 1; a + 1;", "_.a = 1; _.a + 1;");
+  }
+
+  @Test
+  public void testLocalAccessOptimization() {
+    optimizeLocalAccess = CompilerOptions.OptimizeLocalAccess.DEFINING_CHUNK_ONLY;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forUnordered()
+                .addChunk("var a = 1; a + 1;")
+                .addChunk("a;")
+                .build()),
+        expected("var a; a = _.a = 1; a + 1;", "_.a;"));
+  }
+
+  @Test
+  public void testLocalAccessOptimization_letNoInitializer() {
+    optimizeLocalAccess = CompilerOptions.OptimizeLocalAccess.DEFINING_CHUNK_ONLY;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forUnordered()
+                .addChunk("let a; a = 1; a + 1;")
+                .addChunk("a;")
+                .build()),
+        expected("let a; a = _.a = 1; a + 1;", "_.a;"));
+  }
+
+  @Test
+  public void testLocalAccessOptimization_loopInitializerMixed() {
+    optimizeLocalAccess = CompilerOptions.OptimizeLocalAccess.DEFINING_CHUNK_ONLY;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forUnordered()
+                .addChunk("for (var a, b; ; ) { b = 1; }")
+                .addChunk("a = 2;")
+                .build()),
+        expected("var b; for (_.a, b; ; ) { b = 1; }", "_.a = 2;"));
+  }
+
+  @Test
+  public void testLocalAccessOptimization_writeInDifferentChunk() {
+    optimizeLocalAccess = CompilerOptions.OptimizeLocalAccess.DEFINING_CHUNK_ONLY;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forUnordered()
+                .addChunk("var a = 1; function getA() { return a; }")
+                .addChunk("a = 2;")
+                .build()),
+        expected("_.a = 1; var getA = function() { return _.a; };", "_.a = 2;"));
+  }
+
+  @Test
+  public void testLocalAccessOptimization_writeInDifferentChunk_destructuring() {
+    optimizeLocalAccess = CompilerOptions.OptimizeLocalAccess.DEFINING_CHUNK_ONLY;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forUnordered()
+                .addChunk("var a = 1; function getA() { return a; }")
+                .addChunk("var {a} = {a: 2};")
+                .build()),
+        expected("_.a = 1; var getA = function() { return _.a; };", "({a: _.a} = {a: 2});"));
+  }
+
+  @Test
+  public void testLocalAccessOptimization_destructuring() {
+    optimizeLocalAccess = CompilerOptions.OptimizeLocalAccess.DEFINING_CHUNK_ONLY;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forUnordered()
+                .addChunk("var {a} = {a: 1}; a + 1;")
+                .addChunk("a;")
+                .build()),
+        expected("var a; ({a} = {a: 1}); _.a = a; a + 1;", "_.a;"));
+  }
+
+  @Test
+  public void testLocalAccessOptimization_notUsedInDefiningChunk() {
+    optimizeLocalAccess = CompilerOptions.OptimizeLocalAccess.DEFINING_CHUNK_ONLY;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(JSChunkGraphBuilder.forUnordered().addChunk("var a = 1;").addChunk("a;").build()),
+        expected("_.a = 1;", "_.a;"));
+  }
+
+  @Test
+  public void testImplicitGlobal() {
+    optimizeLocalAccess = CompilerOptions.OptimizeLocalAccess.DEFINING_CHUNK_ONLY;
+    assumeCrossChunkNames = true;
+    testSame("implicitGlobal = 1;");
   }
 
   @Test
@@ -57,8 +166,8 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
   }
 
   @Test
-  public void testVarDeclarations_allSameModule() {
-    assumeCrossModuleNames = false;
+  public void testVarDeclarations_allSameChunk() {
+    assumeCrossChunkNames = false;
     testSame("var a = 1;");
     testSame("var a = 1, b = 2, c = 3;");
     testSame("var a = 'str', b = 1, c = { foo: 'bar' }, d = function() {};");
@@ -69,13 +178,13 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
 
   @Test
   public void testVarDeclarations_export() {
-    assumeCrossModuleNames = false;
+    assumeCrossChunkNames = false;
     test("var _dumpException = 1;", "_._dumpException = 1");
   }
 
   @Test
-  public void testVarDeclarations_acrossModules() {
-    assumeCrossModuleNames = false;
+  public void testVarDeclarations_acrossChunks() {
+    assumeCrossChunkNames = false;
     test(
         srcs(JSChunkGraphBuilder.forUnordered().addChunk("var a = 1;").addChunk("a").build()),
         expected("_.a = 1", "_.a"));
@@ -146,8 +255,8 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
   }
 
   @Test
-  public void testLetDeclarations_allSameModule() {
-    assumeCrossModuleNames = false;
+  public void testLetDeclarations_allSameChunk() {
+    assumeCrossChunkNames = false;
     testSame("let a = 1;");
     testSame("let a = 1, b = 2, c = 3;");
     testSame("let a = 'str', b = 1, c = { foo: 'bar' }, d = function() {};");
@@ -158,14 +267,14 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
 
   @Test
   public void testLetDeclarations_export() {
-    assumeCrossModuleNames = false;
+    assumeCrossChunkNames = false;
     test("let _dumpException = 1;", "_._dumpException = 1");
   }
 
   @Test
-  public void testLetDeclarations_acrossModules() {
-    assumeCrossModuleNames = false;
-    // test references across modules.
+  public void testLetDeclarations_acrossChunks() {
+    assumeCrossChunkNames = false;
+    // test references across chunks.
     test(
         srcs(JSChunkGraphBuilder.forUnordered().addChunk("let a = 1;").addChunk("a").build()),
         expected("_.a = 1", "_.a"));
@@ -221,7 +330,7 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
                 .addChunk("b")
                 .build()),
         expected("var a, c;1;_.b = 1;c = 2", "_.b"));
-    // test non-globals with same name as cross-module globals.
+    // test non-globals with same name as cross-chunk globals.
     testSame(
         srcs(
             JSChunkGraphBuilder.forUnordered()
@@ -238,6 +347,58 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
   }
 
   @Test
+  public void testLocalAccessOptimization_let() {
+    optimizeLocalAccess = CompilerOptions.OptimizeLocalAccess.DEFINING_CHUNK_ONLY;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forUnordered()
+                .addChunk("let a = 1; a + 1;")
+                .addChunk("a;")
+                .build()),
+        expected("var a; a = _.a = 1; a + 1;", "_.a;"));
+  }
+
+  @Test
+  public void testLocalAccessOptimization_const() {
+    optimizeLocalAccess = CompilerOptions.OptimizeLocalAccess.DEFINING_CHUNK_ONLY;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forUnordered()
+                .addChunk("const a = 1; a + 1;")
+                .addChunk("a;")
+                .build()),
+        expected("var a; a = _.a = 1; a + 1;", "_.a;"));
+  }
+
+  @Test
+  public void testLocalAccessOptimization_updateAssignment() {
+    optimizeLocalAccess = CompilerOptions.OptimizeLocalAccess.DEFINING_CHUNK_ONLY;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forUnordered()
+                .addChunk("var a = 1; a++; a += 1;")
+                .addChunk("a;")
+                .build()),
+        expected("var a; a = _.a = 1; a++; _.a = a; a += 1; _.a = a;", "_.a;"));
+  }
+
+  @Test
+  public void testLocalAccessOptimization_multipleWrites() {
+    optimizeLocalAccess = CompilerOptions.OptimizeLocalAccess.DEFINING_CHUNK_ONLY;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forUnordered()
+                .addChunk("var a = 1; var b = 1; a = b = 2; a + b;")
+                .addChunk("a; b;")
+                .build()),
+        expected("var a, b; a = _.a = 1; b = _.b = 1; a = _.a = b = _.b = 2; a + b;", "_.a; _.b;"));
+  }
+
+  @Test
   public void testConstDeclarations() {
     test("const a = 1;", "_.a = 1;");
     test("const a = 1, b = 2, c = 3;", "_.a = 1; _.b = 2; _.c = 3;");
@@ -248,8 +409,8 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
   }
 
   @Test
-  public void testConstDeclarations_allSameModule() {
-    assumeCrossModuleNames = false;
+  public void testConstDeclarations_allSameChunk() {
+    assumeCrossChunkNames = false;
     testSame("const a = 1;");
     testSame("const a = 1, b = 2, c = 3;");
     testSame("const a = 'str', b = 1, c = { foo: 'bar' }, d = function() {};");
@@ -258,14 +419,14 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
 
   @Test
   public void testConstDeclarations_export() {
-    assumeCrossModuleNames = false;
+    assumeCrossChunkNames = false;
     test("const _dumpException = 1;", "_._dumpException = 1");
   }
 
   @Test
-  public void testConstDeclarations_acrossModules() {
-    assumeCrossModuleNames = false;
-    // test references across modules.
+  public void testConstDeclarations_acrossChunks() {
+    assumeCrossChunkNames = false;
+    // test references across chunks.
     test(
         srcs(JSChunkGraphBuilder.forUnordered().addChunk("const a = 1;").addChunk("a").build()),
         expected("_.a = 1", "_.a"));
@@ -297,7 +458,7 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
                 .addChunk("a;c;")
                 .build()),
         expected("var b;_.a=1;b=2;_.c=3", "_.a;_.c"));
-    // test non-globals with same name as cross-module globals.
+    // test non-globals with same name as cross-chunk globals.
     testSame(
         srcs(
             JSChunkGraphBuilder.forUnordered()
@@ -335,8 +496,8 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
   }
 
   @Test
-  public void testObjectDestructuringDeclarations_allSameModule() {
-    assumeCrossModuleNames = false;
+  public void testObjectDestructuringDeclarations_allSameChunk() {
+    assumeCrossChunkNames = false;
     testSame("var {a} = {}; a;");
     testSame("var {a: a} = {}; a;");
     testSame("var {key: a} = {}; a;");
@@ -353,8 +514,8 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
   }
 
   @Test
-  public void testObjectDestructuringDeclarations_acrossModules() {
-    assumeCrossModuleNames = false;
+  public void testObjectDestructuringDeclarations_acrossChunks() {
+    assumeCrossChunkNames = false;
     test(
         srcs(JSChunkGraphBuilder.forUnordered().addChunk("var {a: a} = {};").addChunk("a").build()),
         expected("({a: _.a} = {});", "_.a"));
@@ -442,8 +603,8 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
   }
 
   @Test
-  public void testArrayDestructuringDeclarations_sameModule() {
-    assumeCrossModuleNames = false;
+  public void testArrayDestructuringDeclarations_sameChunk() {
+    assumeCrossChunkNames = false;
     testSame("var [a] = [1]; a");
     testSame("var [a, b] = [1, 2]; a; b;");
     testSame("var [[a, b], c] = []; a; b; c");
@@ -454,8 +615,8 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
   }
 
   @Test
-  public void testArrayDestructuringDeclarations_acrossModules() {
-    assumeCrossModuleNames = false;
+  public void testArrayDestructuringDeclarations_acrossChunks() {
+    assumeCrossChunkNames = false;
     test(
         srcs(JSChunkGraphBuilder.forUnordered().addChunk("var [a] = [];").addChunk("a").build()),
         expected("[_.a] = [];", "_.a"));
@@ -524,22 +685,24 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
     test("class A {} class B extends A {}", "_.A = class {}; _.B = class extends _.A {}");
     test("class A {} let a = new A;", "_.A = class {}; _.a = new _.A;");
     test(
-        lines(
-            "const PI = 3.14;",
-            "class A {",
-            "  static printPi() {",
-            "    console.log(PI);",
-            "  }",
-            "}",
-            "A.printPi();"),
-        lines(
-            "_.PI = 3.14;",
-            "_.A = class {",
-            "  static printPi() {",
-            "    console.log(_.PI);",
-            "  }",
-            "}",
-            "_.A.printPi();"));
+        """
+        const PI = 3.14;
+        class A {
+          static printPi() {
+            console.log(PI);
+          }
+        }
+        A.printPi();
+        """,
+        """
+        _.PI = 3.14;
+        _.A = class {
+          static printPi() {
+            console.log(_.PI);
+          }
+        }
+        _.A.printPi();
+        """);
 
     // Test that class expression names are not rewritten.
     test("var A = class Name {};", "_.A = class Name {};");
@@ -554,8 +717,8 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
   }
 
   @Test
-  public void testClasses_allSameModule() {
-    assumeCrossModuleNames = false;
+  public void testClasses_allSameChunk() {
+    assumeCrossChunkNames = false;
     test("class A {}", "var A = class {};");
     test("class A {} class B extends A {}", "var A = class {}; var B = class extends A {}");
     testSame("if (true) { class A {} }");
@@ -563,7 +726,7 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
 
   @Test
   public void testForLoops() {
-    assumeCrossModuleNames = false;
+    assumeCrossChunkNames = false;
     test(
         srcs(
             JSChunkGraphBuilder.forUnordered()
@@ -595,7 +758,7 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
   }
 
   @Test
-  public void testForLoops_acrossModules() {
+  public void testForLoops_acrossChunks() {
     test("for (var i = 0; i < 1000; i++);", "for (_.i = 0; _.i < 1000; _.i++);");
     test("for (var i = 0, c = 2; i < 1000; i++);", "for (_.i = 0, _.c = 2; _.i < 1000; _.i++);");
     test(
@@ -615,16 +778,16 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
   }
 
   @Test
-  public void testForInLoops_allSameModule() {
-    assumeCrossModuleNames = false;
+  public void testForInLoops_allSameChunk() {
+    assumeCrossChunkNames = false;
     testSame("for (var i in {});");
     testSame("for (var [a] in {});");
     testSame("for (var {a: a} in {});");
   }
 
   @Test
-  public void testForInLoops_acrossModules() {
-    assumeCrossModuleNames = false;
+  public void testForInLoops_acrossChunks() {
+    assumeCrossChunkNames = false;
     test(
         srcs(
             JSChunkGraphBuilder.forUnordered()
@@ -649,16 +812,16 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
   }
 
   @Test
-  public void testForOfLoops_allSameModule() {
-    assumeCrossModuleNames = false;
+  public void testForOfLoops_allSameChunk() {
+    assumeCrossChunkNames = false;
     testSame("for (var i of [1, 2, 3]);");
     testSame("for (var [a] of []);");
     testSame("for (var {a: a} of {});");
   }
 
   @Test
-  public void testForOfLoops_acrossModules() {
-    assumeCrossModuleNames = false;
+  public void testForOfLoops_acrossChunks() {
+    assumeCrossChunkNames = false;
     test(
         srcs(
             JSChunkGraphBuilder.forUnordered()
@@ -683,17 +846,17 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
   }
 
   @Test
-  public void testForAwaitOfLoops_allSameModule() {
-    assumeCrossModuleNames = false;
+  public void testForAwaitOfLoops_allSameChunk() {
+    assumeCrossChunkNames = false;
     testSame("async () => { for await (var i of [1, 2, 3]);}");
     testSame("async () => { for await (var [a] of []);}");
     testSame("async () => { for await (var {a: a} of {});}");
   }
 
   @Test
-  public void testForAwaitOfLoops_acrossModules() {
+  public void testForAwaitOfLoops_acrossChunks() {
     // TODO(b/128938049): re-enable it once we support top-level await.
-    assumeCrossModuleNames = false;
+    assumeCrossChunkNames = false;
     testError(
         srcs(
             JSChunkGraphBuilder.forUnordered()
@@ -720,16 +883,17 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
   @Test
   public void testFunctionStatements() {
     test("function test(){}", "_.test=function (){}");
-    test("if(1)function test(){}", "if(1)_.test=function (){}");
+    // Ignore block-scoped function declarations.
+    testSame("if(1) function test(){}");
     test("async function test() {}", "_.test = async function() {}");
     test("function *test() {}", "_.test = function *() {}");
   }
 
   @Test
-  public void testFunctionStatements_allSameModule() {
-    assumeCrossModuleNames = false;
+  public void testFunctionStatements_allSameChunk() {
+    assumeCrossChunkNames = false;
     test("function f() {}", "var f = function() {}");
-    test("if (true) { function f() {} }", "if (true) { var f = function() {}; }");
+    testSame("if (true) { function f() {} }");
   }
 
   @Test
@@ -802,27 +966,43 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
         "function foo() { var {key: _} = {}; _.foo = foo; _.bar = 1; }",
         "_.foo = function () { var {key: _$} = {}; _$.foo = _.foo; _$.bar = 1}");
     test(
-        lines(
-            "function foo() { var _ = {}; _.foo = foo; _.bar = 1; ",
-            "(function() { var _ = 0;})() }"),
-        lines(
-            "_.foo = function () { var _$ = {}; _$.foo = _.foo; _$.bar = 1; ",
-            "(function() { var _$ = 0;})() }"));
+        """
+        function foo() { var _ = {}; _.foo = foo; _.bar = 1;
+        (function() { var _ = 0;})() }
+        """,
+        """
+        _.foo = function () { var _$ = {}; _$.foo = _.foo; _$.bar = 1;
+        (function() { var _$ = 0;})() }
+        """);
     test(
-        "function foo() { var _ = {}; _.foo = foo; _.bar = 1; " + "var _$ = 1; }",
-        "_.foo = function () { var _$ = {}; _$.foo = _.foo; _$.bar = 1; " + "var _$$ = 1; }");
+        """
+        function foo() { var _ = {}; _.foo = foo; _.bar = 1;
+        var _$ = 1; }
+        """,
+        """
+        _.foo = function () { var _$ = {}; _$.foo = _.foo; _$.bar = 1;
+        var _$$ = 1; }
+        """);
     test(
-        "function foo() { var _ = {}; _.foo = foo; _.bar = 1; "
-            + "var _$ = 1; (function() { _ = _$ })() }",
-        "_.foo = function () { var _$ = {}; _$.foo = _.foo; _$.bar = 1; "
-            + "var _$$ = 1; (function() { _$ = _$$ })() }");
+        """
+        function foo() { var _ = {}; _.foo = foo; _.bar = 1;
+        var _$ = 1; (function() { _ = _$ })() }
+        """,
+        """
+        _.foo = function () { var _$ = {}; _$.foo = _.foo; _$.bar = 1;
+        var _$$ = 1; (function() { _$ = _$$ })() }
+        """);
     test(
-        "function foo() { var _ = {}; _.foo = foo; _.bar = 1; "
-            + "var _$ = 1, _$$ = 2 (function() { _ = _$ = _$$; "
-            + "var _$, _$$$ })() }",
-        "_.foo = function () { var _$ = {}; _$.foo = _.foo; _$.bar = 1; "
-            + "var _$$ = 1, _$$$ = 2 (function() { _$ = _$$ = _$$$; "
-            + "var _$$, _$$$$ })() }");
+        """
+        function foo() { var _ = {}; _.foo = foo; _.bar = 1;
+        var _$ = 1, _$$ = 2 (function() { _ = _$ = _$$;
+        var _$, _$$$ })() }
+        """,
+        """
+        _.foo = function () { var _$ = {}; _$.foo = _.foo; _$.bar = 1;
+        var _$$ = 1, _$$$ = 2 (function() { _$ = _$$ = _$$$;
+        var _$$, _$$$$ })() }
+        """);
     test(
         "var a = 5; function foo(_) { return _; }", "_.a = 5; _.foo = function(_$) { return _$; }");
     test(
@@ -886,9 +1066,11 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
     test(externs(""), srcs("document"), expected("document"));
     // Javascript builtin objects
     testSame(
-        "Object;Function;Array;String;Boolean;Number;Math;"
-            + "Date;RegExp;JSON;Error;EvalError;ReferenceError;"
-            + "SyntaxError;TypeError;URIError;");
+        """
+        Object;Function;Array;String;Boolean;Number;Math;
+        Date;RegExp;JSON;Error;EvalError;ReferenceError;
+        SyntaxError;TypeError;URIError;
+        """);
   }
 
   @Test
@@ -931,30 +1113,32 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
 
   @Test
   public void testSameVarDeclaredInExternsAndSource2() {
-    assumeCrossModuleNames = false;
+    assumeCrossChunkNames = false;
 
     test(
         srcs(
             JSChunkGraphBuilder.forUnordered()
                 .addChunk(
-                    lines(
-                        "Foo = function() { this.b = ns; };",
-                        "var f = function(a) {",
-                        "  if (a instanceof Foo && a.b === ns) {}",
-                        "},",
-                        "ns = {},",
-                        "g = function(a) { var b = new Foo; };"))
+                    """
+                    Foo = function() { this.b = ns; };
+                    var f = function(a) {
+                      if (a instanceof Foo && a.b === ns) {}
+                    },
+                    ns = {},
+                    g = function(a) { var b = new Foo; };
+                    """)
                 .addChunk("f; g;")
                 .build()),
         expected(
-            lines(
-                "var ns;",
-                "Foo = function() { this.b = ns; };",
-                "_.f = function(a) {",
-                "  if (a instanceof Foo && a.b === ns) {}",
-                "};",
-                "ns = {};",
-                "_.g = function(a) { var b = new Foo; };"),
+            """
+            var ns;
+            Foo = function() { this.b = ns; };
+            _.f = function(a) {
+              if (a instanceof Foo && a.b === ns) {}
+            };
+            ns = {};
+            _.g = function(a) { var b = new Foo; };
+            """,
             "_.f; _.g;"));
 
     test(
@@ -987,7 +1171,7 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
     // Test that this pass does nothing to ES6 modules.
     testSame("var a = 3; a; export default a;");
 
-    assumeCrossModuleNames = false;
+    assumeCrossChunkNames = false;
     testSame(
         srcs(
             JSChunkGraphBuilder.forUnordered()
@@ -999,5 +1183,964 @@ public final class RescopeGlobalSymbolsTest extends CompilerTestCase {
   @Test
   public void testEmptyDestructuring() {
     testSame("var {} = {};");
+  }
+
+  @Test
+  public void testAllChunksLocalAccessOptimization() {
+    optimizeLocalAccess = CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(JSChunkGraphBuilder.forChain().addChunk("var a = 1; a + 1;").addChunk("a;").build()),
+        expected("var a; a = _.a = 1; a + 1;", "var {a} = _; a;"));
+  }
+
+  @Test
+  public void testAllChunksLocalAccessOptimization_reassignedInDefiningChunk() {
+    optimizeLocalAccess = CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var a = 1; a = 2; a + 1;")
+                .addChunk("a;")
+                .build()),
+        expected("var a; a = _.a = 1; a = _.a = 2; a + 1;", "var {a} = _; a;"));
+  }
+
+  @Test
+  public void testAllChunksLocalAccessOptimization_reassignedOutsideStaticExecution() {
+    optimizeLocalAccess = CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var a = 1; function f() { a = 2; } a + 1;")
+                .addChunk("a;")
+                .build()),
+        expected("var a; a = _.a = 1; var f = function() { a = _.a = 2; }; a + 1;", "_.a;"));
+
+    // Writes inside an `if` block occur in a block scope (!t.inGlobalScope()), so other chunks do
+    // not alias `a` (`var {a} = _;`) and instead read `_.a` directly when `readA()` is called.
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("function readA() { return a; }")
+                .addChunk("var a = 1; if (a + 3) { a++; readA(); }")
+                .build()),
+        expected(
+            "_.readA = function() { return _.a; };",
+            "var {readA} = _; var a; a = _.a = 1; if (a + 3) { a++; _.a = a; readA(); }"));
+  }
+
+  @Test
+  public void testAllChunksLocalAccessOptimization_reassignedInOtherChunk() {
+    optimizeLocalAccess = CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var a = 1; a + 1;")
+                .addChunk("a = 2; a;")
+                .build()),
+        expected("_.a = 1; _.a + 1;", "_.a = 2; _.a;"));
+  }
+
+  @Test
+  public void testAllChunksLocalAccessOptimization_multipleChunks() {
+    optimizeLocalAccess = CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var a = 1; a + 1;")
+                .addChunk("a; a + 2;")
+                .addChunk("a; a + 3;")
+                .build()),
+        expected("var a; a = _.a = 1; a + 1;", "var {a} = _; a; a + 2;", "var {a} = _; a; a + 3;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappingAndInitAssignment() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS_IMPROVED;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(JSChunkGraphBuilder.forChain().addChunk("var a = 1; a + 1;").addChunk("a;").build()),
+        expected("var a = _.a = 1; a + 1;", "var {a} = _; a;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappingAndInitAssignment_let() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS_IMPROVED;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(JSChunkGraphBuilder.forChain().addChunk("let a = 1; a + 1;").addChunk("a;").build()),
+        expected("var a = _.a = 1; a + 1;", "var {a} = _; a;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappingAndInitAssignment_const() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS_IMPROVED;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(JSChunkGraphBuilder.forChain().addChunk("const a = 1; a + 1;").addChunk("a;").build()),
+        expected("var a = _.a = 1; a + 1;", "var {a} = _; a;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappingAndInitAssignment_mixedVarDeclaration() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS_IMPROVED;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var a = 1, b = 2, c = 3, d = 4; a + c + d;")
+                .addChunk("a; b; d;")
+                .build()),
+        expected(
+            "var a = _.a = 1; _.b = 2; var c = 3, d = _.d = 4; a + c + d;",
+            "var {a, b, d} = _; a; b; d;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappingAndInitAssignment_reassignedInDefiningChunk() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS_IMPROVED;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var a = 1; a = 2; a + 1;")
+                .addChunk("a;")
+                .build()),
+        expected("var a = _.a = 1; a = _.a = 2; a + 1;", "var {a} = _; a;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappingAndInitAssignment_multipleWrites() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS_IMPROVED;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var a = 1; var b = 1; a = b = 2; a + b;")
+                .addChunk("a; b;")
+                .build()),
+        expected(
+            "var a = _.a = 1; var b = _.b = 1; a = _.a = b = _.b = 2; a + b;",
+            "var {a, b} = _; a; b;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappingAndInitAssignment_es5() {
+    setLanguageOut(LanguageMode.ECMASCRIPT5);
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS_IMPROVED;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(JSChunkGraphBuilder.forChain().addChunk("var a = 1; a + 1;").addChunk("a;").build()),
+        expected("var a = _.a = 1; a + 1;", "var a = _.a; a;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappingAndInitAssignment_destructuring() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS_IMPROVED;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var [a, b, c] = [1, 2, 3]; a + b;")
+                .addChunk("a; c;")
+                .build()),
+        expected("var a, b; [a, b, _.c] = [1, 2, 3]; _.a = a; a + b;", "var {a, c} = _; a; c;"));
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var a = 1, [b, c] = [2, 3], d = 4; a + b + d;")
+                .addChunk("a; c; d;")
+                .build()),
+        expected(
+            "var a = _.a = 1, b; [b, _.c] = [2, 3]; var d = _.d = 4; a + b + d;",
+            "var {a, c, d} = _; a; c; d;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappingAndInitAssignment_forLoop() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS_IMPROVED;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("for (var a = 0, b = 1, c = 2; a < 10; a++) { b++; }")
+                .addChunk("a; c;")
+                .build()),
+        expected(
+            "_.a = {}; var c = _.c = {}; var _a, b; for (_a = _.a._ = 0, b = 1, c._ = 2; _a < 10;"
+                + " ++_.a._, _a++) { b++; }",
+            "var {a, c} = _; a._; c._;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappingAndInitAssignment_wrappedReassignableComposition() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS_IMPROVED;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var a = 1, b = 2; function f() { b = 3; } a + b;")
+                .addChunk("a; b;")
+                .build()),
+        expected(
+            "_.b = {}; var a = _.a = 1, _b = _.b._ = 2; var f = function() { _b = _.b._ = 3; }; a +"
+                + " _b;",
+            "var {a, b} = _; a; b._;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappingAndInitAssignment_uninitializedExternAndNonLocal() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS_IMPROVED;
+    assumeCrossChunkNames = false;
+    test(
+        externs("var externVar;"),
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var externVar, a = 1; a + 1;")
+                .addChunk("a;")
+                .build()),
+        expected("var a = _.a = 1; a + 1;", "var {a} = _; a;"));
+    test(
+        externs("var externVar;"),
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var externVar; var a = 1; a + 1;")
+                .addChunk("a;")
+                .build()),
+        expected("var a = _.a = 1; a + 1;", "var {a} = _; a;"));
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var crossChunkNoInit, a = 1; a + 1;")
+                .addChunk("crossChunkNoInit; a;")
+                .build()),
+        expected("var a = _.a = 1; a + 1;", "var {crossChunkNoInit, a} = _; crossChunkNoInit; a;"));
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var crossChunkNoInit, a = 1; a + 1;")
+                .addChunk("crossChunkNoInit = 2; a;")
+                .build()),
+        expected(
+            "var crossChunkNoInit = _.crossChunkNoInit = {}; var a = _.a = 1; a + 1;",
+            "var {a, crossChunkNoInit} = _; crossChunkNoInit._ = 2; a;"));
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain().addChunk("let a; a = 1; a + 1;").addChunk("a;").build()),
+        expected("let a; a = _.a = 1; a + 1;", "var {a} = _; a;"));
+    test(
+        externs("var externVar;"),
+        srcs("var externVar, localVar = 1;"),
+        expected("var localVar = 1;"));
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("let localVar = 1, a; a + 1;")
+                .addChunk("a;")
+                .build()),
+        expected("var localVar = 1, a; a + 1;", "var {a} = _; a;"));
+
+    // Standalone statement writes: compound assignments, prefix/postfix increments/decrements,
+    // and destructuring assignments.
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var a = 1; a++; ++a; a--; --a; a += 2; [a] = [3]; var [b] = [4]; b;")
+                .addChunk("a; b;")
+                .build()),
+        expected(
+            "var a = _.a = 1, b; ++_.a, a++; _.a = ++a; --_.a, a--; _.a = --a; _.a = a += 2;"
+                + " [a] = [3]; _.a = a; [b] = [4]; _.b = b; b;",
+            "var {a, b} = _; a; b;"));
+
+    // Top-level writes inside expression contexts (binary, ternary, and control-flow conditions).
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk(
+                    "var a = 1;"
+                        + " var x = (a++) + (++a) + (a--) + (--a) + (a += 2);"
+                        + " var y = a ? a++ : ++a;"
+                        + " if (a += 3) {}"
+                        + " while (a--) {}"
+                        + " do {} while (--a);"
+                        + " x + y;")
+                .addChunk("a;")
+                .build()),
+        expected(
+            "var a = _.a = 1;"
+                + " var x = (++_.a, a++) + (_.a = ++a) + (--_.a, a--) + (_.a = --a) + (_.a = a +="
+                + " 2);"
+                + " var y = a ? (++_.a, a++) : (_.a = ++a);"
+                + " if (_.a = a += 3) {}"
+                + " while (--_.a, a--) {}"
+                + " do {} while (_.a = --a);"
+                + " x + y;",
+            "var {a} = _; a;"));
+
+    // Function-scoped writes inside expression contexts (return statements and concise arrow
+    // bodies): because these writes occur in a nested scope (!t.inGlobalScope()), the symbol is
+    // wrapped in a holder object (a._), while keeping a direct local variable (_a) in the defining
+    // chunk.
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk(
+                    "var a = 1;"
+                        + " function postInc() { return a++; }"
+                        + " function preInc() { return ++a; }"
+                        + " function postDec() { return a--; }"
+                        + " function preDec() { return --a; }"
+                        + " var addAssign = () => a += 1;"
+                        + " postInc() + preInc() + postDec() + preDec() + addAssign() + a;")
+                .addChunk("a;")
+                .build()),
+        expected(
+            "_.a = {}; var _a = _.a._ = 1;"
+                + " var postInc = function() { return ++_.a._, _a++; };"
+                + " var preInc = function() { return _.a._ = ++_a; };"
+                + " var postDec = function() { return --_.a._, _a--; };"
+                + " var preDec = function() { return _.a._ = --_a; };"
+                + " var addAssign = () => _.a._ = _a += 1;"
+                + " postInc() + preInc() + postDec() + preDec() + addAssign() + _a;",
+            "var {a} = _; a._;"));
+
+    // Block-scoped writes (such as inside an `if` body) also have !t.inGlobalScope(), so the
+    // symbol is wrapped in a holder object (a._) and cross-chunk function calls inside the block
+    // observe the updated value.
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var a = 1; if (a + 3) { a++; }")
+                .addChunk("a;")
+                .build()),
+        expected(
+            "_.a = {}; var _a = _.a._ = 1; if (_a + 3) { ++_.a._, _a++; }", "var {a} = _; a._;"));
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("function readA() { return a; }")
+                .addChunk("var a = 1; if (a + 3) { a++; readA(); }")
+                .build()),
+        expected(
+            "var a = _.a = {}; _.readA = function() { return a._; };",
+            "var {readA} = _; var _a = _.a._ = 1; if (_a + 3) { ++_.a._, _a++; readA(); }"));
+    // Uninitialized var declarations followed by top-level compound assignment or increment.
+    test(
+        srcs(JSChunkGraphBuilder.forChain().addChunk("var a; a += 2; a;").addChunk("a;").build()),
+        expected("var a; _.a = a += 2; a;", "var {a} = _; a;"));
+    test(
+        srcs(JSChunkGraphBuilder.forChain().addChunk("var a; a++; a;").addChunk("a;").build()),
+        expected("var a; ++_.a, a++; a;", "var {a} = _; a;"));
+  }
+
+  @Test
+  public void testLocalAccessOptimization_uninitializedDeclarationWriteThrows() {
+    optimizeLocalAccess = CompilerOptions.OptimizeLocalAccess.DEFINING_CHUNK_ONLY;
+    assumeCrossChunkNames = false;
+    Sources sources =
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("for (var a of [1, 2]) {} a;")
+                .addChunk("a;")
+                .build());
+    Expected expected = expected("", "");
+    RuntimeException e = assertThrows(RuntimeException.class, () -> test(sources, expected));
+    assertThat(e).hasCauseThat().isInstanceOf(IllegalStateException.class);
+    assertThat(e)
+        .hasCauseThat()
+        .hasMessageThat()
+        .contains("Expected initialized declaration for NAME a");
+  }
+
+  @Test
+  public void testAllChunksWithWrappingAndInitAssignment_unsafeWriteToLocalAliasThrows() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS_IMPROVED;
+    assumeCrossChunkNames = false;
+    for (String chunk0 :
+        new String[] {
+          "var a; label: [a] = [1]; a;",
+          "var a; (([a] = [1]), 2); a;",
+          "var a; if (([a] = [1])) {} a;"
+        }) {
+      Sources sources =
+          srcs(JSChunkGraphBuilder.forChain().addChunk(chunk0).addChunk("a;").build());
+      Expected expected = expected("", "");
+      RuntimeException e = assertThrows(RuntimeException.class, () -> test(sources, expected));
+      assertThat(e).hasCauseThat().isInstanceOf(IllegalStateException.class);
+      assertThat(e)
+          .hasCauseThat()
+          .hasMessageThat()
+          .contains("Unexpected unsafe write to local alias: NAME a");
+    }
+  }
+
+  @Test
+  public void testAllChunksLocalAccessOptimization_independentChunks() {
+    optimizeLocalAccess = CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forUnordered()
+                .addChunk("var a = 1;")
+                .addChunk("function f() { return a; }")
+                .build()),
+        expected("_.a = 1;", "var f = function() { return _.a; };"));
+  }
+
+  @Test
+  public void testAllChunksLocalAccessOptimization_definingChunkDependsOnUsingChunk() {
+    optimizeLocalAccess = CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("function f() { return a; }")
+                .addChunk("var a = 1;")
+                .build()),
+        expected("var f = function() { return _.a; };", "_.a = 1;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappedMutables_reassignedOutsideStaticExecution() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var a = 1; function f() { a = 2; } a + 1;")
+                .addChunk("a;")
+                .build()),
+        expected(
+            "var a = _.a = {}; a._ = 1; var f = function() { a._ = 2; }; a._ + 1;",
+            "var {a} = _; a._;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappedMutables_reassignedInOtherChunk() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var a = 1; a + 1;")
+                .addChunk("a = 2; a;")
+                .build()),
+        expected("var a = _.a = {}; a._ = 1; a._ + 1;", "var {a} = _; a._ = 2; a._;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappedMutables_multipleHolderSymbols() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var a = 1; a + 1;")
+                .addChunk("var b = 1; b + 1;")
+                .addChunk("a = 2; b = 2;")
+                .build()),
+        expected(
+            "var a = _.a = {}; a._ = 1; a._ + 1;",
+            "var b = _.b = {}; b._ = 1; b._ + 1;",
+            "var {a, b} = _; a._ = 2; b._ = 2;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappedMutables_parentAccessesChildHolder() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("function f() { return a; }")
+                .addChunk("var a = 1; function g() { a = 2; } a + 1;")
+                .build()),
+        expected(
+            "var a = _.a = {}; var f = function() { return a._; };",
+            "var {a} = _; a._ = 1; var g = function() { a._ = 2; }; a._ + 1;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappedMutables_branchingCommonParent() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forTree()
+                .addChunk("var x = 1;")
+                .addChunk("var a = 1; a + 1;")
+                .addChunk("a = 2; a + 2;")
+                .build()),
+        expected(
+            "_.a = {}; var x = 1;",
+            "var {a} = _; a._ = 1; a._ + 1;",
+            "var {a} = _; a._ = 2; a._ + 2;"));
+  }
+
+  @Test
+  public void testAllChunksLocalAccessOptimization_es5() {
+    setLanguageOut(LanguageMode.ECMASCRIPT5);
+    optimizeLocalAccess = CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(JSChunkGraphBuilder.forChain().addChunk("var a = 1; a + 1;").addChunk("a;").build()),
+        expected("var a; a = _.a = 1; a + 1;", "var a = _.a; a;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappedMutables_multipleHolderSymbols_es5() {
+    setLanguageOut(LanguageMode.ECMASCRIPT5);
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var a = 1; a + 1;")
+                .addChunk("var b = 1; b + 1;")
+                .addChunk("a = 2; b = 2;")
+                .build()),
+        expected(
+            "var a = _.a = {}; a._ = 1; a._ + 1;",
+            "var b = _.b = {}; b._ = 1; b._ + 1;",
+            "var a = _.a; var b = _.b; a._ = 2; b._ = 2;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappedMutables_definingChunkDependsOnUsingChunk() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("function f() { return a; }")
+                .addChunk("var a = 1;")
+                .addChunk("a;")
+                .build()),
+        expected(
+            "var a = _.a = {}; var f = function() { return a._; };",
+            "var {a} = _; a._ = 1;",
+            "var {a} = _; a._;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappedMutables_independentSiblingChunks() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forTree()
+                .addChunk("var x = 1;")
+                .addChunk("var a = 1; a + 1;")
+                .addChunk("function f() { return a; }")
+                .build()),
+        expected(
+            "_.a = {}; var x = 1;",
+            "var {a} = _; a._ = 1; a._ + 1;",
+            "var {a} = _; var f = function() { return a._; };"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappedMutables_notUsedInDefiningChunk() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(JSChunkGraphBuilder.forChain().addChunk("var a = 1;").addChunk("a;").build()),
+        expected("_.a = 1;", "var {a} = _; a;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappedMutables_externs() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS;
+    assumeCrossChunkNames = false;
+    test(
+        externs("var window; var customExtern;"),
+        srcs(
+            JSChunkGraphBuilder.forTree()
+                .addChunk("window.onload = function() { return customExtern + a; };")
+                .addChunk("var a = customExtern; window.foo = a;")
+                .addChunk("customExtern = window.foo + a;")
+                .build()),
+        expected(
+            "var a = _.a = {}; window.onload = function() { return customExtern + a._; };",
+            "var {a} = _; a._ = customExtern; window.foo = a._;",
+            "var {a} = _; customExtern = window.foo + a._;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappedMutables_sameVarDeclaredInExternsAndSource() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS;
+    assumeCrossChunkNames = false;
+    test(
+        externs("var ext;"),
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("function f() { return ext; }")
+                .addChunk("var ext = 1; ext + 1;")
+                .build()),
+        expected("var f = function() { return ext; };", "ext = 1; ext + 1;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappedMutables_functionAndClassUsedInNonDependentChunk() {
+    disableCompareAsTree();
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("function f() { return g() + h() + new C(); }")
+                .addChunk("function g() { return 1; } function h() { return this; } class C {}")
+                .build()),
+        expected(
+            "var g=_.g={};var h=_.h={};var C=_.C={};"
+                + "var f=function(){return g._()+(0,h._)()+new C._};",
+            "var {g,h,C}=_;g._=function(){return 1};h._=function(){return this};C._=class{}"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappedMutables_mixedWrappedAndUnwrappedLocalAliases() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var a = 1; a + 1; function f() { return b; }")
+                .addChunk("var b, c; b = 2; c = 3; a + b + c;")
+                .build()),
+        expected(
+            "var b = _.b = {}; var a; a = _.a = 1; a + 1; var f = function() { return b._; };",
+            "var {a, b} = _; var c; b._ = 2; c = 3; a + b._ + c;"));
+  }
+  @Test
+  public void testDeleteGlobalsOnLastAccess_chain() {
+    optimizeLocalAccess = CompilerOptions.OptimizeLocalAccess.DELETE_GLOBALS_ON_LAST_ACCESS;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var a = 1; a + 1; var b = 1; b + 1; var c = 1; c + 1;")
+                .addChunk("a; b; c;")
+                .addChunk("b;")
+                .build()),
+        expected(
+            "_._ = function(a) { for (let b of a.split(',')) { delete _[b]; } };"
+                + " var a = _.a = 1; a + 1; var b = _.b = 1; b + 1; var c = _.c = 1; c + 1;",
+            "var {b, a, c} = _; _._('a,c'); a; b; c;",
+            "var {b} = _; _._('b'); b;"));
+  }
+
+  @Test
+  public void testDeleteGlobalsOnLastAccess_es5() {
+    optimizeLocalAccess = CompilerOptions.OptimizeLocalAccess.DELETE_GLOBALS_ON_LAST_ACCESS;
+    assumeCrossChunkNames = false;
+    setLanguage(CompilerOptions.LanguageMode.ECMASCRIPT5, CompilerOptions.LanguageMode.ECMASCRIPT5);
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var a = 1; a + 1; var b = 1; b + 1;")
+                .addChunk("a; b;")
+                .addChunk("b;")
+                .build()),
+        expected(
+            "var a = _.a = 1; a + 1; var b = _.b = 1; b + 1;",
+            "var b = _.b; var a = _.a; delete _.a; a; b;",
+            "var b = _.b; delete _.b; b;"));
+  }
+
+  @Test
+  public void testDeleteGlobalsOnLastAccess_siblingChunksNotDeleted() {
+    optimizeLocalAccess = CompilerOptions.OptimizeLocalAccess.DELETE_GLOBALS_ON_LAST_ACCESS;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forTree()
+                .addChunk("var a = 1; a + 1; var b = 1; b + 1;")
+                .addChunk("a; b;")
+                .addChunk("a;")
+                .build()),
+        expected(
+            "_._ = function(a) { for (let b of a.split(',')) { delete _[b]; } };"
+                + " var a = _.a = 1; a + 1; var b = _.b = 1; b + 1;",
+            "var {a, b} = _; _._('b'); a; b;",
+            "var {a} = _; a;"));
+  }
+
+  @Test
+  public void testDeleteGlobalsOnLastAccess_wrappedAndEarlyUsages() {
+    optimizeLocalAccess = CompilerOptions.OptimizeLocalAccess.DELETE_GLOBALS_ON_LAST_ACCESS;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk(
+                    "function f() { return a; } var b = 1; b + 1; var c = 1;"
+                        + " function g() { c = 2; } c + 1;")
+                .addChunk("var a = 1; a + 1; b = 2; b; c;")
+                .build()),
+        expected(
+            "_._ = function(a) { for (let b of a.split(',')) { delete _[b]; } };"
+                + " var b = _.b = {}; var a = _.a = {}; _.c = {}; var f = function() { return a._;"
+                + " }; b._ = 1; b._ + 1; var _c = _.c._ = 1; var g = function() { _c = _.c._ = 2;"
+                + " }; _c + 1;",
+            "var {c, b} = _; _._('b'); var _a = _.a._ = 1; _a + 1; b._ = 2; b._; c._;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappedMutablesImproved_reassignedOutsideStaticExecution() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS_IMPROVED;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var a = 1; function f() { a = 2; } a + 1;")
+                .addChunk("a;")
+                .build()),
+        expected(
+            "_.a = {}; var _a = _.a._ = 1; var f = function() { _a = _.a._ = 2; }; _a + 1;",
+            "var {a} = _; a._;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappedMutablesImproved_parentAccessesChildHolder() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS_IMPROVED;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("function f() { return a; }")
+                .addChunk("var a = 1; function g() { a = 2; } a + 1;")
+                .build()),
+        expected(
+            "var a = _.a = {}; var f = function() { return a._; };",
+            "var _a = _.a._ = 1; var g = function() { _a = _.a._ = 2; }; _a + 1;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappedMutablesImproved_independentSiblingChunks() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS_IMPROVED;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forTree()
+                .addChunk("var x = 1;")
+                .addChunk("var a = 1; a + 1;")
+                .addChunk("function f() { return a; }")
+                .build()),
+        expected(
+            "_.a = {}; var x = 1;",
+            "var _a = _.a._ = 1; _a + 1;",
+            "var {a} = _; var f = function() { return a._; };"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappedMutablesImproved_externs() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS_IMPROVED;
+    assumeCrossChunkNames = false;
+    test(
+        externs("var window; var customExtern;"),
+        srcs(
+            JSChunkGraphBuilder.forTree()
+                .addChunk("window.onload = function() { return customExtern + a; };")
+                .addChunk("var a = customExtern; window.foo = a;")
+                .addChunk("customExtern = window.foo + a;")
+                .build()),
+        expected(
+            "var a = _.a = {}; window.onload = function() { return customExtern + a._; };",
+            "var _a = _.a._ = customExtern; window.foo = _a;",
+            "var {a} = _; customExtern = window.foo + a._;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappedMutablesImproved_mixedWrappedAndUnwrappedLocalAliases() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS_IMPROVED;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var a = 1; a + 1; function f() { return b; }")
+                .addChunk("var b, c; b = 2; c = 3; a + b + c;")
+                .build()),
+        expected(
+            "var b = _.b = {}; var a = _.a = 1; a + 1; var f = function() { return b._; };",
+            "var {a} = _; var _b, c; _b = _.b._ = 2; c = 3; a + _b + c;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappedMutables_disambiguationWithDollarSuffixLocalVar() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS_IMPROVED;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var $ = 1; function f(_) { $ = 2; return _; } $;")
+                .addChunk("$;")
+                .build()),
+        expected(
+            "_.$ = {}; var __$ = _.$._ = 1;"
+                + " var f = function(_$) { __$ = _.$._ = 2; return _$; }; __$;",
+            "var {$} = _; $._;"));
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk(
+                    "var $ = 1, $$ = 2; function f(_, _$) { $ = 3; $$ = 4; return _ + _$; } $ +"
+                        + " $$;")
+                .addChunk("$; $$;")
+                .build()),
+        expected(
+            "_.$ = {}; _.$$ = {}; var __$ = _.$._ = 1, __$$ = _.$$._ = 2; var f = function(_$,"
+                + " _$$) { __$ = _.$._ = 3; __$$ = _.$$._ = 4; return _$ + _$$; }; __$ + __$$;",
+            "var {$, $$} = _; $._; $$._;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappedMutables_disambiguationWithExistingUnderscoreNames() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS_IMPROVED;
+    assumeCrossChunkNames = false;
+    test(
+        externs("var ___a;"),
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var a = 1; function f(_a) { a = 2; return _a; } a;")
+                .addChunk("function g(__a) { return a + __a; }")
+                .build()),
+        expected(
+            "_.a = {}; var ____a = _.a._ = 1;"
+                + " var f = function(_a) { ____a = _.a._ = 2; return _a; }; ____a;",
+            "var {a} = _; var g = function(__a) { return a._ + __a; };"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappedMutables_reassignedFunctionAndCompoundWriteInDefiningChunk() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS_IMPROVED;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk(
+                    "var a = 1, b = 0, c = 0;"
+                        + " function clinit() { clinit = function() {}; ++a; return b++; }"
+                        + " const inc = () => c += 1;"
+                        + " clinit(); a + b + c;")
+                .addChunk("clinit(); a; b; c;")
+                .build()),
+        expected(
+            "_.clinit = {}; _.a = {}; _.b = {}; _.c = {};"
+                + " var _a = _.a._ = 1, _b = _.b._ = 0, _c = _.c._ = 0;"
+                + " var _clinit = _.clinit._ = function() {"
+                + " _clinit = _.clinit._ = function() {}; _.a._ = ++_a; return ++_.b._, _b++; };"
+                + " const inc = () => _.c._ = _c += 1;"
+                + " _clinit(); _a + _b + _c;",
+            "var {clinit, a, b, c} = _; clinit._(); a._; b._; c._;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappedMutables_uninitializedVarAndDisambiguationInDefiningChunk() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS_IMPROVED;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var a; var _a = 10; function init() { a = _a; } a;")
+                .addChunk("a;")
+                .build()),
+        expected(
+            "_.a = {}; var __a; var _a = _._a = 10; var init = function() { __a = _.a._ = _a; };"
+                + " __a;",
+            "var {a} = _; a._;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappedMutables_writeOnlyInDefiningChunkNotUnwrapped() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS_IMPROVED;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var a = 1; function init() { a = 2; }")
+                .addChunk("a;")
+                .build()),
+        expected(
+            "var a = _.a = {}; a._ = 1; var init = function() { a._ = 2; };", "var {a} = _; a._;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappedMutables_nonMirrorableWriteInDefiningChunkNotUnwrapped() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS_IMPROVED;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk(
+                    "var a = 0, b = 0, c = 0; function setA() { return [a] = [1]; }"
+                        + " function loopB() { for (b of [1, 2]) {} }"
+                        + " function setC() { label: [c] = [1]; } a + b + c;")
+                .addChunk("a; b; c;")
+                .build()),
+        expected(
+            "var a = _.a = {}; var b = _.b = {}; var c = _.c = {}; a._ = 0; b._ = 0; c._ = 0;"
+                + " var setA = function() { return [a._] = [1]; };"
+                + " var loopB = function() { for (b._ of [1, 2]) {} };"
+                + " var setC = function() { label: [c._] = [1]; }; a._ + b._ + c._;",
+            "var {a, b, c} = _; a._; b._; c._;"));
+  }
+
+  @Test
+  public void testAllChunksWithWrappedMutables_mirrorableDestructuringWriteInDefiningChunk() {
+    optimizeLocalAccess =
+        CompilerOptions.OptimizeLocalAccess.ALL_CHUNKS_WITH_WRAPPED_REASSIGNABLE_SYMBOLS_IMPROVED;
+    assumeCrossChunkNames = false;
+    test(
+        srcs(
+            JSChunkGraphBuilder.forChain()
+                .addChunk("var [a] = [1]; function setA() { [a] = [2]; } a;")
+                .addChunk("a;")
+                .build()),
+        expected(
+            "_.a = {}; var _a; [_a] = [1]; _.a._ = _a;"
+                + " var setA = function() { [_a] = [2]; _.a._ = _a; }; _a;",
+            "var {a} = _; a._;"));
   }
 }

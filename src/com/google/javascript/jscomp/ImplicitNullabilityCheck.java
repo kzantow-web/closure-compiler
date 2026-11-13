@@ -132,30 +132,29 @@ public final class ImplicitNullabilityCheck extends AbstractPostOrderCallback
               Node parent = node.getParent();
               if (parent != null) {
                 switch (parent.getToken()) {
-                  case BANG:
-                  case QMARK:
-                  case THIS: // The names inside function(this:Foo) and
-                  case NEW: // function(new:Bar) are already non-null.
-                  case TYPEOF: // Names after 'typeof' don't have nullability.
+                  case BANG,
+                      QMARK,
+                      THIS, // The names inside function(this:Foo) and
+                      NEW, // function(new:Bar) are already non-null.
+                      TYPEOF -> { // Names after 'typeof' don't have nullability.
                     return;
-                  case PIPE:
-                    { // Inside a union
-                      Node gp = parent.getParent();
-                      if (gp != null && gp.getToken() == Token.QMARK) {
-                        return; // Inside an explicitly nullable union
-                      }
-                      for (Node child = parent.getFirstChild();
-                          child != null;
-                          child = child.getNext()) {
-                        if ((child.isStringLit() && child.getString().equals("null"))
-                            || child.getToken() == Token.QMARK) {
-                          return; // Inside a union that contains null or nullable type
-                        }
-                      }
-                      break;
+                  }
+                  case PIPE -> {
+                    // Inside a union
+                    Node gp = parent.getParent();
+                    if (gp != null && gp.getToken() == Token.QMARK) {
+                      return; // Inside an explicitly nullable union
                     }
-                  default:
-                    break;
+                    for (Node child = parent.getFirstChild();
+                        child != null;
+                        child = child.getNext()) {
+                      if ((child.isStringLit() && child.getString().equals("null"))
+                          || child.getToken() == Token.QMARK) {
+                        return; // Inside a union that contains null or nullable type
+                      }
+                    }
+                  }
+                  default -> {}
                 }
               }
               String typeName = node.getString();
@@ -163,12 +162,14 @@ public final class ImplicitNullabilityCheck extends AbstractPostOrderCallback
                 return;
               }
               JSTypeRegistry registry = t.getCompiler().getTypeRegistry();
-              if (registry.getType(t.getScope(), typeName) == null) {
+              JSType type = registry.getType(t.getScope(), typeName);
+              if (type == null) {
                 return;
               }
-              JSType type = registry.createTypeFromCommentNode(node);
+              boolean isNonNullableName =
+                  registry.isNonNullableName(t.getScope(), typeName) && !type.isNullable();
               Nullability nullability =
-                  type.isNullable() ? Nullability.NULLABLE : Nullability.NONNULL;
+                  isNonNullableName ? Nullability.NONNULL : Nullability.NULLABLE;
               builder.add(Result.create(node, nullability));
             }
           },

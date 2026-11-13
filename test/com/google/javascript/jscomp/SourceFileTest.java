@@ -17,23 +17,19 @@
 package com.google.javascript.jscomp;
 
 import static com.google.common.truth.Truth.assertThat;
-import static com.google.javascript.rhino.testing.Asserts.assertThrows;
+import static com.google.common.truth.extensions.proto.ProtoTruth.assertThat;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.junit.Assert.assertThrows;
 
 import com.google.common.collect.Iterables;
 import com.google.common.io.MoreFiles;
+import com.google.javascript.jscomp.serialization.SourceFileProto;
 import com.google.javascript.rhino.StaticSourceFile.SourceKind;
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
-import java.io.Serializable;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.attribute.FileTime;
 import java.time.Instant;
 import java.util.List;
@@ -79,28 +75,28 @@ public final class SourceFileTest {
     testLineOffsetHelper((code) -> SourceFile.fromCode("test.js", code));
   }
 
-  @Test
-  public void testLineOffset_serialization() {
-    testLineOffsetHelper(
-        (code) -> serializeRoundTrip(SourceFile.fromCode("test.js", code, SourceKind.NON_CODE)));
-  }
-
   private void testLineOffsetHelper(Function<String, SourceFile> factory) {
     SourceFile f0 = factory.apply("");
     assertThat(f0.getLineOfOffset(0)).isEqualTo(1);
     assertThat(f0.getColumnOfOffset(0)).isEqualTo(0);
     assertThat(f0.getLineOfOffset(10)).isEqualTo(1);
     assertThat(f0.getColumnOfOffset(10)).isEqualTo(10);
+    assertThat(f0.getNumBytes()).isEqualTo(0);
+    assertThat(f0.getNumLines()).isEqualTo(1);
 
     SourceFile f1 = factory.apply("'1';\n'2';\n'3'\n");
     assertThat(f1.getLineOffset(1)).isEqualTo(0);
     assertThat(f1.getLineOffset(2)).isEqualTo(5);
     assertThat(f1.getLineOffset(3)).isEqualTo(10);
+    assertThat(f1.getNumBytes()).isEqualTo(14);
+    assertThat(f1.getNumLines()).isEqualTo(4);
 
     SourceFile f2 = factory.apply("'100';\n'200;'\n'300'\n");
     assertThat(f2.getLineOffset(1)).isEqualTo(0);
     assertThat(f2.getLineOffset(2)).isEqualTo(7);
     assertThat(f2.getLineOffset(3)).isEqualTo(14);
+    assertThat(f2.getNumBytes()).isEqualTo(20);
+    assertThat(f2.getNumLines()).isEqualTo(4);
 
     String longLine = stringOfLength(300);
     SourceFile f3 = factory.apply(longLine + "\n" + longLine + "\n" + longLine + "\n");
@@ -116,14 +112,87 @@ public final class SourceFileTest {
     assertThat(f3.getLineOfOffset(902)).isEqualTo(3);
     assertThat(f3.getLineOfOffset(903)).isEqualTo(4);
 
-    // TODO(nickreid): This seems like a bug.
-    assertThat(f3.getLineOfOffset(-1)).isEqualTo(0);
-    assertThrows(Exception.class, () -> f3.getColumnOfOffset(-1));
+    assertThat(f3.getNumBytes()).isEqualTo(903);
+    assertThat(f3.getNumLines()).isEqualTo(4);
+
+    assertThrows(IllegalArgumentException.class, () -> f3.getLineOfOffset(-1));
+    assertThrows(IllegalArgumentException.class, () -> f3.getColumnOfOffset(-1));
 
     SourceFile startsWithNewline = factory.apply("\n'a'\n'b'");
     assertThat(startsWithNewline.getLineOffset(1)).isEqualTo(0);
     assertThat(startsWithNewline.getLineOffset(2)).isEqualTo(1);
     assertThat(startsWithNewline.getLineOffset(3)).isEqualTo(5);
+    assertThat(startsWithNewline.getNumBytes()).isEqualTo(8);
+    assertThat(startsWithNewline.getNumLines()).isEqualTo(3);
+
+    SourceFile fCr = factory.apply("'1';\r'2';\r'3'\r");
+    assertThat(fCr.getLineOffset(1)).isEqualTo(0);
+    assertThat(fCr.getLineOffset(2)).isEqualTo(5);
+    assertThat(fCr.getLineOffset(3)).isEqualTo(10);
+    assertThat(fCr.getNumBytes()).isEqualTo(14);
+    assertThat(fCr.getNumLines()).isEqualTo(4);
+    assertThat(fCr.getLine(1)).isEqualTo("'1';");
+    assertThat(fCr.getLine(2)).isEqualTo("'2';");
+    assertThat(fCr.getLine(3)).isEqualTo("'3'");
+
+    SourceFile fLs = factory.apply("'1';\u2028'2';\u2028'3'\u2028");
+    assertThat(fLs.getLineOffset(1)).isEqualTo(0);
+    assertThat(fLs.getLineOffset(2)).isEqualTo(5);
+    assertThat(fLs.getLineOffset(3)).isEqualTo(10);
+    assertThat(fLs.getNumBytes()).isEqualTo(14);
+    assertThat(fLs.getNumLines()).isEqualTo(4);
+    assertThat(fLs.getLine(1)).isEqualTo("'1';");
+    assertThat(fLs.getLine(2)).isEqualTo("'2';");
+    assertThat(fLs.getLine(3)).isEqualTo("'3'");
+
+    SourceFile fPs = factory.apply("'1';\u2029'2';\u2029'3'\u2029");
+    assertThat(fPs.getLineOffset(1)).isEqualTo(0);
+    assertThat(fPs.getLineOffset(2)).isEqualTo(5);
+    assertThat(fPs.getLineOffset(3)).isEqualTo(10);
+    assertThat(fPs.getNumBytes()).isEqualTo(14);
+    assertThat(fPs.getNumLines()).isEqualTo(4);
+    assertThat(fPs.getLine(1)).isEqualTo("'1';");
+    assertThat(fPs.getLine(2)).isEqualTo("'2';");
+    assertThat(fPs.getLine(3)).isEqualTo("'3'");
+
+    SourceFile fCrLf = factory.apply("'1';\r\n'2';\r\n'3'\r\n");
+    assertThat(fCrLf.getLineOffset(1)).isEqualTo(0);
+    assertThat(fCrLf.getLineOffset(2)).isEqualTo(6);
+    assertThat(fCrLf.getLineOffset(3)).isEqualTo(12);
+    assertThat(fCrLf.getNumBytes()).isEqualTo(17);
+    assertThat(fCrLf.getNumLines()).isEqualTo(4);
+    assertThat(fCrLf.getLine(1)).isEqualTo("'1';");
+    assertThat(fCrLf.getLine(2)).isEqualTo("'2';");
+    assertThat(fCrLf.getLine(3)).isEqualTo("'3'");
+
+    SourceFile fMixed = factory.apply("'1';\r\n'2';\r'3'\u2028'4'\u2029'5'\n");
+    assertThat(fMixed.getLineOffset(1)).isEqualTo(0);
+    assertThat(fMixed.getLineOffset(2)).isEqualTo(6);
+    assertThat(fMixed.getLineOffset(3)).isEqualTo(11);
+    assertThat(fMixed.getLineOffset(4)).isEqualTo(15);
+    assertThat(fMixed.getLineOffset(5)).isEqualTo(19);
+    assertThat(fMixed.getNumLines()).isEqualTo(6);
+    assertThat(fMixed.getLine(1)).isEqualTo("'1';");
+    assertThat(fMixed.getLine(2)).isEqualTo("'2';");
+    assertThat(fMixed.getLine(3)).isEqualTo("'3'");
+    assertThat(fMixed.getLine(4)).isEqualTo("'4'");
+    assertThat(fMixed.getLine(5)).isEqualTo("'5'");
+    assertThat(fMixed.getLine(6)).isNull();
+
+    assertThat(fMixed.getLineOfOffset(0)).isEqualTo(1);
+    assertThat(fMixed.getColumnOfOffset(0)).isEqualTo(0);
+    assertThat(fMixed.getLineOfOffset(5)).isEqualTo(1);
+    assertThat(fMixed.getColumnOfOffset(5)).isEqualTo(5);
+    assertThat(fMixed.getLineOfOffset(6)).isEqualTo(2);
+    assertThat(fMixed.getColumnOfOffset(6)).isEqualTo(0);
+    assertThat(fMixed.getLineOfOffset(11)).isEqualTo(3);
+    assertThat(fMixed.getColumnOfOffset(11)).isEqualTo(0);
+    assertThat(fMixed.getLineOfOffset(15)).isEqualTo(4);
+    assertThat(fMixed.getColumnOfOffset(15)).isEqualTo(0);
+    assertThat(fMixed.getLineOfOffset(19)).isEqualTo(5);
+    assertThat(fMixed.getColumnOfOffset(19)).isEqualTo(0);
+    assertThat(fMixed.getLineOfOffset(23)).isEqualTo(6);
+    assertThat(fMixed.getColumnOfOffset(23)).isEqualTo(0);
   }
 
   @Test
@@ -206,7 +275,7 @@ public final class SourceFileTest {
     assertThat(sourceFileFromFileStringCharset.getCode()).isEqualTo(expectedContent);
 
     // Test SourceFile#fromPath(Path, Charset)
-    Path zipEntryPath = Paths.get(jsZipPath + "!/foo.js");
+    Path zipEntryPath = Path.of(jsZipPath + "!/foo.js");
     SourceFile sourceFileFromPathCharset = SourceFile.fromPath(zipEntryPath, UTF_8);
     assertThat(sourceFileFromPathCharset.getCode()).isEqualTo(expectedContent);
   }
@@ -241,6 +310,15 @@ public final class SourceFileTest {
     SourceFile sourceFile = Iterables.getOnlyElement(sourceFiles);
     assertThat(sourceFile.getName()).isEqualTo(jsZipPath + "!/foo.js");
     assertThat(sourceFile.getCode()).isEqualTo(expectedContent);
+  }
+
+  @Test
+  public void testStubSourceFile_created_crashesOnGetCode() {
+    String fileName = "file.js";
+    SourceFile stubSourceFile = SourceFile.stubSourceFile(fileName, SourceKind.WEAK);
+    assertThat(stubSourceFile.getName()).isEqualTo(fileName);
+    assertThat(stubSourceFile.getKind()).isEqualTo(SourceKind.WEAK);
+    assertThrows(UnsupportedOperationException.class, stubSourceFile::getCode);
   }
 
   private static void createZipWithContent(Path zipFile, String content) throws IOException {
@@ -307,39 +385,6 @@ public final class SourceFileTest {
   }
 
   @Test
-  public void testCanOnlySerializeNonCode() throws IOException, ClassNotFoundException {
-    SourceFile strong = SourceFile.fromCode("file.js", "var i = 0;", SourceKind.STRONG);
-    SourceFile weak = SourceFile.fromCode("file.js", "var i = 0;", SourceKind.WEAK);
-    SourceFile extern = SourceFile.fromCode("file.js", "var i;", SourceKind.EXTERN);
-    SourceFile nonCode = SourceFile.fromCode("file.js", "var i = 0;", SourceKind.NON_CODE);
-
-    ByteArrayOutputStream baos = new ByteArrayOutputStream();
-    ObjectOutputStream oos = new ObjectOutputStream(baos);
-
-    // Files representing JS sources must be serialized via TypedAstSerializer.
-    assertThrows(Exception.class, () -> oos.writeObject(strong));
-    assertThrows(Exception.class, () -> oos.writeObject(weak));
-    assertThrows(Exception.class, () -> oos.writeObject(extern));
-
-    oos.writeObject(nonCode);
-    oos.close();
-  }
-
-  @Test
-  public void testFromCodeSerialization() throws IOException, ClassNotFoundException {
-    SourceFile sourceFile = SourceFile.fromCode("file.js", "var i = 0;", SourceKind.NON_CODE);
-    ByteArrayOutputStream baos = new ByteArrayOutputStream();
-    ObjectOutputStream oos = new ObjectOutputStream(baos);
-    oos.writeObject(sourceFile);
-    oos.close();
-
-    ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(baos.toByteArray()));
-    SourceFile afterSerialization = (SourceFile) ois.readObject();
-    ois.close();
-    assertThat(afterSerialization.getCode()).isEqualTo(sourceFile.getCode());
-  }
-
-  @Test
   public void testGetLines() {
     SourceFile sourceFile =
         SourceFile.fromCode("file.js", "const a = 0;\nconst b = 1;\nconst c = 2;");
@@ -396,20 +441,336 @@ public final class SourceFileTest {
     assertThat(sourceFile.getLines(4, 1)).isNull();
   }
 
-  @SuppressWarnings("unchecked")
-  private static <T extends Serializable> T serializeRoundTrip(T t) {
-    try {
-      ByteArrayOutputStream outBytes = new ByteArrayOutputStream();
-      ObjectOutputStream outObjects = new ObjectOutputStream(outBytes);
-      outObjects.writeObject(t);
-      outObjects.close();
+  @Test
+  public void testFromProtoPreloadedContents() throws IOException {
+    SourceFile sourceFile =
+        SourceFile.fromProto(
+            SourceFileProto.newBuilder()
+                .setFilename("file.js")
+                .setSourceKind(SourceFileProto.SourceKind.CODE)
+                .setPreloadedContents("42")
+                .build());
 
-      ByteArrayInputStream inBytes = new ByteArrayInputStream(outBytes.toByteArray());
-      ObjectInputStream inObjects = new ObjectInputStream(inBytes);
-      return (T) inObjects.readObject();
-    } catch (Exception e) {
-      throw new AssertionError(e);
-    }
+    assertThat(sourceFile.getName()).isEqualTo("file.js");
+    assertThat(sourceFile.getCode()).isEqualTo("42");
+    assertThat(sourceFile.getNumLines()).isEqualTo(1);
+    assertThat(sourceFile.getNumBytes()).isEqualTo(2);
+  }
+
+  @Test
+  public void testFromProto_getNumLinesAvoidsFileRead() throws IOException {
+    // Create a SourceFile pointing to a path that doesn't actually exist.
+    SourceFile sourceFile =
+        SourceFile.fromProto(
+            SourceFileProto.newBuilder()
+                .setFilename("file.js")
+                .setSourceKind(SourceFileProto.SourceKind.CODE)
+                .setFileOnDisk(SourceFileProto.FileOnDisk.getDefaultInstance())
+                .setNumLinesPlusOne(2)
+                .setNumBytesPlusOne(3)
+                .build());
+
+    // Reading the number of lines and bytes should succeed, since that information was
+    // included in the proto and shouldn't need to be calculated by reading the file from disk.
+    assertThat(sourceFile.getNumLines()).isEqualTo(1);
+    assertThat(sourceFile.getNumBytes()).isEqualTo(2);
+
+    // Verify reading the file from disk does fail.
+    assertThrows(IOException.class, sourceFile::getCode);
+  }
+
+  @Test
+  public void testFromProtoPreloadedContents_withNumLinesAndBytes() {
+    SourceFile sourceFile =
+        SourceFile.fromProto(
+            SourceFileProto.newBuilder()
+                .setFilename("file.js")
+                .setSourceKind(SourceFileProto.SourceKind.CODE)
+                .setPreloadedContents("42")
+                .setNumLinesPlusOne(2)
+                .setNumBytesPlusOne(3)
+                .build());
+
+    assertThat(sourceFile.getNumLines()).isEqualTo(1);
+    assertThat(sourceFile.getNumBytes()).isEqualTo(2);
+  }
+
+  @Test
+  public void testGetProto_withoutGetCodeCalls() throws IOException {
+    SourceFile sourceFile = SourceFile.fromCode("file.js", "42");
+
+    SourceFileProto sourceFileProto = sourceFile.getProto();
+
+    assertThat(sourceFileProto)
+        .isEqualTo(
+            SourceFileProto.newBuilder()
+                .setFilename("file.js")
+                .setPreloadedContents("42")
+                .setSourceKind(SourceFileProto.SourceKind.CODE)
+                .build());
+  }
+
+  @Test
+  public void testGetProto_withGetCodeCalls() throws IOException {
+    SourceFile sourceFile = SourceFile.fromCode("file.js", "42");
+    var unused = sourceFile.getCode();
+
+    SourceFileProto sourceFileProto = sourceFile.getProto();
+
+    assertThat(sourceFileProto)
+        .isEqualTo(
+            SourceFileProto.newBuilder()
+                .setFilename("file.js")
+                .setPreloadedContents("42")
+                // note that numLines and numBytes are only present after a 'getCode' call.
+                .setNumLinesPlusOne(2)
+                .setNumBytesPlusOne(3)
+                .setSourceKind(SourceFileProto.SourceKind.CODE)
+                .build());
+  }
+
+  @Test
+  public void testGetProto_recordsClosureUnawareCodeMark() throws IOException {
+    SourceFile sourceFile = SourceFile.fromCode("file.js", "42");
+    sourceFile.markAsClosureUnawareCode();
+
+    SourceFileProto sourceFileProto = sourceFile.getProto();
+
+    assertThat(sourceFileProto)
+        .isEqualTo(
+            SourceFileProto.newBuilder()
+                .setFilename("file.js")
+                .setPreloadedContents("42")
+                .setIsClosureUnawareCode(true)
+                .setSourceKind(SourceFileProto.SourceKind.CODE)
+                .build());
+  }
+
+  @Test
+  public void testGetProto_withGetCodeCalls_andClearCachedSource() throws IOException {
+    SourceFile sourceFile = SourceFile.fromCode("file.js", "42");
+    var unused = sourceFile.getCode();
+    sourceFile.clearCachedSource();
+
+    SourceFileProto sourceFileProto = sourceFile.getProto();
+
+    assertThat(sourceFileProto)
+        .isEqualTo(
+            SourceFileProto.newBuilder()
+                .setFilename("file.js")
+                .setPreloadedContents("42")
+                // note that numLines and numBytes are still present, i.e. were not cleared by
+                // .clearCachedSource()
+                .setNumLinesPlusOne(2)
+                .setNumBytesPlusOne(3)
+                .setSourceKind(SourceFileProto.SourceKind.CODE)
+                .build());
+  }
+
+  @Test
+  public void testRestoreCachedState_correctNumLines() {
+    SourceFile sourceFile = SourceFile.fromCode("file.js", "42");
+
+    // In the proto, numLines and numBytes are increased by 1 from the actual value.
+    sourceFile.restoreCachedStateFrom(
+        SourceFileProto.newBuilder()
+            .setFilename("file.js")
+            .setNumLinesPlusOne(2)
+            .setNumBytesPlusOne(3)
+            .build());
+
+    assertThat(sourceFile.getNumLines()).isEqualTo(1);
+    assertThat(sourceFile.getNumBytes()).isEqualTo(2);
+  }
+
+  @Test
+  public void testRestoreCachedState_setsClosureUnawareCodeTrue() {
+    SourceFile sourceFile = SourceFile.fromCode("file.js", "42");
+    assertThat(sourceFile.isClosureUnawareCode()).isFalse();
+
+    sourceFile.restoreCachedStateFrom(
+        SourceFileProto.newBuilder().setFilename("file.js").setIsClosureUnawareCode(true).build());
+
+    assertThat(sourceFile.isClosureUnawareCode()).isTrue();
+  }
+
+  @Test
+  public void testRestoreCachedState_setsClosureUnawareCodeFalse_protoIsSourceOfTruth() {
+    SourceFile sourceFile = SourceFile.fromCode("file.js", "42");
+    sourceFile.markAsClosureUnawareCode();
+    assertThat(sourceFile.isClosureUnawareCode()).isTrue();
+
+    sourceFile.restoreCachedStateFrom(
+        SourceFileProto.newBuilder().setFilename("file.js").setIsClosureUnawareCode(false).build());
+
+    assertThat(sourceFile.isClosureUnawareCode()).isFalse();
+  }
+
+  @Test
+  public void testRestoreCachedState_forcesRecalculationIfValuesUnsetInProto() {
+    SourceFile sourceFile = SourceFile.fromCode("file.js", "42");
+
+    sourceFile.restoreCachedStateFrom(
+        SourceFileProto.newBuilder()
+            .setFilename("file.js")
+            // avoid setting numLines and numBytes, so that they default to '0'
+            .build());
+
+    assertThat(sourceFile.getNumLines()).isEqualTo(1);
+    assertThat(sourceFile.getNumBytes()).isEqualTo(2);
+  }
+
+  @Test
+  public void testRestoreCachedState_treatsProtoNumLinesAsCanonical() {
+    SourceFile sourceFile = SourceFile.fromCode("file.js", "42");
+
+    assertThat(sourceFile.getNumLines()).isEqualTo(1);
+
+    sourceFile.restoreCachedStateFrom(
+        SourceFileProto.newBuilder()
+            .setFilename("file.js")
+            .setNumLinesPlusOne(1000)
+            .build());
+
+    assertThat(sourceFile.getNumLines()).isEqualTo(999);
+    assertThat(sourceFile.getNumBytes()).isEqualTo(2);
+  }
+
+  @Test
+  public void testRestoreCachedState_throwsOnNegativeCounts() {
+    SourceFile sourceFile = SourceFile.fromCode("file.js", "42");
+    SourceFileProto linesProto =
+        SourceFileProto.newBuilder()
+            .setFilename("file.js")
+            .setNumLinesPlusOne(-1)
+            .build();
+    assertThrows(
+        IllegalStateException.class,
+        () -> sourceFile.restoreCachedStateFrom(linesProto));
+
+    SourceFileProto bytesProto =
+        SourceFileProto.newBuilder()
+            .setFilename("file.js")
+            .setNumBytesPlusOne(-1)
+            .build();
+    assertThrows(
+        IllegalStateException.class,
+        () -> sourceFile.restoreCachedStateFrom(bytesProto));
+  }
+
+  @Test
+  public void testFromProto_throwsOnNegativeCounts() {
+    SourceFileProto linesProto =
+        SourceFileProto.newBuilder()
+            .setFilename("file.js")
+            .setSourceKind(SourceFileProto.SourceKind.CODE)
+            .setPreloadedContents("42")
+            .setNumLinesPlusOne(-1)
+            .build();
+    assertThrows(
+        IllegalStateException.class,
+        () -> SourceFile.fromProto(linesProto));
+
+    SourceFileProto bytesProto =
+        SourceFileProto.newBuilder()
+            .setFilename("file.js")
+            .setSourceKind(SourceFileProto.SourceKind.CODE)
+            .setPreloadedContents("42")
+            .setNumBytesPlusOne(-1)
+            .build();
+    assertThrows(
+        IllegalStateException.class,
+        () -> SourceFile.fromProto(bytesProto));
+  }
+
+  @Test
+  public void testStripConfigSegment_barePrefixes() {
+    assertThat(SourceFile.stripConfigSegment("bin/foo/bar.js")).isEqualTo("foo/bar.js");
+    assertThat(SourceFile.stripConfigSegment("genfiles/foo/bar.js")).isEqualTo("foo/bar.js");
+    assertThat(SourceFile.stripConfigSegment("testlogs/foo/bar.js")).isEqualTo("foo/bar.js");
+  }
+
+  @Test
+  public void testStripConfigSegment_blazeOutPrefixes() {
+    assertThat(SourceFile.stripConfigSegment("blaze-out/k8-opt/bin/foo/bar.js"))
+        .isEqualTo("foo/bar.js");
+    assertThat(SourceFile.stripConfigSegment("blaze-out/k8-fastbuild/genfiles/foo/bar.js"))
+        .isEqualTo("foo/bar.js");
+    assertThat(SourceFile.stripConfigSegment("blaze-out/k8-dbg/testlogs/foo/bar.js"))
+        .isEqualTo("foo/bar.js");
+    assertThat(SourceFile.stripConfigSegment("/execroot/workspace/blaze-out/k8-opt/bin/foo/bar.js"))
+        .isEqualTo("foo/bar.js");
+  }
+
+  @Test
+  public void testStripConfigSegment_bazelOutPrefixes() {
+    assertThat(SourceFile.stripConfigSegment("bazel-out/k8-opt/bin/foo/bar.js"))
+        .isEqualTo("foo/bar.js");
+    assertThat(
+            SourceFile.stripConfigSegment("bazel-out/darwin_arm64-fastbuild/genfiles/foo/bar.js"))
+        .isEqualTo("foo/bar.js");
+    assertThat(SourceFile.stripConfigSegment("bazel-out/host/testlogs/foo/bar.js"))
+        .isEqualTo("foo/bar.js");
+    assertThat(SourceFile.stripConfigSegment("workspace/bazel-out/k8-opt/bin/foo/bar.js"))
+        .isEqualTo("foo/bar.js");
+  }
+
+  @Test
+  public void testStripConfigSegment_unalteredPaths() {
+    assertThat(SourceFile.stripConfigSegment("foo/bar.js")).isEqualTo("foo/bar.js");
+    assertThat(SourceFile.stripConfigSegment("my_bin/foo.js")).isEqualTo("my_bin/foo.js");
+    assertThat(SourceFile.stripConfigSegment("foo/bin/bar.js")).isEqualTo("foo/bin/bar.js");
+    assertThat(SourceFile.stripConfigSegment("blaze-out/k8-opt")).isEqualTo("blaze-out/k8-opt");
+    assertThat(SourceFile.stripConfigSegment("blaze-out/")).isEqualTo("blaze-out/");
+    assertThat(SourceFile.stripConfigSegment("blaze-out/k8-opt/other/foo.js"))
+        .isEqualTo("blaze-out/k8-opt/other/foo.js");
+    assertThat(SourceFile.stripConfigSegment("bazel-out/")).isEqualTo("bazel-out/");
+    assertThat(SourceFile.stripConfigSegment("bazel-out/k8-opt/other/foo.js"))
+        .isEqualTo("bazel-out/k8-opt/other/foo.js");
+    assertThat(SourceFile.stripConfigSegment("")).isEmpty();
+  }
+
+  @Test
+  public void testCanonicalizePathForMatching() {
+    assertThat(SourceFile.canonicalizePathForMatching("blaze-out/k8-opt/bin/foo/bar.js"))
+        .isEqualTo("foo/bar.js");
+    assertThat(SourceFile.canonicalizePathForMatching("bazel-out/k8-opt/bin/foo/bar.js"))
+        .isEqualTo("foo/bar.js");
+    assertThat(SourceFile.canonicalizePathForMatching("bin/foo/bar.js")).isEqualTo("foo/bar.js");
+    assertThat(SourceFile.canonicalizePathForMatching("foo/bar.js")).isEqualTo("foo/bar.js");
+  }
+
+  @Test
+  public void testRestoreCachedState_canonicalizedPathMatching() {
+    SourceFile sourceFile = SourceFile.fromCode("blaze-out/k8-opt/bin/foo/bar.js", "42");
+
+    // Restoring state succeeds when paths match after canonicalization.
+    sourceFile.restoreCachedStateFrom(
+        SourceFileProto.newBuilder()
+            .setFilename("foo/bar.js")
+            .setNumLinesPlusOne(10)
+            .setNumBytesPlusOne(20)
+            .build());
+
+    assertThat(sourceFile.getNumLines()).isEqualTo(9);
+    assertThat(sourceFile.getNumBytes()).isEqualTo(19);
+
+    // Also verify restoring with bare bin/ prefix in proto vs blaze-out in SourceFile.
+    sourceFile.restoreCachedStateFrom(
+        SourceFileProto.newBuilder()
+            .setFilename("bin/foo/bar.js")
+            .setNumLinesPlusOne(15)
+            .setNumBytesPlusOne(25)
+            .build());
+
+    assertThat(sourceFile.getNumLines()).isEqualTo(14);
+    assertThat(sourceFile.getNumBytes()).isEqualTo(24);
+
+    // Mismatched path should throw IllegalStateException.
+    SourceFileProto protoSourceFile =
+        SourceFileProto.newBuilder().setFilename("bazel-out/k8-opt/bin/other/bar.js").build();
+    assertThrows(
+        IllegalStateException.class, () -> sourceFile.restoreCachedStateFrom(protoSourceFile));
   }
 
   private static String stringOfLength(int length) {

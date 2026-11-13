@@ -20,23 +20,21 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
-/**
- * Tests for {@link ClosureCodeRemoval}
- *
- */
+/** Tests for {@link ClosureCodeRemoval} */
 @RunWith(JUnit4.class)
 public final class ClosureCodeRemovalTest extends CompilerTestCase {
 
   private static final String EXTERNS = "var window;";
 
   private static final String ASSERTIONS =
-      lines(
-          "const asserts = {};",
-          "/** @closurePrimitive {asserts.truthy} */",
-          "asserts.assert = function(...args) {};",
-          "",
-          "/** @closurePrimitive {asserts.fail} */",
-          "asserts.fail = function(...args) {};");
+      """
+      const asserts = {};
+      /** @closurePrimitive {asserts.truthy} */
+      asserts.assert = function(...args) {};
+
+      /** @closurePrimitive {asserts.fail} */
+      asserts.fail = function(...args) {};
+      """;
 
   public ClosureCodeRemovalTest() {
     super(EXTERNS);
@@ -44,15 +42,19 @@ public final class ClosureCodeRemovalTest extends CompilerTestCase {
 
   @Test
   public void testRemoveAbstract() {
-    test("function Foo() {}; Foo.prototype.doSomething = goog.abstractMethod;",
+    test(
+        "function Foo() {}; Foo.prototype.doSomething = goog.abstractMethod;",
         "function Foo() {};");
   }
 
   @Test
   public void testRemoveMultiplySetAbstract() {
-    test("function Foo() {}; Foo.prototype.doSomething = " +
-        "Foo.prototype.doSomethingElse = Foo.prototype.oneMore = " +
-        "goog.abstractMethod;",
+    test(
+        """
+        function Foo() {}; Foo.prototype.doSomething =
+        Foo.prototype.doSomethingElse = Foo.prototype.oneMore =
+        goog.abstractMethod;
+        """,
         "function Foo() {};");
   }
 
@@ -63,11 +65,16 @@ public final class ClosureCodeRemovalTest extends CompilerTestCase {
 
   @Test
   public void testDoNotRemoveOverride() {
-    test("function Foo() {}; Foo.prototype.doSomething = goog.abstractMethod;" +
-         "function Bar() {}; goog.inherits(Bar, Foo);" +
-         "Bar.prototype.doSomething = function() {}",
-         "function Foo() {}; function Bar() {}; goog.inherits(Bar, Foo);" +
-         "Bar.prototype.doSomething = function() {}");
+    test(
+        """
+        function Foo() {}; Foo.prototype.doSomething = goog.abstractMethod;
+        function Bar() {}; goog.inherits(Bar, Foo);
+        Bar.prototype.doSomething = function() {}
+        """,
+        """
+        function Foo() {}; function Bar() {}; goog.inherits(Bar, Foo);
+        Bar.prototype.doSomething = function() {}
+        """);
   }
 
   @Test
@@ -77,53 +84,62 @@ public final class ClosureCodeRemovalTest extends CompilerTestCase {
 
   @Test
   public void testStopRemovalAtNonQualifiedName() {
-    test("function Foo() {}; function Bar() {};" +
-         "Foo.prototype.x = document.getElementById('x').y = Bar.prototype.x" +
-         " = goog.abstractMethod;",
-         "function Foo() {}; function Bar() {};" +
-         "Foo.prototype.x = document.getElementById('x').y = " +
-         "goog.abstractMethod;");
+    test(
+        """
+        function Foo() {}; function Bar() {};
+        Foo.prototype.x = document.getElementById('x').y = Bar.prototype.x
+         = goog.abstractMethod;
+        """,
+        """
+        function Foo() {}; function Bar() {};
+        Foo.prototype.x = document.getElementById('x').y =
+        goog.abstractMethod;
+        """);
   }
 
   @Test
   public void testRemoveAbstractAssignmentOfEmptyFunction() {
     test(
-        lines(
-            "function Foo() {};",
-            "/** @abstract */",
-            "Foo.prototype.doSomething = function() {};"),
+        """
+        function Foo() {};
+        /** @abstract */
+        Foo.prototype.doSomething = function() {};
+        """,
         "function Foo() {};");
   }
 
   @Test
   public void testDoNotRemoveAbstractAssignmentOfFunctionCall() {
     testSame(
-        lines(
-            "function Foo() {};",
-            "/** @abstract */",
-            "Foo.prototype.doSomething = (function() { /* return something fancy */ })();"));
+        """
+        function Foo() {};
+        /** @abstract */
+        Foo.prototype.doSomething = (function() { /* return something fancy */ })();
+        """);
   }
 
   @Test
   public void testRemoveAbstract_annotation_es6() {
     test(
-        lines(
-            "/** @abstract */",
-            "class Foo {",
-            "  /** @abstract */",
-            "  doSomething() {}",
-            "}"),
+        """
+        /** @abstract */
+        class Foo {
+          /** @abstract */
+          doSomething() {}
+        }
+        """,
         "/** @abstract */ class Foo {}");
   }
 
   @Test
   public void testDoNotRemoveNormal_es6() {
     testSame(
-        lines(
-            "/** @abstract */",
-            "class Foo {",
-            "  doSomething() {}",
-            "}"));
+        """
+        /** @abstract */
+        class Foo {
+          doSomething() {}
+        }
+        """);
   }
 
   @Test
@@ -197,11 +213,12 @@ public final class ClosureCodeRemovalTest extends CompilerTestCase {
   @Test
   public void testDoNotRemoveAbstractClass() {
     testSame(
-        lines(
-            "var ns = {};",
-            "/** @abstract */",
-            "ns.A = class {};",
-            "ns.B = class extends ns.A {}"));
+        """
+        var ns = {};
+        /** @abstract */
+        ns.A = class {};
+        ns.B = class extends ns.A {}
+        """);
   }
 
   @Override

@@ -21,11 +21,11 @@ import static com.google.common.base.Preconditions.checkState;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
 
-import com.google.common.annotations.GwtIncompatible;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.LinkedListMultimap;
 import com.google.common.collect.ListMultimap;
@@ -33,24 +33,23 @@ import com.google.common.collect.Ordering;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
+import com.google.javascript.jscomp.base.LinkedIdentityHashMap;
 import com.google.javascript.jscomp.deps.SortedDependencies;
 import com.google.javascript.jscomp.deps.SortedDependencies.MissingProvideException;
 import com.google.javascript.jscomp.graph.LinkedDirectedGraph;
-import com.google.javascript.jscomp.parsing.parser.util.format.SimpleFormat;
 import com.google.javascript.rhino.StaticSourceFile.SourceKind;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.BitSet;
 import java.util.Collection;
-import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * A {@link JSChunk} dependency graph that assigns a depth to each chunk and can answer
@@ -98,9 +97,10 @@ public final class JSChunkGraph implements Serializable {
    *
    * <p>If the cache returns null, then the entry hasn't been filled in for that chunk.
    *
-   * <p>NOTE: JSChunk has identity semantics so this map implementation is safe
+   * <p>NOTE: JSChunk has identity semantics so this map implementation is safe.
    */
-  private final IdentityHashMap<JSChunk, Set<JSChunk>> dependencyMap = new IdentityHashMap<>();
+  private final transient LinkedIdentityHashMap<JSChunk, Set<JSChunk>> dependencyMap =
+      new LinkedIdentityHashMap<>();
 
   /** Creates a chunk graph from a list of chunks in dependency order. */
   public JSChunkGraph(JSChunk[] chunksInDepOrder) {
@@ -148,7 +148,7 @@ public final class JSChunkGraph implements Serializable {
         int depDepth = dep.getDepth();
         if (depDepth < 0) {
           throw new ChunkDependenceException(
-              SimpleFormat.format(
+              String.format(
                   "Chunks not in dependency order: %s preceded %s", chunk.getName(), dep.getName()),
               chunk,
               dep);
@@ -280,13 +280,17 @@ public final class JSChunkGraph implements Serializable {
     return Arrays.asList(chunks);
   }
 
+  /** Gets all chunks in dependency order. Note: Do not modify the returned array. */
+  JSChunk[] getIntegralChunkArrayForSerialization() {
+    return chunks;
+  }
+
   /**
    * Gets a single chunk by name.
    *
    * @return The chunk, or null if no such chunk exists.
    */
-  @Nullable
-  JSChunk getChunkByName(String name) {
+  @Nullable JSChunk getChunkByName(String name) {
     for (JSChunk m : chunks) {
       if (m.getName().equals(name)) {
         return m;
@@ -321,27 +325,26 @@ public final class JSChunkGraph implements Serializable {
    *
    * @return List of chunk JSONObjects.
    */
-  @GwtIncompatible("com.google.gson")
   JsonArray toJson() {
     JsonArray chunks = new JsonArray();
     for (JSChunk chunk : getAllChunks()) {
       JsonObject node = new JsonObject();
       node.add("name", new JsonPrimitive(chunk.getName()));
-        JsonArray deps = new JsonArray();
-        node.add("dependencies", deps);
+      JsonArray deps = new JsonArray();
+      node.add("dependencies", deps);
       for (JSChunk m : chunk.getDependencies()) {
-          deps.add(new JsonPrimitive(m.getName()));
-        }
-        JsonArray transitiveDeps = new JsonArray();
-        node.add("transitive-dependencies", transitiveDeps);
+        deps.add(new JsonPrimitive(m.getName()));
+      }
+      JsonArray transitiveDeps = new JsonArray();
+      node.add("transitive-dependencies", transitiveDeps);
       for (JSChunk m : getTransitiveDepsDeepestFirst(chunk)) {
-          transitiveDeps.add(new JsonPrimitive(m.getName()));
-        }
-        JsonArray inputs = new JsonArray();
-        node.add("inputs", inputs);
+        transitiveDeps.add(new JsonPrimitive(m.getName()));
+      }
+      JsonArray inputs = new JsonArray();
+      node.add("inputs", inputs);
       for (CompilerInput input : chunk.getInputs()) {
         inputs.add(new JsonPrimitive(input.getSourceFile().getName()));
-        }
+      }
       chunks.add(node);
     }
     return chunks;
@@ -416,7 +419,7 @@ public final class JSChunkGraph implements Serializable {
    * @return The deepest common dep of {@code m1} and {@code m2}, or null if they have no common
    *     dependencies
    */
-  JSChunk getDeepestCommonDependency(JSChunk m1, JSChunk m2) {
+  @Nullable JSChunk getDeepestCommonDependency(JSChunk m1, JSChunk m2) {
     int m1Depth = m1.getDepth();
     int m2Depth = m2.getDepth();
     // According our definition of depth, the result must have a strictly
@@ -509,12 +512,12 @@ public final class JSChunkGraph implements Serializable {
    *
    * @throws MissingProvideException if an entry point was not provided by any of the inputs.
    */
-  public ImmutableList<CompilerInput> manageDependencies(
+  public DependencyManagementResult manageDependencies(
       AbstractCompiler compiler, DependencyOptions dependencyOptions)
       throws MissingProvideException, MissingChunkException {
 
     // Make a copy since we're going to mutate the graph below.
-    List<CompilerInput> originalInputs = ImmutableList.copyOf(getAllInputs());
+    ImmutableList<CompilerInput> originalInputs = ImmutableList.copyOf(getAllInputs());
 
     SortedDependencies<CompilerInput> sorter = new SortedDependencies<>(originalInputs);
 
@@ -522,7 +525,7 @@ public final class JSChunkGraph implements Serializable {
         createEntryPointInputs(compiler, dependencyOptions, getAllInputs(), sorter);
 
     // Build a map of symbols to their source file(s). While having multiple source files is invalid
-    // we leave that up to typechecking so that we avoid arbitarily picking a file.
+    // we leave that up to typechecking so that we avoid arbitrarily picking a file.
     LinkedHashMap<String, Set<CompilerInput>> inputsByProvide = new LinkedHashMap<>();
     for (CompilerInput input : originalInputs) {
       for (String provide : input.getKnownProvides()) {
@@ -545,8 +548,17 @@ public final class JSChunkGraph implements Serializable {
       }
     }
 
+    // For goog.requireDynamic() imported files.
+    for (CompilerInput input : originalInputs) {
+      for (String require : input.getRequireDynamicImports()) {
+        if (inputsByProvide.containsKey(require)) {
+          entryPointInputs.addAll(inputsByProvide.get(require));
+        }
+      }
+    }
+
     // The order of inputs, sorted independently of chunks.
-    List<CompilerInput> absoluteOrder =
+    ImmutableList<CompilerInput> absoluteOrder =
         sorter.getStrongDependenciesOf(originalInputs, dependencyOptions.shouldSort());
 
     // Figure out which sources *must* be in each chunk.
@@ -603,10 +615,10 @@ public final class JSChunkGraph implements Serializable {
         }
         JSChunk oldChunk = input.getChunk();
         if (oldChunk == null) {
-          input.setModule(chunk);
+          input.setChunk(chunk);
         } else {
-          input.setModule(null);
-          input.setModule(getDeepestCommonDependencyInclusive(oldChunk, chunk));
+          input.setChunk(null);
+          input.setChunk(getDeepestCommonDependencyInclusive(oldChunk, chunk));
         }
       }
     }
@@ -619,13 +631,18 @@ public final class JSChunkGraph implements Serializable {
     checkNotNull(weakChunk);
     // Mark all sources that are detected as weak.
     if (dependencyOptions.shouldPrune()) {
-      List<CompilerInput> weakInputs = sorter.getSortedWeakDependenciesOf(orderedInputs);
+      ImmutableList<CompilerInput> weakInputs = sorter.getSortedWeakDependenciesOf(orderedInputs);
       for (CompilerInput i : weakInputs) {
+        if (i.isExtern()) {
+          // Extern inputs will be hoisted into externsRoot after manageDependencies; do not
+          // overwrite SourceKind.EXTERN or place them in the weak chunk.
+          continue;
+        }
         // Add weak inputs to the weak chunk in dependency order. moveMarkedWeakSources will move
         // in command line flag order.
         checkState(i.getChunk() == null);
         i.getSourceFile().setKind(SourceKind.WEAK);
-        i.setModule(weakChunk);
+        i.setChunk(weakChunk);
         weakChunk.add(i);
       }
     } else {
@@ -642,14 +659,15 @@ public final class JSChunkGraph implements Serializable {
       }
     }
 
-    // Now, generate the sorted result.
-    ImmutableList.Builder<CompilerInput> result = ImmutableList.builder();
-    for (JSChunk chunk : getAllChunks()) {
-      result.addAll(chunk.getInputs());
-    }
-
-    return result.build();
+    return new DependencyManagementResult(
+        ImmutableList.copyOf(orderedInputs), sorter, ImmutableSet.copyOf(entryPointInputs));
   }
+
+  /** Result of {@link JSChunkGraph#manageDependencies}. */
+  public record DependencyManagementResult(
+      ImmutableList<CompilerInput> orderedInputs,
+      SortedDependencies<CompilerInput> sorter,
+      ImmutableSet<CompilerInput> entryPointInputs) {}
 
   /**
    * Given an input and set of unprocessed inputs, return the input and it's strong dependencies by
@@ -707,27 +725,27 @@ public final class JSChunkGraph implements Serializable {
         }
       }
 
-      for (ModuleIdentifier entryPoint : dependencyOptions.getEntryPoints()) {
+      for (ModuleIdentifier entryPoint : dependencyOptions.entryPoints()) {
         CompilerInput entryPointInput = null;
         try {
-          if (entryPoint.getClosureNamespace().equals(entryPoint.getModuleName())) {
-            entryPointInput = sorter.maybeGetInputProviding(entryPoint.getClosureNamespace());
+          if (entryPoint.closureNamespace().equals(entryPoint.moduleName())) {
+            entryPointInput = sorter.maybeGetInputProviding(entryPoint.closureNamespace());
             // Check to see if we can find the entry point as an ES6 and CommonJS module
             // ES6 and CommonJS entry points may not provide any symbols
             if (entryPointInput == null) {
-              entryPointInput = sorter.getInputProviding(entryPoint.getName());
+              entryPointInput = sorter.getInputProviding(entryPoint.name());
             }
           } else {
-            JSChunk chunk = chunksByName.get(entryPoint.getModuleName());
+            JSChunk chunk = chunksByName.get(entryPoint.moduleName());
             if (chunk == null) {
-              throw new MissingChunkException(entryPoint.getModuleName());
+              throw new MissingChunkException(entryPoint.moduleName());
             } else {
-              entryPointInput = sorter.getInputProviding(entryPoint.getClosureNamespace());
-              entryPointInput.overrideModule(chunk);
+              entryPointInput = sorter.getInputProviding(entryPoint.closureNamespace());
+              entryPointInput.overrideChunk(chunk);
             }
           }
         } catch (MissingProvideException e) {
-          throw new MissingProvideException(entryPoint.getName(), e);
+          throw new MissingProvideException(entryPoint.name(), e);
         }
 
         if (entryPointInput.getSourceFile().isWeak()) {
@@ -810,5 +828,4 @@ public final class JSChunkGraph implements Serializable {
       super(chunkName);
     }
   }
-
 }

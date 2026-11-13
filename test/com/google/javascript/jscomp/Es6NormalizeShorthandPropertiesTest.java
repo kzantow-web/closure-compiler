@@ -17,8 +17,8 @@ package com.google.javascript.jscomp;
 
 import static com.google.common.truth.Truth.assertWithMessage;
 
+import com.google.common.collect.ImmutableList;
 import com.google.javascript.jscomp.CompilerOptions.LanguageMode;
-import com.google.javascript.jscomp.testing.NoninjectingCompiler;
 import com.google.javascript.rhino.Node;
 import org.junit.Before;
 import org.junit.Test;
@@ -35,16 +35,6 @@ import org.junit.runners.JUnit4;
 public final class Es6NormalizeShorthandPropertiesTest extends CompilerTestCase {
 
   @Override
-  protected Compiler createCompiler() {
-    return new NoninjectingCompiler();
-  }
-
-  @Override
-  protected NoninjectingCompiler getLastCompiler() {
-    return (NoninjectingCompiler) super.getLastCompiler();
-  }
-
-  @Override
   @Before
   public void setUp() throws Exception {
     super.setUp();
@@ -59,7 +49,8 @@ public final class Es6NormalizeShorthandPropertiesTest extends CompilerTestCase 
 
   @Override
   protected CompilerPass getProcessor(final Compiler compiler) {
-    return new Es6NormalizeShorthandProperties(compiler);
+    return PeepholeTranspilationsPass.create(
+        compiler, ImmutableList.of(new Es6NormalizeShorthandProperties(compiler)));
   }
 
   @Test

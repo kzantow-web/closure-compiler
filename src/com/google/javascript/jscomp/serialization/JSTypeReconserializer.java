@@ -31,6 +31,7 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.LinkedHashMultimap;
 import com.google.common.collect.SetMultimap;
 import com.google.javascript.jscomp.InvalidatingTypes;
+import com.google.javascript.jscomp.base.LinkedIdentityHashMap;
 import com.google.javascript.jscomp.colors.Color;
 import com.google.javascript.jscomp.colors.ColorId;
 import com.google.javascript.jscomp.colors.StandardColors;
@@ -42,11 +43,10 @@ import com.google.javascript.rhino.jstype.JSTypeRegistry;
 import com.google.javascript.rhino.jstype.ObjectType;
 import com.google.javascript.rhino.jstype.UnionType;
 import java.util.ArrayList;
-import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.function.Predicate;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Takes {@link JSType}s produced by JSCompiler's typechecker and deduplicates and serializes them
@@ -67,8 +67,10 @@ final class JSTypeReconserializer {
 
   // Cache some commonly used types.
   private final SeenTypeRecord unknownRecord;
+  private final SeenTypeRecord topFunctionRecord;
 
-  private final IdentityHashMap<JSType, SeenTypeRecord> typeToRecordCache = new IdentityHashMap<>();
+  private final LinkedIdentityHashMap<JSType, SeenTypeRecord> typeToRecordCache =
+      new LinkedIdentityHashMap<>();
   private final LinkedHashMap<ColorId, SeenTypeRecord> seenTypeRecords = new LinkedHashMap<>();
   private final SetMultimap<Integer, Integer> disambiguateEdges = LinkedHashMultimap.create();
 
@@ -86,16 +88,18 @@ final class JSTypeReconserializer {
           // Map all the primitives in the obvious way.
           .put(JSTypeNative.BIGINT_TYPE, StandardColors.BIGINT)
           .put(JSTypeNative.BOOLEAN_TYPE, StandardColors.BOOLEAN)
+          .put(JSTypeNative.GBIGINT_TYPE, StandardColors.GBIGINT)
           .put(JSTypeNative.NULL_TYPE, StandardColors.NULL_OR_VOID)
           .put(JSTypeNative.NUMBER_TYPE, StandardColors.NUMBER)
           .put(JSTypeNative.STRING_TYPE, StandardColors.STRING)
           .put(JSTypeNative.SYMBOL_TYPE, StandardColors.SYMBOL)
           .put(JSTypeNative.VOID_TYPE, StandardColors.NULL_OR_VOID)
+          // Smoosh top-like function types into a single type.
+          .put(JSTypeNative.FUNCTION_FUNCTION_TYPE, StandardColors.TOP_FUNCTION)
+          .put(JSTypeNative.FUNCTION_TYPE, StandardColors.TOP_FUNCTION)
           // Smoosh top-like objects into a single type.
-          .put(JSTypeNative.FUNCTION_FUNCTION_TYPE, StandardColors.TOP_OBJECT)
           .put(JSTypeNative.FUNCTION_PROTOTYPE, StandardColors.TOP_OBJECT)
           .put(JSTypeNative.FUNCTION_INSTANCE_PROTOTYPE, StandardColors.TOP_OBJECT)
-          .put(JSTypeNative.FUNCTION_TYPE, StandardColors.TOP_OBJECT)
           .put(JSTypeNative.OBJECT_FUNCTION_TYPE, StandardColors.TOP_OBJECT)
           .put(JSTypeNative.OBJECT_PROTOTYPE, StandardColors.TOP_OBJECT)
           .put(JSTypeNative.OBJECT_TYPE, StandardColors.TOP_OBJECT)
@@ -123,6 +127,7 @@ final class JSTypeReconserializer {
     this.seedCachesWithAxiomaticTypes();
 
     this.unknownRecord = this.seenTypeRecords.get(StandardColors.UNKNOWN.getId());
+    this.topFunctionRecord = this.seenTypeRecords.get(StandardColors.TOP_FUNCTION.getId());
   }
 
   /**
@@ -161,6 +166,8 @@ final class JSTypeReconserializer {
       forwardedType = type.toMaybeNamedType().getReferencedType();
     } else if (type.isEnumElementType()) {
       forwardedType = type.toMaybeEnumElementType().getPrimitiveType();
+    } else if (type.isKnownSymbolValueType()) {
+      forwardedType = registry.getNativeType(JSTypeNative.SYMBOL_TYPE);
     } else if (type.isTemplatizedType()) {
       forwardedType = type.toMaybeTemplatizedType().getReferencedType();
     } else if (type.isFunctionType()
@@ -177,6 +184,15 @@ final class JSTypeReconserializer {
       // template types are not serialized because optimizations don't seem to care about them.
       // serialize as the UNKNOWN_TYPE because bounded generics are unsupported
       return this.unknownRecord;
+    }
+    if (type.isFunctionType()
+        && !type.toMaybeFunctionType().hasInstanceType()
+        && type.toMaybeFunctionType().getClosurePrimitive() == null) {
+      // Distinguishing different function types does not matter for optimizations unless they
+      // are a constructor/interface or have a @closurePrimitive tag associated. Optimization colors
+      // don't track function parameter/return/template types, and function literals are all
+      // invalidating types during property disambiguation.
+      return this.topFunctionRecord;
     }
 
     SeenTypeRecord jstypeRecord = this.typeToRecordCache.get(type);
@@ -327,7 +343,7 @@ final class JSTypeReconserializer {
 
       isInvalidating |= this.invalidatingTypes.isInvalidating(objType);
 
-      /**
+      /*
        * To support legacy code, property disambiguation never renames properties of enums (e.g. 'A'
        * in '/** @enum * / const E = {A: 0}`). In theory this would be safe to remove if we clean up
        * code depending on the lack of renaming
@@ -335,7 +351,7 @@ final class JSTypeReconserializer {
       propertiesKeepOriginalName |= objType.isEnumType();
     }
 
-    ObjectTypeProto.Builder objectProto =
+    ObjectTypeProto objectProto =
         ObjectTypeProto.newBuilder()
             .addAllInstanceType(instancePointers)
             .addAllOwnProperty(ownProperties)
@@ -344,7 +360,8 @@ final class JSTypeReconserializer {
             .setIsInvalidating(isInvalidating)
             .setMarkedConstructor(isConstructor)
             .setPropertiesKeepOriginalName(propertiesKeepOriginalName)
-            .setUuid(seen.colorId.asByteString());
+            .setUuid(seen.colorId.asByteString())
+            .build();
     return TypeProto.newBuilder().setObject(objectProto).build();
   }
 
@@ -517,14 +534,11 @@ final class JSTypeReconserializer {
       return false;
     }
 
-    switch (primitive) {
-      case ASSERTS_TRUTHY:
-      case ASSERTS_MATCHES_RETURN:
-        return true;
-
-      case ASSERTS_FAIL: // technically an assertion function, but not removed by ClosureCodeRemoval
-        return false;
-    }
-    throw new AssertionError();
+    return switch (primitive) {
+      case ASSERTS_TRUTHY, ASSERTS_MATCHES_RETURN -> true;
+      case ASSERTS_FAIL ->
+          // technically an assertion function, but not removed by ClosureCodeRemoval
+          false;
+    };
   }
 }

@@ -24,6 +24,7 @@ import com.google.javascript.jscomp.OptimizeCalls.ReferenceMap;
 import com.google.javascript.rhino.Node;
 import java.util.ArrayList;
 import java.util.Map;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Optimize class declarations by removing explicit constructor declarations if the implicit
@@ -56,12 +57,14 @@ import java.util.Map;
  */
 class OptimizeConstructors implements CompilerPass, OptimizeCalls.CallGraphCompilerPass {
   private final AbstractCompiler compiler;
+  private final AstAnalyzer astAnalyzer;
 
   // All constructor definition nodes that are to be removed.
   final ArrayList<Node> removableConstructors = new ArrayList<>();
 
   OptimizeConstructors(AbstractCompiler compiler) {
     this.compiler = checkNotNull(compiler);
+    this.astAnalyzer = compiler.getAstAnalyzer();
   }
 
   @Override
@@ -109,6 +112,7 @@ class OptimizeConstructors implements CompilerPass, OptimizeCalls.CallGraphCompi
     }
 
     Node candidateClassDefinition = null;
+    Node candidateConstructor = null;
 
     // Lazily init as most symbols aren't class, and most classes don't have subclasses
     ArrayList<Node> subclassConstructors = null;
@@ -141,7 +145,7 @@ class OptimizeConstructors implements CompilerPass, OptimizeCalls.CallGraphCompi
               Node fn = constructor.getLastChild();
               Node body = fn.getLastChild();
               if (!body.hasChildren() && hasRemovableParameterList(constructor)) {
-                removableConstructors.add(constructor);
+                candidateConstructor = constructor;
               }
             }
           } else {
@@ -180,6 +184,10 @@ class OptimizeConstructors implements CompilerPass, OptimizeCalls.CallGraphCompi
       return;
     }
 
+    if (candidateConstructor != null) {
+      removableConstructors.add(candidateConstructor);
+    }
+
     // Nothing that invalidated the superclass definition was found, so now check if the
     // candidate subclasses are equivalent to the superclass.
 
@@ -197,44 +205,37 @@ class OptimizeConstructors implements CompilerPass, OptimizeCalls.CallGraphCompi
   static boolean isAssigningReference(Node n) {
     Node parent = n.getParent();
     Node gparent = parent.getParent();
-    switch (parent.getToken()) {
-      case LET:
-      case CONST:
-      case VAR:
-        return n.hasChildren(); // value assigned
-      case STRING_KEY:
-        return gparent.isObjectPattern();
-      case COMPUTED_PROP:
-        return parent.getLastChild() == n && gparent.isObjectPattern();
-      case ARRAY_PATTERN:
-      case DEFAULT_VALUE: // object or array or function parameter
-      case PARAM_LIST:
-      case OBJECT_REST:
-      case ITER_REST:
-      case INC:
-      case DEC:
-        return true;
-      case FUNCTION:
-      case CLASS:
-      case CATCH:
-        return parent.getFirstChild() == n;
-      case ASSIGN:
-      case ASSIGN_BITOR:
-      case ASSIGN_BITXOR:
-      case ASSIGN_BITAND:
-      case ASSIGN_LSH:
-      case ASSIGN_RSH:
-      case ASSIGN_URSH:
-      case ASSIGN_ADD:
-      case ASSIGN_SUB:
-      case ASSIGN_MUL:
-      case ASSIGN_DIV:
-      case ASSIGN_MOD:
-      case ASSIGN_EXPONENT:
-        return parent.getFirstChild() != n;
-      default:
-        return false;
-    }
+    return switch (parent.getToken()) {
+      case LET, CONST, VAR -> n.hasChildren(); // value assigned
+      case STRING_KEY -> gparent.isObjectPattern();
+      case COMPUTED_PROP -> parent.getLastChild() == n && gparent.isObjectPattern();
+      case ARRAY_PATTERN,
+          DEFAULT_VALUE, // object or array or function parameter
+          PARAM_LIST,
+          OBJECT_REST,
+          ITER_REST,
+          INC,
+          DEC ->
+          true;
+      case FUNCTION, CLASS, CATCH -> parent.getFirstChild() == n;
+      case ASSIGN,
+          ASSIGN_BITOR,
+          ASSIGN_BITXOR,
+          ASSIGN_BITAND,
+          ASSIGN_LSH,
+          ASSIGN_RSH,
+          ASSIGN_URSH,
+          ASSIGN_ADD,
+          ASSIGN_SUB,
+          ASSIGN_MUL,
+          ASSIGN_DIV,
+          ASSIGN_MOD,
+          ASSIGN_EXPONENT ->
+          // If n is the target of the assignment (the first child/LHS of the assignment node),
+          // then it is an assigning reference.
+          parent.getFirstChild() == n;
+      default -> false;
+    };
   }
 
   private boolean isClassExtendsExpression(Node n) {
@@ -242,7 +243,7 @@ class OptimizeConstructors implements CompilerPass, OptimizeCalls.CallGraphCompi
     return (parent.isClass() && parent.getSecondChild() == n);
   }
 
-  private Node getClassDefinitionOrFunction(Node n) {
+  private @Nullable Node getClassDefinitionOrFunction(Node n) {
     Node parent = n.getParent();
 
     Node expr;
@@ -274,20 +275,21 @@ class OptimizeConstructors implements CompilerPass, OptimizeCalls.CallGraphCompi
   }
 
   private static boolean isDefinitionClassLiteralOrFunction(Node n) {
-    switch (n.getToken()) {
-      case FUNCTION:
-        // TODO(b/176208718): ideally this is only return true for normal functions, but it is
-        // harmless to include other function types and checking for "normal" function is currently
-        // non-trivial.
-        return true;
-      case CLASS:
+    return switch (n.getToken()) {
+      case FUNCTION ->
+          // TODO(b/176208718): ideally this is only return true for normal functions, but it is
+          // harmless to include other function types and checking for "normal" function is
+          // currently
+          // non-trivial.
+          true;
+      case CLASS -> {
         // `class NameNode {`
         // find the constructor
         Node constructorMemberFunctionDef = NodeUtil.getEs6ClassConstructorMemberFunctionDef(n);
-        return constructorMemberFunctionDef != null;
-      default:
-        return false;
-    }
+        yield constructorMemberFunctionDef != null;
+      }
+      default -> false;
+    };
   }
 
   /**
@@ -300,14 +302,9 @@ class OptimizeConstructors implements CompilerPass, OptimizeCalls.CallGraphCompi
     final int formalParameterCount;
     // "var args" means any number of parameters are allowed
     final boolean isVarArgs;
-    // "arguments" means "arguments.length" may be referenced and changing the parameters does
-    // matter.
-    final boolean referencesArguments;
 
-    ClassConstructorSummary(
-        boolean isVarArgs, boolean referencesArguments, int formalParameterCount) {
+    ClassConstructorSummary(boolean isVarArgs, int formalParameterCount) {
       this.isVarArgs = isVarArgs;
-      this.referencesArguments = referencesArguments;
       this.formalParameterCount = formalParameterCount;
     }
 
@@ -326,10 +323,10 @@ class OptimizeConstructors implements CompilerPass, OptimizeCalls.CallGraphCompi
       boolean argumentsReference = NodeUtil.doesFunctionReferenceOwnArgumentsObject(fn);
       boolean hasVarArgs = argumentsReference || functionHasRest(fn);
       return new ClassConstructorSummary(
-          hasVarArgs, argumentsReference, NodeUtil.getFunctionParameters(fn).getChildCount());
+          hasVarArgs, NodeUtil.getFunctionParameters(fn).getChildCount());
     }
 
-    public boolean isEquivalentConstructorDefinition(Node constructorMember) {
+    boolean isEquivalentConstructorDefinition(Node constructorMember) {
       // `constructorHasRemovableDefinition` has already checked the subclass definition. We
       // know that it has a trivial constructor and that the parameters are passed to the super call
       // in the same order as they are declared in the parameter list, etc.
@@ -419,7 +416,7 @@ class OptimizeConstructors implements CompilerPass, OptimizeCalls.CallGraphCompi
 
       if (param.isDefaultValue()
           && param.getFirstChild().isName()
-          && !new AstAnalyzer(compiler, true).mayHaveSideEffects(param.getLastChild())) {
+          && !astAnalyzer.mayHaveSideEffects(param.getLastChild())) {
         // a default parameter whose value is determined to be side-effect free
         continue;
       }
@@ -432,7 +429,7 @@ class OptimizeConstructors implements CompilerPass, OptimizeCalls.CallGraphCompi
   }
 
   /** If the body contains only a call to super, return it, otherwise null. */
-  private static Node getOnlySuperCall(Node fn) {
+  private static @Nullable Node getOnlySuperCall(Node fn) {
     Node body = fn.getLastChild();
     if (body.isBlock() && body.hasOneChild()) {
       Node stmt = body.getFirstChild();

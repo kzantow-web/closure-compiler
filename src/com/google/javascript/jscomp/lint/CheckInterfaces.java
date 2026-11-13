@@ -25,7 +25,7 @@ import com.google.javascript.jscomp.NodeTraversal.AbstractPostOrderCallback;
 import com.google.javascript.jscomp.NodeUtil;
 import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.Node;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** Checks for errors related to interfaces. */
 public final class CheckInterfaces extends AbstractPostOrderCallback implements CompilerPass {
@@ -84,34 +84,31 @@ public final class CheckInterfaces extends AbstractPostOrderCallback implements 
   @Override
   public void visit(NodeTraversal t, Node n, Node parent) {
     switch (n.getToken()) {
-      case FUNCTION:
-        {
-          JSDocInfo jsdoc = NodeUtil.getBestJSDocInfo(n);
-          if (isInterface(jsdoc)) {
-            checkInterfaceConstructorArgs(t, n);
-            checkConstructorBlock(t, n);
-          }
-          break;
+      case FUNCTION -> {
+        JSDocInfo jsdoc = NodeUtil.getBestJSDocInfo(n);
+        if (isInterface(jsdoc)) {
+          checkInterfaceConstructorArgs(t, n);
+          checkConstructorBlock(t, n);
         }
-      case CLASS:
-        {
-          JSDocInfo jsdoc = NodeUtil.getBestJSDocInfo(n);
-          if (isInterface(jsdoc)) {
-            if (n.getSecondChild() != null && n.getSecondChild().isName()) {
-              t.report(n, INTERFACE_DEFINED_WITH_EXTENDS);
-            }
-            Node ctorDef = NodeUtil.getEs6ClassConstructorMemberFunctionDef(n);
-            if (ctorDef != null) {
-              Node ctor = ctorDef.getFirstChild();
-              checkInterfaceConstructorArgs(t, ctor);
-              checkConstructorBlock(t, ctor);
-            }
-            checkClassMethods(t, n, ctorDef);
+      }
+      case CLASS -> {
+        JSDocInfo jsdoc = NodeUtil.getBestJSDocInfo(n);
+        if (isInterface(jsdoc)) {
+          if (n.getSecondChild() != null && n.getSecondChild().isName()) {
+            t.report(n, INTERFACE_DEFINED_WITH_EXTENDS);
           }
-          break;
+          Node ctorDef = NodeUtil.getEs6ClassConstructorMemberFunctionDef(n);
+          if (ctorDef != null) {
+            Node ctor = ctorDef.getFirstChild();
+            checkInterfaceConstructorArgs(t, ctor);
+            checkConstructorBlock(t, ctor);
+          }
+          checkClassMethods(t, n, ctorDef);
         }
-      default:
+      }
+      default -> {
         return;
+      }
     }
   }
 

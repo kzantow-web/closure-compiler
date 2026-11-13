@@ -23,6 +23,7 @@ import static com.google.common.base.Preconditions.checkState;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableListMultimap;
 import com.google.common.collect.ImmutableSet;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.javascript.jscomp.NodeTraversal.ScopedCallback;
 import com.google.javascript.rhino.Node;
 import java.util.ArrayList;
@@ -30,7 +31,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * A root pass that is a container for other passes that should run on with a single call graph.
@@ -69,8 +70,9 @@ class OptimizeCalls implements CompilerPass {
   static final class Builder {
     private AbstractCompiler compiler;
     private final ImmutableList.Builder<CallGraphCompilerPass> passes = ImmutableList.builder();
-    @Nullable private Boolean considerExterns; // Nullable to force users to specify a value.
+    private @Nullable Boolean considerExterns; // Nullable to force users to specify a value.
 
+    @CanIgnoreReturnValue
     public Builder setCompiler(AbstractCompiler compiler) {
       this.compiler = compiler;
       return this;
@@ -86,11 +88,13 @@ class OptimizeCalls implements CompilerPass {
      * <p>This setting allows extern references to be effectively invisible to passes that should
      * not mutate them.
      */
+    @CanIgnoreReturnValue
     public Builder setConsiderExterns(boolean b) {
       this.considerExterns = b;
       return this;
     }
 
+    @CanIgnoreReturnValue
     public Builder addPass(CallGraphCompilerPass pass) {
       this.passes.add(pass);
       return this;
@@ -229,19 +233,16 @@ class OptimizeCalls implements CompilerPass {
 
       ImmutableList.Builder<Node> fns = ImmutableList.builder();
       switch (parent.getToken()) {
-        case CLASS:
+        case CLASS -> {
           if (definitionSite.isFirstChildOf(parent)) {
             Node constructorFnDef = NodeUtil.getEs6ClassConstructorMemberFunctionDef(parent);
             if (constructorFnDef != null) {
               fns.add(constructorFnDef.getOnlyChild());
             }
           }
-          break;
-        case FUNCTION:
-          fns.add(parent);
-          break;
-
-        case CLASS_MEMBERS:
+        }
+        case FUNCTION -> fns.add(parent);
+        case CLASS_MEMBERS -> {
           if (definitionSite.isMemberFunctionDef()) {
             fns.add(definitionSite.getLastChild());
           } else {
@@ -251,34 +252,27 @@ class OptimizeCalls implements CompilerPass {
               addValueFunctionNodes(fns, value);
             }
           }
-          break;
-
-        case OBJECTLIT:
+        }
+        case OBJECTLIT -> {
           checkArgument(
               definitionSite.isStringKey() || definitionSite.isMemberFunctionDef(), //
               definitionSite);
           addValueFunctionNodes(fns, definitionSite.getLastChild());
-          break;
-
-        case ASSIGN:
+        }
+        case ASSIGN -> {
           // Only a candidate if the assign isn't consumed.
           Node target = parent.getFirstChild();
           Node value = parent.getLastChild();
           if (definitionSite == target) {
             addValueFunctionNodes(fns, value);
           }
-          break;
-
-        case CONST:
-        case LET:
-        case VAR:
+        }
+        case CONST, LET, VAR -> {
           if (definitionSite.isName() && definitionSite.hasChildren()) {
             addValueFunctionNodes(fns, definitionSite.getFirstChild());
           }
-          break;
-
-        default:
-          break;
+        }
+        default -> {}
       }
       return fns.build();
     }
@@ -286,35 +280,27 @@ class OptimizeCalls implements CompilerPass {
     private static void addValueFunctionNodes(ImmutableList.Builder<Node> fns, Node n) {
       // TODO(johnlenz): add member definitions
       switch (n.getToken()) {
-        case CLASS:
+        case CLASS -> {
           {
             Node constructorFnDef = NodeUtil.getEs6ClassConstructorMemberFunctionDef(n);
             if (constructorFnDef != null) {
               fns.add(constructorFnDef.getOnlyChild());
             }
           }
-          break;
-        case FUNCTION:
-          fns.add(n);
-          break;
-        case HOOK:
+        }
+        case FUNCTION -> fns.add(n);
+        case HOOK -> {
           addValueFunctionNodes(fns, n.getSecondChild());
           addValueFunctionNodes(fns, n.getLastChild());
-          break;
-        case OR:
-        case AND:
-        case COALESCE:
+        }
+        case OR, AND, COALESCE -> {
           addValueFunctionNodes(fns, n.getFirstChild());
           addValueFunctionNodes(fns, n.getLastChild());
-          break;
-        case CAST:
-        case COMMA:
-          addValueFunctionNodes(fns, n.getLastChild());
-          break;
-
-        default:
+        }
+        case CAST, COMMA -> addValueFunctionNodes(fns, n.getLastChild());
+        default -> {
           // do nothing.
-          break;
+        }
       }
     }
 
@@ -432,7 +418,7 @@ class OptimizeCalls implements CompilerPass {
     final ReferenceMap references;
     private Scope globalScope;
 
-    public ReferenceMapBuildingCallback(ReferenceMap references) {
+    ReferenceMapBuildingCallback(ReferenceMap references) {
       this.externProps = safeSet(compiler.getExternProperties());
       this.references = references;
     }
@@ -440,42 +426,40 @@ class OptimizeCalls implements CompilerPass {
     @Override
     public void visit(NodeTraversal t, Node n, Node unused) {
       switch (n.getToken()) {
-        case NAME:
-          maybeAddNameReference(n.getString(), n);
-          break;
+        case NAME -> maybeAddNameReference(n.getString(), n);
+        case OPTCHAIN_GETPROP, GETPROP -> maybeAddPropReference(n.getString(), n);
+        case CALL -> {
+          // If we are using goog.reflect.objectProperty on this symbol, we will assume that it
+          // gets referenced.
+          Node fnName = n.getFirstChild();
+          if (compiler.getCodingConvention().isPropertyRenameFunction(fnName)) {
+            Node propName = NodeUtil.getArgumentForCallOrNew(n, 0);
+            if (propName != null) {
+              maybeAddPropReference(propName.getString(), n);
+            }
+          }
+        }
 
-        case OPTCHAIN_GETPROP:
-        case GETPROP:
-          maybeAddPropReference(n.getString(), n);
-          break;
-
-        case STRING_KEY:
-        case GETTER_DEF:
-        case SETTER_DEF:
-        case MEMBER_FUNCTION_DEF:
-        case MEMBER_FIELD_DEF:
+        case STRING_KEY, GETTER_DEF, SETTER_DEF, MEMBER_FUNCTION_DEF, MEMBER_FIELD_DEF -> {
           // ignore quoted keys.
-          if (!n.isQuotedString()) {
+          if (!n.isQuotedStringKey()) {
             maybeAddPropReference(n.getString(), n);
           }
-          break;
+        }
 
-        case SUPER:
-          visitSuper(n);
-          break;
-
-        case COMPUTED_PROP:
-        case COMPUTED_FIELD_DEF:
-        case OPTCHAIN_GETELEM:
-        case GETELEM:
-          // Ignore quoted keys.
-          // TODO(johnlenz): support symbols.
-        case OBJECT_REST:
-        case OBJECT_SPREAD:
-          // Don't worry about invisible accesses using these. To be invoked there would need to be
-          // downstream references that use the actual name. We'd see those.
-        default:
-          break;
+        case SUPER -> visitSuper(n);
+        case
+            // Ignore quoted and computed keys.
+            // TODO(johnlenz): support symbols.
+            COMPUTED_PROP,
+            COMPUTED_FIELD_DEF,
+            OPTCHAIN_GETELEM,
+            GETELEM,
+            // Don't worry about invisible accesses using object rest/spread. To be invoked there
+            // would need to be downstream references that use the actual name. We'd see those.
+            OBJECT_REST,
+            OBJECT_SPREAD -> {}
+        default -> {}
       }
     }
 
@@ -558,29 +542,27 @@ class OptimizeCalls implements CompilerPass {
   static boolean isAllowedReference(Node n) {
     Node parent = n.getParent();
     switch (parent.getToken()) {
-      case FOR_IN:
-      case FOR_OF:
-      case FOR_AWAIT_OF:
+      case FOR_IN, FOR_OF, FOR_AWAIT_OF -> {
         // inspecting the properties is allowed.
         return parent.getSecondChild() == n;
-      case INSTANCEOF:
-      case TYPEOF:
-      case IN:
+      }
+      case INSTANCEOF, TYPEOF, IN -> {
         return true;
-      case GETELEM:
-      case GETPROP:
-      case OPTCHAIN_GETPROP:
-      case OPTCHAIN_GETELEM:
+      }
+      case GETELEM, GETPROP, OPTCHAIN_GETPROP, OPTCHAIN_GETELEM -> {
         // Calls escape the "this" value. a.foo() aliases "a" as "this" but general
         // property references do not.
         Node grandparent = parent.getParent();
         if (n == parent.getFirstChild()
             && grandparent != null
-            && (grandparent.isCall() || grandparent.isOptChainCall())) {
-          return false; // `a.foo()` or `a?.foo()` or `a?.[foo]()`
+            && (grandparent.isCall()
+                || grandparent.isOptChainCall()
+                || grandparent.isTaggedTemplateLit())) {
+          return false; // `a.foo()` or `a?.foo()` or `a?.[foo]()` or `a.foo`bar``
         }
         return true;
-      case CLASS:
+      }
+      case CLASS -> {
         if (n.isFirstChildOf(parent)) {
           // class Name {
           // this is a definition, not a read reference
@@ -602,11 +584,13 @@ class OptimizeCalls implements CompilerPass {
           }
         }
         //
-      default:
+      }
+      default -> {
         if (NodeUtil.isNameDeclaration(parent) && !n.hasChildren()) {
           // allow "let x;"
           return true;
         }
+      }
     }
     return false;
   }

@@ -20,13 +20,15 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.Streams.stream;
 import static java.lang.Math.min;
+import static java.util.Objects.requireNonNull;
 
-import com.google.auto.value.AutoValue;
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSetMultimap;
 import com.google.common.collect.SetMultimap;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import com.google.errorprone.annotations.InlineMe;
 import com.google.javascript.jscomp.AbstractCompiler;
 import com.google.javascript.jscomp.CodePrinter;
 import com.google.javascript.jscomp.CompilerOptions;
@@ -43,7 +45,7 @@ import java.util.Collection;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Object representing the fixes to apply to the source code to create the
@@ -62,7 +64,7 @@ public final class SuggestedFix {
 
   // An optional description of the fix, to distinguish between the various possible fixes
   // for errors that have multiple fixes.
-  @Nullable private final String description;
+  private final @Nullable String description;
 
   // Alternative fixes for the same problem. The fix itself is always the first entry in this list.
   // If you cannot ask the developer which fix is appropriate, apply the first fix instead of
@@ -97,7 +99,7 @@ public final class SuggestedFix {
     return replacements;
   }
 
-  @Nullable public String getDescription() {
+  public @Nullable String getDescription() {
     return description;
   }
 
@@ -132,16 +134,17 @@ public final class SuggestedFix {
    * Builder class for {@link SuggestedFix} that contains helper functions to manipulate JS nodes.
    */
   public static final class Builder {
-    private MatchedNodeInfo matchedNodeInfo = null;
+    private @Nullable MatchedNodeInfo matchedNodeInfo = null;
     private final ImmutableSetMultimap.Builder<String, CodeReplacement> replacements =
         ImmutableSetMultimap.builder();
     private final ImmutableList.Builder<SuggestedFix> alternatives = ImmutableList.builder();
-    private String description = null;
+    private @Nullable String description = null;
 
     /**
      * Sets the node on this SuggestedFix that caused this SuggestedFix to be built in the first
      * place.
      */
+    @CanIgnoreReturnValue
     public Builder attachMatchedNodeInfo(Node node, AbstractCompiler compiler) {
       matchedNodeInfo =
           MatchedNodeInfo.create(
@@ -149,6 +152,7 @@ public final class SuggestedFix {
       return this;
     }
 
+    @CanIgnoreReturnValue
     public Builder addAlternative(SuggestedFix alternative) {
       checkState(
           alternative.getNonDefaultAlternatives().isEmpty(),
@@ -157,9 +161,8 @@ public final class SuggestedFix {
       return this;
     }
 
-    /**
-     * Replaces text starting at the given node position.
-     */
+    /** Replaces text starting at the given node position. */
+    @CanIgnoreReturnValue
     Builder replaceText(Node node, int length, String newContent) {
       int startPosition = node.getSourceOffset();
       replacements.put(
@@ -167,9 +170,8 @@ public final class SuggestedFix {
       return this;
     }
 
-    /**
-     * Inserts a new node as the first child of the provided node.
-     */
+    /** Inserts a new node as the first child of the provided node. */
+    @CanIgnoreReturnValue
     public Builder addChildToFront(Node parentNode, String content) {
       checkState(
           parentNode.isBlock(), "addChildToFront is only supported for BLOCK statements.");
@@ -179,36 +181,36 @@ public final class SuggestedFix {
       return this;
     }
 
-    /**
-     * Inserts the text after the given node
-     */
+    /** Inserts the text after the given node */
+    @CanIgnoreReturnValue
     public Builder insertAfter(Node node, String text) {
       int position = node.getSourceOffset() + node.getLength();
       replacements.put(node.getSourceFileName(), CodeReplacement.create(position, 0, text));
       return this;
     }
 
-    /**
-     * Inserts a new node before the provided node.
-     */
+    /** Inserts a new node before the provided node. */
+    @CanIgnoreReturnValue
     public Builder insertBefore(Node nodeToInsertBefore, Node n, AbstractCompiler compiler) {
       return insertBefore(nodeToInsertBefore, n, compiler, "");
     }
 
+    @CanIgnoreReturnValue
     Builder insertBefore(
         Node nodeToInsertBefore, Node n, AbstractCompiler compiler, String sortKey) {
       return insertBefore(nodeToInsertBefore, generateCode(compiler, n), sortKey);
     }
 
     /**
-     * Inserts a string before the provided node. This is useful for inserting
-     * comments into a file since the JS Compiler doesn't currently support
-     * printing comments.
+     * Inserts a string before the provided node. This is useful for inserting comments into a file
+     * since the JS Compiler doesn't currently support printing comments.
      */
+    @CanIgnoreReturnValue
     public Builder insertBefore(Node nodeToInsertBefore, String content) {
       return insertBefore(nodeToInsertBefore, content, "");
     }
 
+    @CanIgnoreReturnValue
     private Builder insertBefore(Node nodeToInsertBefore, String content, String sortKey) {
       int startPosition = getStartPositionForNodeConsideringComments(nodeToInsertBefore);
       Preconditions.checkNotNull(nodeToInsertBefore.getSourceFileName(),
@@ -220,14 +222,16 @@ public final class SuggestedFix {
     }
 
     /**
-     * Deletes a node and its contents from the source file. If the node is a child of a
-     * block or top level statement, this will also delete the whitespace before the node.
+     * Deletes a node and its contents from the source file. If the node is a child of a block or
+     * top level statement, this will also delete the whitespace before the node.
      */
+    @CanIgnoreReturnValue
     public Builder delete(Node n) {
       return delete(n, true);
     }
 
     /** Deletes a node and its contents from the source file. */
+    @CanIgnoreReturnValue
     private Builder delete(Node n, boolean deleteWhitespaceBefore) {
       int startPosition = getStartPositionForNodeConsideringComments(n);
       int startOffsetWithoutComments = n.getSourceOffset();
@@ -285,11 +289,13 @@ public final class SuggestedFix {
     }
 
     /** Deletes a node and its contents from the source file. */
+    @CanIgnoreReturnValue
     public Builder deleteWithoutRemovingWhitespaceBefore(Node n) {
       return delete(n, false);
     }
 
     /** Deletes a node without touching any surrounding whitespace. */
+    @CanIgnoreReturnValue
     public Builder deleteWithoutRemovingWhitespace(Node n) {
       replacements.put(
           n.getSourceFileName(), CodeReplacement.create(n.getSourceOffset(), n.getLength(), ""));
@@ -298,9 +304,11 @@ public final class SuggestedFix {
 
     /**
      * Renames a given node to the provided name.
+     *
      * @param n The node to rename.
      * @param name The new name for the node.
      */
+    @CanIgnoreReturnValue
     public Builder rename(Node n, String name) {
       return rename(n, name, false);
     }
@@ -315,28 +323,22 @@ public final class SuggestedFix {
      *     {@code replaceNameSubtree} is false, then {@code this.foo()} will be renamed to {@code
      *     this.bar()}. However, if it is true, it will be renamed to {@code bar()}.
      */
+    @CanIgnoreReturnValue
     public Builder rename(Node n, String name, boolean replaceNameSubtree) {
       final Node range;
       switch (n.getToken()) {
-        case CALL:
-        case TAGGED_TEMPLATELIT:
+        case CALL, TAGGED_TEMPLATELIT -> {
           return this.rename(n.getFirstChild(), name, replaceNameSubtree);
-
-        case GETPROP:
-          range = replaceNameSubtree ? subtreeRangeOfIdentifier(n) : n;
-          break;
-
-        case STRINGLIT:
+        }
+        case GETPROP -> range = replaceNameSubtree ? subtreeRangeOfIdentifier(n) : n;
+        case STRINGLIT -> {
           checkState(n.getParent().isGetProp(), n);
-          // Fall through
-        case STRING_KEY:
-        case NAME:
           range = n;
-          break;
-
-        default:
-          throw new UnsupportedOperationException(
-              "Rename is not implemented for this node type: " + n);
+        }
+        case STRING_KEY, NAME -> range = n;
+        default ->
+            throw new UnsupportedOperationException(
+                "Rename is not implemented for this node type: " + n);
       }
 
       replacements.put(
@@ -345,9 +347,8 @@ public final class SuggestedFix {
       return this;
     }
 
-    /**
-     * Replaces a range of nodes with the given content.
-     */
+    /** Replaces a range of nodes with the given content. */
+    @CanIgnoreReturnValue
     public Builder replaceRange(Node first, Node last, String newContent) {
       checkState(first.getParent() == last.getParent());
 
@@ -363,9 +364,8 @@ public final class SuggestedFix {
       return this;
     }
 
-    /**
-     * Replaces the provided node with new node in the source file.
-     */
+    /** Replaces the provided node with new node in the source file. */
+    @CanIgnoreReturnValue
     public Builder replace(Node original, Node newNode, AbstractCompiler compiler) {
       Node parent = original.getParent();
       // EXPR_RESULT nodes will contain the trailing semicolons, but the child node
@@ -424,9 +424,8 @@ public final class SuggestedFix {
       return this;
     }
 
-    /**
-     * Adds a cast of the given type to the provided node.
-     */
+    /** Adds a cast of the given type to the provided node. */
+    @CanIgnoreReturnValue
     public Builder addCast(Node n, AbstractCompiler compiler, String type) {
       // TODO(mknichel): Figure out the best way to output the typecast.
       replacements.put(
@@ -438,9 +437,8 @@ public final class SuggestedFix {
       return this;
     }
 
-    /**
-     * Removes a cast from the given node.
-     */
+    /** Removes a cast from the given node. */
+    @CanIgnoreReturnValue
     public Builder removeCast(Node n, AbstractCompiler compiler) {
       checkArgument(n.isCast());
       JSDocInfo jsDoc = n.getJSDocInfo();
@@ -452,13 +450,12 @@ public final class SuggestedFix {
               ""));
       replacements.put(
           n.getSourceFileName(),
-          CodeReplacement.create(n.getSourceOffset() + n.getLength() - 1, 1 /* length */, ""));
+          CodeReplacement.create(n.getSourceOffset() + n.getLength() - 1, /* length= */ 1, ""));
       return this;
     }
 
-    /**
-     * Adds or replaces the JS Doc for the given node.
-     */
+    /** Adds or replaces the JS Doc for the given node. */
+    @CanIgnoreReturnValue
     public Builder addOrReplaceJsDoc(Node n, String newJsDoc) {
       int offset = n.getSourceOffset();
       int length = 0;
@@ -477,9 +474,8 @@ public final class SuggestedFix {
       return this;
     }
 
-    /**
-     * Changes the JS Doc Type of the given node.
-     */
+    /** Changes the JS Doc Type of the given node. */
+    @CanIgnoreReturnValue
     public Builder changeJsDocType(Node n, AbstractCompiler compiler, String type) {
       Node typeNode = JsDocInfoParser.parseTypeString(type);
       Preconditions.checkNotNull(typeNode, "Invalid type: %s", type);
@@ -524,9 +520,8 @@ public final class SuggestedFix {
       }
     }
 
-    /**
-     * Inserts arguments into an existing function call.
-     */
+    /** Inserts arguments into an existing function call. */
+    @CanIgnoreReturnValue
     public Builder insertArguments(Node n, int position, String... args) {
       checkArgument(n.isCall(), "insertArguments is only applicable to function call nodes.");
       int startPosition;
@@ -558,8 +553,9 @@ public final class SuggestedFix {
     /**
      * Deletes an argument from an existing function call, including any JS doc that precedes it.
      * WARNING: If jsdoc erroneously follows the argument, it will not be removed as the parser
-     *     considers the comment to belong to the next argument.
+     * considers the comment to belong to the next argument.
      */
+    @CanIgnoreReturnValue
     public Builder deleteArgument(Node n, int position) {
       checkArgument(
           n.isCall() || n.isNew(), "deleteArgument is only applicable to function call nodes.");
@@ -616,17 +612,11 @@ public final class SuggestedFix {
 
     private static Node createImportNode(
         ImportType importType, @Nullable String alias, String namespace) {
-      final String requireFlavor;
-      switch (importType) {
-        case REQUIRE:
-          requireFlavor = "require";
-          break;
-        case REQUIRE_TYPE:
-          requireFlavor = "requireType";
-          break;
-        default:
-          throw new AssertionError();
-      }
+      final String requireFlavor =
+          switch (importType) {
+            case REQUIRE -> "require";
+            case REQUIRE_TYPE -> "requireType";
+          };
 
       Node callNode = IR.call(IR.getprop(IR.name("goog"), requireFlavor), IR.string(namespace));
 
@@ -637,28 +627,31 @@ public final class SuggestedFix {
       }
     }
 
+    @CanIgnoreReturnValue
     public Builder addGoogRequire(Match m, String namespace, ScriptMetadata scriptMetadata) {
       return addImport(m, namespace, ImportType.REQUIRE, scriptMetadata);
     }
 
+    @CanIgnoreReturnValue
     public Builder addGoogRequireType(Match m, String namespace, ScriptMetadata scriptMetadata) {
       return addImport(m, namespace, ImportType.REQUIRE_TYPE, scriptMetadata);
     }
 
     /** Adds a goog.require/requireType for the given namespace if it does not already exist. */
+    @CanIgnoreReturnValue
     public Builder addImport(
         Match m, String namespace, ImportType importType, ScriptMetadata scriptMetadata) {
       final String alias;
       if (scriptMetadata.supportsRequireAliases()) {
         String existingAlias = scriptMetadata.getAlias(namespace);
         if (existingAlias != null) {
-          /**
+          /*
            * Each fix muct be independently valid, so go through the steps of adding a require even
            * if one may already exist or have been added by another fix.
            */
           alias = existingAlias;
         } else if (namespace.indexOf('.') == -1) {
-          /**
+          /*
            * For unqualified names, the exisiting references will still be valid so long as we keep
            * the same name for the alias.
            */
@@ -683,7 +676,13 @@ public final class SuggestedFix {
 
         // Add an alias to a naked require if allowed in this file.
         if (existingNode.isExprResult() && alias != null) {
-          Node newNode = IR.constNode(IR.name(alias), existingNode.getFirstChild().cloneTree());
+          Node newNode;
+          // Replace goog.forwardDeclare with the appropriate alternative
+          if (NodeUtil.isCallTo(existingNode.getFirstChild(), "goog.forwardDeclare")) {
+            newNode = createImportNode(importType, alias, namespace);
+          } else {
+            newNode = IR.constNode(IR.name(alias), existingNode.getFirstChild().cloneTree());
+          }
           replace(existingNode, newNode, m.getMetadata().getCompiler());
           scriptMetadata.addAlias(namespace, alias);
         }
@@ -771,10 +770,8 @@ public final class SuggestedFix {
           nodeToInsertBefore, newImportNode, m.getMetadata().getCompiler(), namespace);
     }
 
-    /**
-     * Removes a goog.require for the given namespace to the file if it
-     * already exists.
-     */
+    /** Removes a goog.require for the given namespace to the file if it already exists. */
+    @CanIgnoreReturnValue
     public Builder removeGoogRequire(Match m, String namespace) {
       Node googRequireNode = findGoogRequireNode(m.getNode(), m.getMetadata(), namespace);
       if (googRequireNode != null) {
@@ -793,8 +790,8 @@ public final class SuggestedFix {
      *   <li>If not, this will return the first goog.require.
      * </ul>
      */
-    @Nullable
-    private static Node findGoogRequireNode(Node n, NodeMetadata metadata, String namespace) {
+    private static @Nullable Node findGoogRequireNode(
+        Node n, NodeMetadata metadata, String namespace) {
       Node script = metadata.getCompiler().getScriptNode(n.getSourceFileName());
       if (script.getFirstChild().isModuleBody()) {
         script = script.getFirstChild();
@@ -857,6 +854,7 @@ public final class SuggestedFix {
           .build();
     }
 
+    @CanIgnoreReturnValue
     public Builder setDescription(String description) {
       this.description = description;
       return this;
@@ -877,23 +875,36 @@ public final class SuggestedFix {
    * blobs of code, it's important that it does not contain any memory intensive objects in order to
    * keep memory to a reasonable amount.
    */
-  @AutoValue
-  public abstract static class MatchedNodeInfo {
-    static MatchedNodeInfo create(Node node, boolean closurized) {
-      return new AutoValue_SuggestedFix_MatchedNodeInfo(
-          NodeUtil.getSourceName(node),
-          node.getLineno(),
-          node.getCharno(),
-          closurized);
+  public record MatchedNodeInfo(
+      String sourceFilename, int lineno, int charno, boolean inClosurizedFile) {
+    public MatchedNodeInfo {
+      requireNonNull(sourceFilename, "sourceFilename");
     }
 
-    public abstract String getSourceFilename();
+    @InlineMe(replacement = "this.sourceFilename()")
+    public String getSourceFilename() {
+      return sourceFilename();
+    }
 
-    public abstract int getLineno();
+    @InlineMe(replacement = "this.lineno()")
+    public int getLineno() {
+      return lineno();
+    }
 
-    public abstract int getCharno();
+    @InlineMe(replacement = "this.charno()")
+    public int getCharno() {
+      return charno();
+    }
 
-    public abstract boolean isInClosurizedFile();
+    @InlineMe(replacement = "this.inClosurizedFile()")
+    public boolean isInClosurizedFile() {
+      return inClosurizedFile();
+    }
+
+    static MatchedNodeInfo create(Node node, boolean closurized) {
+      return new MatchedNodeInfo(
+          NodeUtil.getSourceName(node), node.getLineno(), node.getCharno(), closurized);
+    }
   }
 
   /**

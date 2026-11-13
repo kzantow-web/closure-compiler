@@ -18,178 +18,111 @@ package com.google.javascript.jscomp;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.javascript.jscomp.base.JSCompObjects.identical;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Iterables;
-import com.google.javascript.jscomp.NodeTraversal.ScopedCallback;
+import com.google.javascript.jscomp.ReferenceCollector.Behavior;
 import com.google.javascript.rhino.JSDocInfo;
 import com.google.javascript.rhino.Node;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** Collects global variable references for use by {@link CrossChunkCodeMotion}. */
-public final class CrossChunkReferenceCollector implements ScopedCallback, CompilerPass {
-
-  /** Maps global variable name to the corresponding {@link Var} object. */
-  private final Map<String, Var> varsByName = new HashMap<>();
-
-  /**
-   * Maps a given variable to a collection of references to that name. Note that
-   * Var objects are not stable across multiple traversals (unlike scope root or
-   * name).
-   */
-  private final Map<Var, ReferenceCollection> referenceMap =
-       new LinkedHashMap<>();
-
-  /** The stack of basic blocks and scopes the current traversal is in. */
-  private final List<BasicBlock> blockStack = new ArrayList<>();
+public final class CrossChunkReferenceCollector implements CompilerPass {
 
   /** List of all top-level statements in the order they appear in the AST. */
   private final List<TopLevelStatement> topLevelStatements = new ArrayList<>();
 
-  private final ScopeCreator scopeCreator;
-
-  /**
-   * JavaScript compiler to use in traversing.
-   */
+  /** JavaScript compiler to use in traversing. */
   private final AbstractCompiler compiler;
 
-  private int statementCounter = 0;
-  private TopLevelStatementDraft topLevelStatementDraft = null;
+  private final ReferenceCollector referenceCollector;
 
-  /** Constructor initializes block stack. */
+  private int statementCounter = 0;
+  private @Nullable TopLevelStatementDraft topLevelStatementDraft = null;
+
+  /** Constructor initializes reference collector. */
   CrossChunkReferenceCollector(AbstractCompiler compiler, ScopeCreator creator) {
     this.compiler = compiler;
-    this.scopeCreator = creator;
+    this.referenceCollector =
+        new ReferenceCollector(
+            compiler,
+            new TopLevelStatementCollectingBehavior(),
+            creator,
+            this::shouldCollectVar,
+            /* collectHoistedFunctionsInReferenceOrder= */ false);
   }
 
-  /**
-   * Convenience method for running this pass over a tree with this
-   * class as a callback.
-   */
+  private boolean shouldCollectVar(Var v) {
+    // Only global, non-exported names can be moved
+    return v.isGlobal()
+        && !compiler.getCodingConvention().isExported(v.getName(), /* local= */ false);
+  }
+
+  /** Collects references and top-level statements from the given externs and root. */
   @Override
   public void process(Node externs, Node root) {
     checkState(topLevelStatements.isEmpty(), "process() called more than once");
-    NodeTraversal.builder()
-        .setCompiler(compiler)
-        .setCallback(this)
-        .setScopeCreator(scopeCreator)
-        .traverseRoots(externs, root);
+    referenceCollector.process(externs, root);
   }
 
+  /** Collects references and top-level statements from the given root. */
   public void process(Node root) {
     checkState(topLevelStatements.isEmpty(), "process() called more than once");
-    NodeTraversal.builder()
-        .setCompiler(compiler)
-        .setCallback(this)
-        .setScopeCreator(scopeCreator)
-        .traverse(root);
+    referenceCollector.process(root);
   }
 
-  /**
-   * Gets the variables that were referenced in this callback.
-   */
-  Iterable<Var> getAllSymbols() {
-    return referenceMap.keySet();
-  }
-
-  /**
-   * Gets the reference collection for the given variable.
-   */
+  /** Gets the reference collection for the given variable. */
   ReferenceCollection getReferences(Var v) {
-    return referenceMap.get(v);
+    return referenceCollector.getReferences(v);
   }
 
+  @VisibleForTesting
   ImmutableMap<String, Var> getGlobalVariableNamesMap() {
-    return ImmutableMap.copyOf(varsByName);
+    ImmutableMap.Builder<String, Var> builder = ImmutableMap.builder();
+    for (Var v : referenceCollector.getAllSymbols()) {
+      builder.put(v.getName(), v);
+    }
+    return builder.buildOrThrow();
   }
 
-  /**
-   * For each node, update the block stack and reference collection
-   * as appropriate.
-   */
-  @Override
-  public void visit(NodeTraversal t, Node n, Node parent) {
-    if (topLevelStatementDraft != null) {
+  private final class TopLevelStatementCollectingBehavior implements Behavior {
+    @Override
+    public void beforeTraverseNode(NodeTraversal t, Node n, @Nullable Node parent) {
+      if (parent != null && NodeUtil.isTopLevel(parent)) {
+        checkState(topLevelStatementDraft == null, n);
+        topLevelStatementDraft = initializeDraftStatement(t.getChunk(), n);
+      }
+    }
+
+    @Override
+    public void afterVisitNode(
+        NodeTraversal t, Node n, @Nullable Node parent, @Nullable Reference addedReference) {
+      if (topLevelStatementDraft == null) {
+        return;
+      }
       if (n.equals(topLevelStatementDraft.statementNode)) {
         topLevelStatements.add(new TopLevelStatement(topLevelStatementDraft));
         topLevelStatementDraft = null;
-      } else if (n.isName()) {
-        String varName = n.getString();
-        Var v = t.getScope().getVar(varName);
-
-        if (v != null) {
-          // Only global, non-exported names can be moved
-          if (v.isGlobal()
-              && !compiler.getCodingConvention().isExported(v.getName(), /* local */ false)) {
-            if (varsByName.containsKey(varName)) {
-              checkState(Objects.equals(varsByName.get(varName), v));
-            } else {
-              varsByName.put(varName, v);
-            }
-            Reference reference = new Reference(n, t, peek(blockStack));
-            if (reference.getNode() == topLevelStatementDraft.declaredNameNode) {
-              topLevelStatementDraft.declaredNameReference = reference;
-            } else {
-              topLevelStatementDraft.nonDeclarationReferences.add(reference);
-            }
-            addReferenceToCollection(v, reference);
-          }
+      } else if (addedReference != null && n.isName()) {
+        if (identical(addedReference.getNode(), topLevelStatementDraft.declaredNameNode)) {
+          topLevelStatementDraft.declaredNameReference = addedReference;
+        } else {
+          topLevelStatementDraft.nonDeclarationReferences.add(addedReference);
         }
       }
     }
-    if (isBlockBoundary(n, parent)) {
-      pop(blockStack);
-    }
+
+    @Override
+    public void afterExitScope(NodeTraversal t, ReferenceMap referenceMap) {}
   }
 
-  /**
-   * Updates block stack and invokes any additional behavior.
-   */
-  @Override
-  public void enterScope(NodeTraversal t) {
-    Node n = t.getScopeRoot();
-    BasicBlock parent = blockStack.isEmpty() ? null : peek(blockStack);
-    // Don't add all ES6 scope roots to blockStack, only those that are also scopes according to
-    // the ES5 scoping rules. Other nodes that ought to be considered the root of a BasicBlock
-    // are added in shouldTraverse() and removed in visit().
-    if (t.isHoistScope()) {
-      blockStack.add(new BasicBlock(parent, n));
-    }
-  }
-
-  /**
-   * Updates block stack and invokes any additional behavior.
-   */
-  @Override
-  public void exitScope(NodeTraversal t) {
-    if (t.isHoistScope()) {
-      pop(blockStack);
-    }
-  }
-
-  @Override
-  public boolean shouldTraverse(NodeTraversal t, Node n, Node parent) {
-    if (parent != null && NodeUtil.isTopLevel(parent)) {
-      checkState(topLevelStatementDraft == null, n);
-      topLevelStatementDraft = initializeDraftStatement(t.getChunk(), n);
-    }
-    // If node is a new basic block, put on basic block stack
-    if (isBlockBoundary(n, parent)) {
-      blockStack.add(new BasicBlock(peek(blockStack), n));
-    }
-    return true;
-  }
-
-  private TopLevelStatementDraft initializeDraftStatement(JSChunk module, Node statementNode) {
+  private TopLevelStatementDraft initializeDraftStatement(JSChunk chunk, Node statementNode) {
     TopLevelStatementDraft draft =
-        new TopLevelStatementDraft(statementCounter++, module, statementNode);
+        new TopLevelStatementDraft(statementCounter++, chunk, statementNode);
     // Determine whether this statement declares a name or not.
     // If so, save its name node and value node, if any.
     if (NodeUtil.isNameDeclaration(statementNode)) {
@@ -212,13 +145,15 @@ public final class CrossChunkReferenceCollector implements ScopedCallback, Compi
           // `varName = value;`
           draft.declaredNameNode = lhs;
           draft.declaredValueNode = rhs;
-        } else if (lhs.isGetProp()) {
+        } else if (lhs.isGetProp() || isPotentiallyMoveableGetElem(lhs)) {
           Node nameNode = checkNotNull(lhs.getFirstChild());
           while (nameNode.isGetProp()) {
             nameNode = checkNotNull(nameNode.getFirstChild());
           }
           if (nameNode.isName()) {
             // `varName.some.property = value;`
+            // OR
+            // `varName[someProperty] = value;`
             draft.declaredNameNode = nameNode;
             draft.declaredValueNode = rhs;
           }
@@ -262,71 +197,33 @@ public final class CrossChunkReferenceCollector implements ScopedCallback, Compi
     return draft;
   }
 
-  private static <T> T pop(List<T> list) {
-    return list.remove(list.size() - 1);
-  }
-
-  private static <T> T peek(List<T> list) {
-    return Iterables.getLast(list);
-  }
-
-  /**
-   * @return true if this node marks the start of a new basic block
-   */
-  private static boolean isBlockBoundary(Node n, Node parent) {
-    if (parent != null) {
-      switch (parent.getToken()) {
-        case DO:
-        case FOR:
-        case FOR_IN:
-        case FOR_OF:
-        case FOR_AWAIT_OF:
-        case TRY:
-        case WHILE:
-        case WITH:
-        case CLASS:
-          // NOTE: TRY has up to 3 child blocks:
-          // TRY
-          //   BLOCK
-          //   BLOCK
-          //     CATCH
-          //   BLOCK
-          // Note that there is an explicit CATCH token but no explicit
-          // FINALLY token. For simplicity, we consider each BLOCK
-          // a separate basic BLOCK.
-          return true;
-        case AND:
-        case HOOK:
-        case IF:
-        case OR:
-        case SWITCH:
-        case COALESCE:
-          // The first child of a conditional is not a boundary,
-          // but all the rest of the children are.
-          return n != parent.getFirstChild();
-
-        default:
-          break;
-      }
+  private static boolean isPotentiallyMoveableGetElem(Node maybeGetElem) {
+    if (!maybeGetElem.isGetElem()) {
+      return false;
     }
 
-    return n.isCase();
-  }
-
-  private void addReferenceToCollection(Var v, Reference reference) {
-    // Create collection if none already
-    ReferenceCollection referenceInfo =
-        referenceMap.computeIfAbsent(v, (Var k) -> new ReferenceCollection());
-
-    // Add this particular reference
-    referenceInfo.add(reference);
+    // We'll only consider a GETELEM as potentially moveable if the property being indexed is on
+    // `Symbol` (e.g. `Symbol.iterator`). We don't generally want to consider GETELEM nodes as
+    // moveable as registries (ex. `GlobalRegistry['Foo'] = Foo`) will create a reference from `Foo`
+    // to `GlobalRegistry`. As other pieces of code reference `GlobalRegistry` this will ultimately
+    // cause a large cluster of symbols that would have to be considered as moving together, but
+    // likely will no to be able to.
+    // Therefore, we we'll only consider a subset of cases, like `Symbol.iterator`, as moveable as
+    // these large reference clusters are unlikely in this case. This should allow classes that
+    // define these properties to potentialy be moved to later chunks.
+    Node property = maybeGetElem.getLastChild();
+    if (!property.isGetProp()) {
+      return false;
+    }
+    Node name = property.getFirstChild();
+    return name.isName() && name.getString().equals("Symbol");
   }
 
   List<TopLevelStatement> getTopLevelStatements() {
     return Collections.unmodifiableList(topLevelStatements);
   }
 
-  /** Determines whether the given value is eligible to be moved across modules. */
+  /** Determines whether the given value is eligible to be moved across chunks. */
   private boolean canMoveValue(Scope scope, Node valueNode) {
     // the value is only movable if it's
     // - nothing,
@@ -348,7 +245,7 @@ public final class CrossChunkReferenceCollector implements ScopedCallback, Compi
     }
 
     switch (valueNode.getToken()) {
-      case CLASS:
+      case CLASS -> {
         // NOTE: Why aren't class extends expressions checked here?
         Node classMembers = valueNode.getLastChild();
         for (Node member = classMembers.getFirstChild();
@@ -372,21 +269,24 @@ public final class CrossChunkReferenceCollector implements ScopedCallback, Compi
               // class definition time. So, we must check canMoveValue for static fields.
               return false;
             }
+          } else if (member.isBlock()) {
+            // TODO(bradfordcsmith): Ideally could move these in some cases, fix later
+            return false;
           } else {
             checkState(member.isMemberFunctionDef() || NodeUtil.isGetOrSetKey(member), member);
           }
         }
         return true;
-
-      case CALL:
+      }
+      case CALL -> {
         // In general it is not safe to move function calls, but we carve out an exception
         // for the special stub method calls used for CrossChunkMethodMotion.
         // Case: `JSCompiler_stubMethod(x)`
         Node functionName = checkNotNull(valueNode.getFirstChild());
         return functionName.isName()
             && functionName.getString().equals(CrossChunkMethodMotion.STUB_METHOD_NAME);
-
-      case ARRAYLIT:
+      }
+      case ARRAYLIT -> {
         // Movable if all of the array values are movable.
         for (Node child = valueNode.getFirstChild(); child != null; child = child.getNext()) {
           if (!canMoveValue(scope, child)) {
@@ -395,8 +295,8 @@ public final class CrossChunkReferenceCollector implements ScopedCallback, Compi
         }
 
         return true;
-
-      case OBJECTLIT:
+      }
+      case OBJECTLIT -> {
         // Movable if all of the keys and values are movable.
         for (Node child = valueNode.getFirstChild(); child != null; child = child.getNext()) {
           switch (child.getToken()) {
@@ -426,8 +326,8 @@ public final class CrossChunkReferenceCollector implements ScopedCallback, Compi
         }
 
         return true;
-
-      case NAME:
+      }
+      case NAME -> {
         // If the value is guaranteed to never be changed after
         // this reference, then we can move it.
         Var v = scope.getVar(valueNode.getString());
@@ -439,9 +339,8 @@ public final class CrossChunkReferenceCollector implements ScopedCallback, Compi
             return true;
           }
         }
-        break;
-
-      case TEMPLATELIT:
+      }
+      case TEMPLATELIT -> {
         // A template literal is movable if all of the substitutions it contains are movable.
         for (Node child = valueNode.getFirstChild(); child != null; child = child.getNext()) {
           if (child.isTemplateLitSub()) {
@@ -453,9 +352,20 @@ public final class CrossChunkReferenceCollector implements ScopedCallback, Compi
           }
         }
         return true;
-
-      default:
-        break;
+      }
+      case GETPROP -> {
+        // `Symbol` is a built-in JavaScript object that is guaranteed to be unique. Therefore it
+        // is movable. Any properties on `Symbol` are also movable (e.g `Symbol.iterator`).
+        Node child = valueNode.getFirstChild();
+        if (child != null && child.isName()) {
+          String symbol = child.getString();
+          if (symbol != null && symbol.equals("Symbol")) {
+            return true;
+          }
+        }
+        return false;
+      }
+      default -> {}
     }
 
     return false;
@@ -467,7 +377,7 @@ public final class CrossChunkReferenceCollector implements ScopedCallback, Compi
     /** 0-based index indicating original order of this statement in the source. */
     private final int originalOrder;
 
-    private final JSChunk module;
+    private final JSChunk chunk;
     private final Node statementNode;
     private final List<Reference> nonDeclarationReferences;
     private final Reference declaredNameReference;
@@ -475,7 +385,7 @@ public final class CrossChunkReferenceCollector implements ScopedCallback, Compi
 
     TopLevelStatement(TopLevelStatementDraft draft) {
       this.originalOrder = draft.originalOrder;
-      this.module = draft.module;
+      this.chunk = draft.chunk;
       this.statementNode = draft.statementNode;
       this.nonDeclarationReferences = Collections.unmodifiableList(draft.nonDeclarationReferences);
       this.declaredNameReference = draft.declaredNameReference;
@@ -486,8 +396,8 @@ public final class CrossChunkReferenceCollector implements ScopedCallback, Compi
       return originalOrder;
     }
 
-    JSChunk getModule() {
-      return module;
+    JSChunk getChunk() {
+      return chunk;
     }
 
     Node getStatementNode() {
@@ -523,16 +433,16 @@ public final class CrossChunkReferenceCollector implements ScopedCallback, Compi
     /** 0-based index indicating original order of this statement in the source. */
     final int originalOrder;
 
-    final JSChunk module;
+    final JSChunk chunk;
     final Node statementNode;
     final List<Reference> nonDeclarationReferences = new ArrayList<>();
-    Node declaredValueNode = null;
-    Node declaredNameNode = null;
-    Reference declaredNameReference = null;
+    @Nullable Node declaredValueNode = null;
+    @Nullable Node declaredNameNode = null;
+    @Nullable Reference declaredNameReference = null;
 
-    TopLevelStatementDraft(int originalOrder, JSChunk module, Node statementNode) {
+    TopLevelStatementDraft(int originalOrder, JSChunk chunk, Node statementNode) {
       this.originalOrder = originalOrder;
-      this.module = module;
+      this.chunk = chunk;
       this.statementNode = statementNode;
     }
   }

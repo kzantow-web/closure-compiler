@@ -1,5 +1,5 @@
 /*
- * Copyright 2008 The Closure Compiler Authors
+ * Copyright 2025 The Closure Compiler Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -154,6 +154,13 @@ Event.prototype.path;
  * @see https://www.w3.org/TR/shadow-dom/#widl-Event-deepPath
  */
 Event.prototype.deepPath;
+
+
+/**
+ * @type {boolean}
+ * @see https://developer.mozilla.org/en-US/docs/Web/API/Event/isTrusted
+ */
+Event.prototype.isTrusted;
 
 /**
  * @return {undefined}
@@ -370,6 +377,50 @@ MouseEvent.prototype.button;
 /** @type {EventTarget} */
 MouseEvent.prototype.relatedTarget;
 
+/**
+ * @constructor
+ * @deprecated
+ * @extends {UIEvent}
+ */
+function TextEvent() {}
+
+/**
+ * @type {string}
+ * @deprecated
+ */
+TextEvent.prototype.data;
+
+/**
+ * @param {string} type
+ * @param {boolean=} bubbles
+ * @param {boolean=} cancelable
+ * @param {?Window=} view
+ * @param {string=} data
+ * @return {undefined}
+ * @deprecated
+ */
+TextEvent.prototype.initTextEvent = function(type, bubbles, cancelable, view, data) {};
+
+/**
+ * @record
+ * @extends {EventInit}
+ */
+function TrackEventInit() {}
+
+/** @type {!TextTrack|undefined} */
+TrackEventInit.prototype.track;
+
+/**
+ * @constructor
+ * @extends {Event}
+ * @param {string} type
+ * @param {TrackEventInit=} opt_eventInitDict
+ * @see https://dom.spec.whatwg.org/#interface-trackevent
+ */
+function TrackEvent(type, opt_eventInitDict) {}
+
+/** @type {!TextTrack|undefined} */
+TrackEvent.prototype.track;
 
 /**
  * @constructor
@@ -526,6 +577,9 @@ AddEventListenerOptions.prototype.passive;
 /** @type {boolean|undefined} */
 AddEventListenerOptions.prototype.once;
 
+/** @type {AbortSignal|undefined} */
+AddEventListenerOptions.prototype.signal;
+
 /**
  * @record
  * @extends {UIEventInit}
@@ -537,6 +591,11 @@ function InputEventInit() {}
 /** @type {undefined|?string} */
 InputEventInit.prototype.data;
 
+/**
+ * @return {!Array<!StaticRange>}
+ */
+InputEvent.prototype.getComposedRanges = function() {};
+
 /** @type {undefined|boolean} */
 InputEventInit.prototype.isComposing;
 
@@ -546,10 +605,9 @@ InputEventInit.prototype.inputType;
 /** @type {undefined|?DataTransfer} */
 InputEventInit.prototype.dataTransfer;
 
+/** @type {undefined|!Array<!StaticRange>} */
+InputEventInit.prototype.targetRanges;
 
-// TODO(charleyroy): Add getTargetRanges() once a consensus has been made
-// regarding how to structure these values. See
-// https://github.com/w3c/input-events/issues/38.
 /**
  * @constructor
  * @extends {UIEvent}
@@ -564,7 +622,7 @@ function InputEvent(type, opt_eventInitDict) {}
 InputEvent.prototype.data;
 
 /** @type {boolean} */
-InputEvent.prototype.isComposed;
+InputEvent.prototype.isComposing;
 
 /** @type {string} */
 InputEvent.prototype.inputType;
@@ -572,6 +630,8 @@ InputEvent.prototype.inputType;
 /** @type {?DataTransfer} */
 InputEvent.prototype.dataTransfer;
 
+/** @type {function():!Array<!StaticRange>} */
+InputEvent.prototype.getTargetRanges;
 
 /**
  * @record
@@ -601,3 +661,40 @@ PromiseRejectionEvent.prototype.promise;
 
 /** @type {*} */
 PromiseRejectionEvent.prototype.reason;
+
+/**
+ * @constructor
+ * @extends {Event}
+ */
+function BeforeUnloadEvent() {}
+
+/** @type {?} */
+BeforeUnloadEvent.prototype.returnValue;
+
+/**
+ * @record
+ * @extends {EventInit}
+ */
+function CommandEventInit() {}
+
+/** @type {string|undefined} */
+CommandEventInit.prototype.command;
+
+/** @type {Element|null|undefined} */
+CommandEventInit.prototype.source;
+
+
+/**
+ * @constructor
+ * @extends {Event}
+ * @param {string} type
+ * @param {CommandEventInit=} opt_eventInitDict
+ * @see https://developer.mozilla.org/docs/Web/API/CommandEvent
+ */
+function CommandEvent(type, opt_eventInitDict) {}
+
+/** @type {string} */
+CommandEvent.prototype.command;
+
+/** @type {!Element|null} */
+CommandEvent.prototype.source;

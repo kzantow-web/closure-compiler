@@ -168,11 +168,10 @@ public class TemplatizedTypeTest extends BaseJSTypeTestCase {
         registry.createTemplatizedType(rawType, ImmutableList.of(UNKNOWN_TYPE, UNKNOWN_TYPE));
     assertType(rawType).isEqualTo(templatizedUnknownUnknown);
 
-    // TODO(b/176172011): Should test `isNotEqualTo`, but if possible delete CHECKED_UNKNOWN_TYPE.
     JSType templatizedCheckedUnknownUnknown =
         registry.createTemplatizedType(
             rawType, ImmutableList.of(CHECKED_UNKNOWN_TYPE, UNKNOWN_TYPE));
-    assertType(rawType).isEqualTo(templatizedCheckedUnknownUnknown);
+    assertType(rawType).isNotEqualTo(templatizedCheckedUnknownUnknown);
 
     TemplateType ramdomTemplate = this.registry.createTemplateType("X");
     JSType templatizedTemplateUnknown =
@@ -232,6 +231,50 @@ public class TemplatizedTypeTest extends BaseJSTypeTestCase {
 
       JSType templatizedNumber = registry.createTemplatizedType(rawType, NUMBER_TYPE);
       assertType(templatizedNumber.findPropertyType("property")).isEqualTo(NUMBER_TYPE);
+    }
+  }
+
+  @Test
+  public void testGreatestSubtypeWithSubclass() {
+    try (JSTypeResolver.Closer closer = this.registry.getResolver().openForDefinition()) {
+      TemplateType templateT = registry.createTemplateType("T");
+
+      FunctionType baseCtor = registry.createConstructorType(
+          "Base", null, null, null, ImmutableList.of(templateT), false);
+      ObjectType baseRaw = baseCtor.getInstanceType();
+
+      FunctionType subCtor = registry.createConstructorType(
+          "Sub", null, null, null, ImmutableList.of(templateT), false);
+      subCtor.setPrototypeBasedOn(baseRaw);
+      ObjectType subRaw = subCtor.getInstanceType();
+
+      JSType baseNumber = registry.createTemplatizedType(baseRaw, NUMBER_TYPE);
+      JSType subNumber = registry.createTemplatizedType(subRaw, NUMBER_TYPE);
+
+      assertType(baseNumber.getGreatestSubtype(subNumber)).isEqualTo(subNumber);
+      assertType(subNumber.getGreatestSubtype(baseNumber)).isEqualTo(subNumber);
+    }
+  }
+
+  @Test
+  public void testGreatestSubtypeWithIncompatibleGenerics() {
+    try (JSTypeResolver.Closer closer = this.registry.getResolver().openForDefinition()) {
+      TemplateType templateT = registry.createTemplateType("T");
+
+      FunctionType baseCtor = registry.createConstructorType(
+          "Base", null, null, null, ImmutableList.of(templateT), false);
+      ObjectType baseRaw = baseCtor.getInstanceType();
+
+      FunctionType subCtor = registry.createConstructorType(
+          "Sub", null, null, null, ImmutableList.of(templateT), false);
+      subCtor.setPrototypeBasedOn(baseRaw);
+      ObjectType subRaw = subCtor.getInstanceType();
+
+      JSType baseNumber = registry.createTemplatizedType(baseRaw, NUMBER_TYPE);
+      JSType subString = registry.createTemplatizedType(subRaw, STRING_TYPE);
+
+      assertType(baseNumber.getGreatestSubtype(subString)).isEqualTo(NO_OBJECT_TYPE);
+      assertType(subString.getGreatestSubtype(baseNumber)).isEqualTo(NO_OBJECT_TYPE);
     }
   }
 

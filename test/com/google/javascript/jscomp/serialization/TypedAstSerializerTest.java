@@ -16,6 +16,7 @@
 
 package com.google.javascript.jscomp.serialization;
 
+import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.extensions.proto.ProtoTruth.assertThat;
 
 import com.google.common.base.Preconditions;
@@ -24,12 +25,14 @@ import com.google.common.collect.ImmutableSet;
 import com.google.javascript.jscomp.Compiler;
 import com.google.javascript.jscomp.CompilerPass;
 import com.google.javascript.jscomp.CompilerTestCase;
+import com.google.javascript.jscomp.SourceFile;
 import com.google.javascript.rhino.Node;
 import com.google.protobuf.Descriptors.FieldDescriptor;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import org.jspecify.annotations.Nullable;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -56,25 +59,25 @@ public class TypedAstSerializerTest extends CompilerTestCase {
    */
   private static final Externs CONSOLE_EXTERNS =
       externs(
-          lines(
-              "/** @constructor */",
-              "function Console() {};",
-              "",
-              "/**",
-              " * @param {...*} var_args",
-              " * @return {undefined}",
-              " */",
-              "Console.prototype.log = function(var_args) {};",
-              "",
-              "/**",
-              " * @param {...*} var_args",
-              " * @return {undefined}",
-              " */",
-              "Console.prototype.error = function(var_args) {};",
-              "",
-              "/** @const {!Console} */",
-              "var console;",
-              ""));
+          """
+          /** @constructor */
+          function Console() {};
+
+          /**
+           * @param {...*} var_args
+           * @return {undefined}
+           */
+          Console.prototype.log = function(var_args) {};
+
+          /**
+           * @param {...*} var_args
+           * @return {undefined}
+           */
+          Console.prototype.error = function(var_args) {};
+
+          /** @const {!Console} */
+          var console;
+          """);
 
   // Proto fields commonly ignored in tests because hardcoding their values is brittle
   private static final FieldDescriptor OBJECT_UUID =
@@ -84,7 +87,7 @@ public class TypedAstSerializerTest extends CompilerTestCase {
       ImmutableList.of(OBJECT_UUID);
 
   /** Holds the serialized AST created by the last executed test method. */
-  private TypedAst testResult = null;
+  private @Nullable TypedAst testResult = null;
 
   @Override
   @Before
@@ -113,7 +116,11 @@ public class TypedAstSerializerTest extends CompilerTestCase {
 
       final TypedAstSerializer typedAstSerializer =
           new TypedAstSerializer(
-              compiler, SerializationOptions.INCLUDE_DEBUG_INFO_AND_EXPENSIVE_VALIDITY_CHECKS);
+              compiler,
+              SerializationOptions.builder()
+                  .setIncludeDebugInfo(true)
+                  .setRunValidation(true)
+                  .build());
       testResult = typedAstSerializer.serializeRoots(externs, root);
     };
   }
@@ -147,7 +154,6 @@ public class TypedAstSerializerTest extends CompilerTestCase {
     new Tester()
         .expectType(ObjectTypeProto.newBuilder()) // Console
         .expectTypeWithProperties(ObjectTypeProto.newBuilder(), "log") // Console.prototype
-        .expectType(ObjectTypeProto.newBuilder().setIsInvalidating(true)) // Console.prototype.log
         .test("console.log(1);");
   }
 
@@ -168,8 +174,53 @@ public class TypedAstSerializerTest extends CompilerTestCase {
     new Tester()
         .expectType(ObjectTypeProto.newBuilder()) // Console
         .expectTypeWithProperties(ObjectTypeProto.newBuilder(), "log") // Console.prototype
-        .expectType(ObjectTypeProto.newBuilder().setIsInvalidating(true)) // Console.prototype.log
         .test("console.log(1);");
+  }
+
+  @Test
+  public void ignoresIjsFilesInExternAst() {
+    enableTypeCheck();
+    testSame(
+        externs(
+            SourceFile.fromCode("regular_externs.js", "/** @externs */ var x;"),
+            SourceFile.fromCode(
+                "dep.externs.js.i.js",
+                "/** @fileoverview @typeSummary */\n/** @externs */ var y;")),
+        srcs("x = 1;"));
+
+    ImmutableList<String> externNames =
+        testResult.getExternAstList().stream()
+            .map(
+                lazyAst ->
+                    testResult
+                        .getSourceFilePool()
+                        .getSourceFile(lazyAst.getSourceFile() - 1)
+                        .getFilename())
+            .collect(ImmutableList.toImmutableList());
+    assertThat(externNames).contains("regular_externs.js");
+    assertThat(externNames).doesNotContain("dep.externs.js.i.js");
+  }
+
+  @Test
+  public void ignoresIjsFilesInCodeAst() {
+    enableTypeCheck();
+    testSame(
+        externs(ImmutableList.of()),
+        srcs(
+            SourceFile.fromCode("src.js", "var a = 1;"),
+            SourceFile.fromCode("dep.i.js", "/** @typeSummary */ var b;")));
+
+    ImmutableList<String> codeNames =
+        testResult.getCodeAstList().stream()
+            .map(
+                lazyAst ->
+                    testResult
+                        .getSourceFilePool()
+                        .getSourceFile(lazyAst.getSourceFile() - 1)
+                        .getFilename())
+            .collect(ImmutableList.toImmutableList());
+    assertThat(codeNames).contains("src.js");
+    assertThat(codeNames).doesNotContain("dep.i.js");
   }
 
   private class Tester {

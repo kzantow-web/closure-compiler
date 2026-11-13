@@ -34,6 +34,7 @@ public class ForbidDynamicImportUsage implements CompilerPass, NodeTraversal.Cal
   @Override
   public void process(Node externs, Node root) {
     NodeTraversal.traverse(compiler, root, this);
+    this.compiler.markFeatureNotAllowed(Feature.DYNAMIC_IMPORT);
   }
 
   @Override
@@ -55,11 +56,8 @@ public class ForbidDynamicImportUsage implements CompilerPass, NodeTraversal.Cal
   @Override
   public void visit(NodeTraversal t, Node n, Node parent) {
     switch (n.getToken()) {
-      case DYNAMIC_IMPORT:
-        t.report(n, DYNAMIC_IMPORT_USAGE);
-        break;
-      default:
-        break;
+      case DYNAMIC_IMPORT -> t.report(n, DYNAMIC_IMPORT_USAGE);
+      default -> {}
     }
   }
 }

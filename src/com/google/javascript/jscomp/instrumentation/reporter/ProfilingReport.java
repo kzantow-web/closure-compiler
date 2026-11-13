@@ -18,7 +18,6 @@ package com.google.javascript.jscomp.instrumentation.reporter;
 
 import static java.util.stream.Collectors.joining;
 
-import com.google.common.annotations.GwtIncompatible;
 import com.google.common.collect.ImmutableList;
 import com.google.javascript.jscomp.instrumentation.reporter.proto.FileProfile;
 import com.google.javascript.jscomp.instrumentation.reporter.proto.InstrumentationPoint;
@@ -36,7 +35,6 @@ import java.util.stream.Collectors;
  * A class that maintains all information about the production instrumentation results which will be
  * converted to a JSON.
  */
-@GwtIncompatible
 final class ProfilingReport {
 
   /**
@@ -103,7 +101,7 @@ final class ProfilingReport {
     // Header row.
     output.add(
         ImmutableList.of(
-            "File", "Function name", "Line", "Type", "Total executed", "Reports occured"));
+            "File", "Function name", "Line", "Type", "Total executed", "Reports occurred"));
     // Body rows.
     for (Map.Entry<InstrumentationPoint, InstrumentationPointMetrics> entry : result) {
       output.add(
@@ -124,4 +122,6 @@ final class ProfilingReport {
     private long totalTimesExecuted = 0;
     private int numberOfReports = 0;
   }
+
+  private ProfilingReport() {}
 }

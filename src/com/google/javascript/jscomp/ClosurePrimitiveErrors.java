@@ -56,6 +56,11 @@ public final class ClosurePrimitiveErrors {
           "JSC_GOOG_MODULE_INVALID_GET_NAMESPACE",
           "goog.module.get parameter must be a string literal.");
 
+  static final DiagnosticType INVALID_REQUIRE_DYNAMIC =
+      DiagnosticType.error(
+          "JSC_GOOG_MODULE_INVALID_REQUIRE_DYNAMIC_NAMESPACE",
+          "goog.requireDynamic parameter must be a string literal.");
+
   static final DiagnosticType INVALID_REQUIRE_NAMESPACE =
       DiagnosticType.error(
           "JSC_GOOG_MODULE_INVALID_REQUIRE_NAMESPACE",
@@ -96,4 +101,10 @@ public final class ClosurePrimitiveErrors {
   static final DiagnosticType INVALID_ARGUMENT_ERROR =
       DiagnosticType.error(
           "JSC_INVALID_ARGUMENT_ERROR", "method \"{0}\" called with invalid argument");
+
+  public static final DiagnosticType GOOG_MODULE_GET_OF_WEAK_MODULE =
+      DiagnosticType.error(
+          "JSC_GOOG_MODULE_GET_OF_WEAK_MODULE",
+          "goog.module.get of \"{0}\" references a namespace that is only imported by"
+              + " goog.requireType.");
 }

@@ -21,6 +21,7 @@ import static com.google.javascript.jscomp.base.JSCompDoubles.isPositive;
 
 import com.google.errorprone.annotations.ForOverride;
 import com.google.javascript.rhino.Node;
+import java.math.BigInteger;
 
 /**
  * Abstracted consumer of the CodeGenerator output.
@@ -55,8 +56,14 @@ public abstract class CodeConsumer {
   }
 
   /**
-   * Provides a means of interrupting the CodeGenerator. Derived classes should
-   * return false to stop further processing.
+   * Indicates to the CodeConsumer that this Node might carry licensing information, and allows the
+   * code consumer to manage licenses as it sees fit.
+   */
+  void trackLicenses(Node node) {}
+
+  /**
+   * Provides a means of interrupting the CodeGenerator. Derived classes should return false to stop
+   * further processing.
    */
   boolean continueProcessing() {
     return true;
@@ -86,8 +93,8 @@ public abstract class CodeConsumer {
       // need space to separate. This is not pretty printing.
       // For example: "return foo;"
       append(" ");
-    } else if (c == '/' && getLastChar() == '/') {
-      // Do not allow a forward slash to appear after a DIV.
+    } else if (c == '/' && (getLastChar() == '/' || getLastChar() == '<')) {
+      // Do not allow a forward slash to appear after a DIV or LT.
       // For example,
       // REGEXP DIV REGEXP
       // is valid and should print like
@@ -307,7 +314,7 @@ public abstract class CodeConsumer {
     } else if (Character.isLetter(first) && isWordChar(prev)) {
       // Make sure there is a space after e.g. instanceof , typeof
       append(" ");
-    } else if (prev == '-' && first == '>' || prev == '<' && first == '!') {
+    } else if ((prev == '-' && first == '>') || (prev == '<' && first == '!')) {
       // Make sure that we don't emit "<!--" or "-->"
       append(" ");
     }
@@ -325,10 +332,12 @@ public abstract class CodeConsumer {
 
   void addNumber(double x, Node n) {
     checkState(isPositive(x), x);
+    addConstant(formatNumber(x));
+  }
 
+  static String formatNumber(double x) {
     if ((long) x != x) {
-      addConstant(String.valueOf(x).replace(".0E", "E").replaceFirst("^0\\.", "."));
-      return;
+      return String.valueOf(x).replace(".0E", "E").replaceFirst("^0\\.", ".");
     }
 
     long value = (long) x;
@@ -342,23 +351,27 @@ public abstract class CodeConsumer {
     }
 
     if (exp > 2) {
-      addConstant(mantissa + "E" + exp);
-      return;
+      return mantissa + "E" + exp;
     }
 
     String decValueString = Long.toString(value);
     if (value <= 1000000000000L) {
       // Values <1E12 are shorter in decimal
-      addConstant(decValueString);
-      return;
+      return decValueString;
     }
 
     String hexValueString = Long.toHexString(value);
     if (hexValueString.length() + 2 < decValueString.length()) {
-      addConstant("0x" + hexValueString);
+      return "0x" + hexValueString;
     } else {
-      addConstant(decValueString);
+      return decValueString;
     }
+  }
+
+  void addBigInt(BigInteger bi) {
+    String hexEncoded = "0x" + bi.toString(16) + "n";
+    String decimalEncoded = bi + "n";
+    addConstant(hexEncoded.length() < decimalEncoded.length() ? hexEncoded : decimalEncoded);
   }
 
   void addConstant(String newcode) {

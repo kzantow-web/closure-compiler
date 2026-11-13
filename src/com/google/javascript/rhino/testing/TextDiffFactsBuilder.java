@@ -45,11 +45,11 @@ import static java.util.stream.Collectors.joining;
 
 import com.github.difflib.DiffUtils;
 import com.github.difflib.UnifiedDiffUtils;
-import com.github.difflib.algorithm.DiffException;
 import com.github.difflib.patch.Patch;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.common.truth.Fact;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.util.List;
 
 /**
@@ -66,11 +66,13 @@ public final class TextDiffFactsBuilder {
     this.title = title;
   }
 
+  @CanIgnoreReturnValue
   public TextDiffFactsBuilder expectedText(String expectedText) {
     this.expectedText = expectedText;
     return this;
   }
 
+  @CanIgnoreReturnValue
   public TextDiffFactsBuilder actualText(String actualText) {
     this.actualText = actualText;
     return this;
@@ -81,21 +83,15 @@ public final class TextDiffFactsBuilder {
    * text strings, which must be specified by calling their methods before calling this one.
    */
   public ImmutableList<Fact> build() {
-    try {
-      // The diff algorithm expects to work on a list, so we need to split the text into
-      // lines.
-      final Splitter lineSplitter = Splitter.on('\n');
-      final List<String> expectedLines = lineSplitter.splitToList(checkNotNull(expectedText));
-      final List<String> actualLines = lineSplitter.splitToList(checkNotNull(actualText));
-      final Patch<String> patch = DiffUtils.diff(expectedLines, actualLines);
-      final List<String> unifiedDiff =
-          UnifiedDiffUtils.generateUnifiedDiff(
-              "expected", "actual", expectedLines, patch, /* contextSize= */ 10);
-      return ImmutableList.of(fact(title, unifiedDiff.stream().collect(joining("\n"))));
-    } catch (DiffException e) {
-      // It's unclear when this exception happens.
-      // It may indicate a bug in the diff library itself.
-      throw new IllegalStateException(e);
-    }
+    // The diff algorithm expects to work on a list, so we need to split the text into
+    // lines.
+    final Splitter lineSplitter = Splitter.on('\n');
+    final List<String> expectedLines = lineSplitter.splitToList(checkNotNull(expectedText));
+    final List<String> actualLines = lineSplitter.splitToList(checkNotNull(actualText));
+    final Patch<String> patch = DiffUtils.diff(expectedLines, actualLines);
+    final List<String> unifiedDiff =
+        UnifiedDiffUtils.generateUnifiedDiff(
+            "expected", "actual", expectedLines, patch, /* contextSize= */ 10);
+    return ImmutableList.of(fact(title, unifiedDiff.stream().collect(joining("\n"))));
   }
 }

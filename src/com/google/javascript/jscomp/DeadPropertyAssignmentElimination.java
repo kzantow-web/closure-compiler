@@ -28,29 +28,30 @@ import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
 import java.util.ArrayDeque;
 import java.util.Deque;
-import java.util.HashMap;
-import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Queue;
 import java.util.Set;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * An optimization pass that finds and removes dead property assignments within functions and
  * classes.
  *
  * <p>This pass does not currently use the control-flow graph. It makes the following assumptions:
+ *
  * <ul>
- * <li>Functions with inner functions are not processed.</li>
- * <li>All properties are read whenever entering a block node. Dead assignments within a block
- * are processed.</li>
- * <li>Hook nodes are not processed (it's assumed they read everything)</li>
- * <li>Switch blocks are not processed (it's assumed they read everything)</li>
- * <li>Any reference to a property getter/setter is treated like a call that escapes all props.</li>
- * <li>If there's an Object.definePropert{y,ies} call where the object or property name is aliased
- * then the optimization does not run at all.</li>
- * <li>Properties names defined in externs will not be pruned.</li>
+ *   <li>Functions with inner functions or non-static class field initializers are not processed.
+ *   <li>All properties are read whenever entering a block node. Dead assignments within a block are
+ *       processed.
+ *   <li>Hook nodes are not processed (it's assumed they read everything)
+ *   <li>Switch blocks are not processed (it's assumed they read everything)
+ *   <li>Any reference to a property getter/setter is treated like a call that escapes all props.
+ *   <li>If there's an Object.definePropert{y,ies} call where the object or property name is aliased
+ *       then the optimization does not run at all.
+ *   <li>Properties names defined in externs will not be pruned.
  * </ul>
  */
 public class DeadPropertyAssignmentElimination implements CompilerPass {
@@ -93,7 +94,9 @@ public class DeadPropertyAssignmentElimination implements CompilerPass {
       }
 
       Node body = NodeUtil.getFunctionBody(root);
-      if (!body.hasChildren() || NodeUtil.has(body, Node::isFunction, alwaysTrue())) {
+      if (!body.hasChildren()
+          || NodeUtil.has(
+              body, NodeUtil::isFunctionOrNonStaticClassFieldInitializer, alwaysTrue())) {
         return;
       }
 
@@ -144,7 +147,7 @@ public class DeadPropertyAssignmentElimination implements CompilerPass {
     // may mean that the first write can be removed (see isSafeToRemove).
     private final Deque<PropertyWrite> writes = new ArrayDeque<>();
 
-    private final Set<Property> children = new HashSet<>();
+    private final Set<Property> children = new LinkedHashSet<>();
 
     Property(String name) {
       this.name = name;
@@ -156,13 +159,11 @@ public class DeadPropertyAssignmentElimination implements CompilerPass {
       }
     }
 
-    /**
-     * Marks all children of this property as read.
-     */
+    /** Marks all children of this property as read. */
     void markChildrenRead() {
       // If a property is in propertiesSet, it has been added to the queue and processed,
       // it will not be added to the queue again.
-      Set<Property> propertiesSet = new HashSet<>(children);
+      Set<Property> propertiesSet = new LinkedHashSet<>(children);
       Queue<Property> propertyQueue = new ArrayDeque<>(propertiesSet);
 
       // Ensure we don't process ourselves.
@@ -208,7 +209,6 @@ public class DeadPropertyAssignmentElimination implements CompilerPass {
     void markRead() {
       isRead = true;
     }
-
   }
 
   /**
@@ -223,7 +223,7 @@ public class DeadPropertyAssignmentElimination implements CompilerPass {
      * <p>Note: the references {@code a.b} and {@code c.b} will assume that it's the same b, because
      * a and c may be aliased, and we don't track aliasing.
      */
-    final Map<String, Property> propertyMap = new HashMap<>();
+    final Map<String, Property> propertyMap = new LinkedHashMap<>();
 
     /** A set of properties names that are potentially unsafe to remove duplicate writes to. */
     private final Set<String> skiplistedPropNames;
@@ -233,12 +233,12 @@ public class DeadPropertyAssignmentElimination implements CompilerPass {
     }
 
     /**
-     * Gets a {@link Property} given the node that references it; the {@link Property} is created
-     * if it does not already exist.
+     * Gets a {@link Property} given the node that references it; the {@link Property} is created if
+     * it does not already exist.
      *
      * @return A {@link Property}, or null if the provided node is not a qualified name.
      */
-    private Property getOrCreateProperty(Node propNode) {
+    private @Nullable Property getOrCreateProperty(Node propNode) {
       if (!propNode.isQualifiedName()) {
         return null;
       }
@@ -303,18 +303,10 @@ public class DeadPropertyAssignmentElimination implements CompilerPass {
     }
 
     private static boolean isConditionalExpression(Node n) {
-      switch (n.getToken()) {
-        case AND:
-        case OR:
-        case HOOK:
-        case COALESCE:
-        case OPTCHAIN_CALL:
-        case OPTCHAIN_GETELEM:
-        case OPTCHAIN_GETPROP:
-          return true;
-        default:
-          return false;
-      }
+      return switch (n.getToken()) {
+        case AND, OR, HOOK, COALESCE, OPTCHAIN_CALL, OPTCHAIN_GETELEM, OPTCHAIN_GETPROP -> true;
+        default -> false;
+      };
     }
 
     private void visitAssignmentLhs(Node lhs) {
@@ -356,13 +348,13 @@ public class DeadPropertyAssignmentElimination implements CompilerPass {
     }
 
     private boolean visitNode(Node n, Node parent) {
-      switch (n.getToken()) {
-        case GETPROP:
+      return switch (n.getToken()) {
+        case GETPROP -> {
           // Handle potential getters/setters.
           if (n.isGetProp() && skiplistedPropNames.contains(n.getString())) {
             // We treat getters/setters as if they were a call, thus we mark all properties as read.
             markAllPropsRead();
-            return true;
+            yield true;
           }
 
           if (NodeUtil.isAssignmentOp(parent) && parent.getFirstChild() == n) {
@@ -370,7 +362,7 @@ public class DeadPropertyAssignmentElimination implements CompilerPass {
             // We'll handle this write in the visit() method
             // We need to continue traversing, because there could be a function call
             // child.
-            return true;
+            yield true;
           }
           Property property = getOrCreateProperty(n);
           if (property != null) {
@@ -384,35 +376,51 @@ public class DeadPropertyAssignmentElimination implements CompilerPass {
               property.markChildrenRead();
             }
           }
-          return true;
-
-        case THIS:
-        case NAME:
+          yield true;
+        }
+        case THIS, NAME -> {
           Property nameProp = checkNotNull(getOrCreateProperty(n));
           nameProp.markLastWriteRead();
           if (!parent.isGetProp()) {
             nameProp.markChildrenRead();
           }
-          return true;
-
-        case THROW:
-        case FOR:
-        case FOR_IN:
-        case SWITCH:
-          // TODO(kevinoconnor): Switch/for statements need special consideration since they may
-          // execute out of order.
+          yield true;
+        }
+        case THROW, FOR, FOR_IN, FOR_OF, FOR_AWAIT_OF, ITER_SPREAD, ARRAY_PATTERN, SWITCH -> {
+          // Loops and switch statements may execute out of order, and implicit iteration operations
+          // (for-of, for-await-of, spread, array destructuring) invoke arbitrary JS iterator
+          // methods which can read properties.
           markAllPropsRead();
-          return false;
-        case BLOCK:
+          yield false;
+        }
+        case OBJECT_PATTERN -> {
+          for (Node child = n.getFirstChild(); child != null; child = child.getNext()) {
+            if (child.isStringKey()) {
+              String propName = child.getString();
+              Property property = propertyMap.get(propName);
+              if (property != null) {
+                property.markLastWriteRead();
+                property.markChildrenRead();
+              }
+            } else {
+              markAllPropsRead();
+              break;
+            }
+          }
+          yield true;
+        }
+        case BLOCK -> {
           visitBlock(n);
-          return true;
-        default:
+          yield true;
+        }
+        default -> {
           if (isConditionalExpression(n)) {
             markAllPropsRead();
-            return false;
+            yield false;
           }
-          return true;
-      }
+          yield true;
+        }
+      };
     }
 
     private void markAllPropsRead() {

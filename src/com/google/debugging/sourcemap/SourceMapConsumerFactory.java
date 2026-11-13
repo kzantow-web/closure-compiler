@@ -16,9 +16,11 @@
 
 package com.google.debugging.sourcemap;
 
-/**
- * Detect and parse the provided source map.
- */
+import static com.google.common.base.Preconditions.checkArgument;
+
+import org.jspecify.annotations.Nullable;
+
+/** Detect and parse the provided source map. */
 public final class SourceMapConsumerFactory {
 
   /** not constructible */
@@ -27,10 +29,8 @@ public final class SourceMapConsumerFactory {
   /**
    * @param contents The string representing the source map file contents.
    * @return The parsed source map.
-   * @throws SourceMapParseException
    */
-  public static SourceMapping parse(String contents)
-      throws SourceMapParseException {
+  public static SourceMapping parse(String contents) throws SourceMapParseException {
      return parse(contents, null);
   }
 
@@ -38,9 +38,8 @@ public final class SourceMapConsumerFactory {
    * @param contents The string representing the source map file contents.
    * @param supplier A supplier for any referenced maps.
    * @return The parsed source map.
-   * @throws SourceMapParseException
    */
-  public static SourceMapping parse(String contents, SourceMapSupplier supplier)
+  public static SourceMapping parse(String contents, @Nullable SourceMapSupplier supplier)
       throws SourceMapParseException {
     // Version 1, starts with a magic string
     if (contents.startsWith("/** Begin line maps. **/")) {
@@ -50,18 +49,38 @@ public final class SourceMapConsumerFactory {
       SourceMapObject sourceMapObject = SourceMapObjectParser.parse(contents);
 
       // Check basic assertions about the format.
-      switch (sourceMapObject.getVersion()) {
-        case 3: {
-          SourceMapConsumerV3 consumer =  new SourceMapConsumerV3();
+      return switch (sourceMapObject.getVersion()) {
+        case 3 -> {
+          SourceMapConsumerV3 consumer = new SourceMapConsumerV3();
           consumer.parse(sourceMapObject, supplier);
-          return consumer;
+          yield consumer;
         }
-        default:
-          throw new SourceMapParseException(
-              "Unknown source map version:" + sourceMapObject.getVersion());
-      }
+        default ->
+            throw new SourceMapParseException(
+                "Unknown source map version:" + sourceMapObject.getVersion());
+      };
     }
 
+    throw new SourceMapParseException("unable to detect source map format");
+  }
+
+  /**
+   * Using the fast parser to parse the source map. This only supports version 3 source maps.
+   *
+   * @param contents The string representing the source map file contents.
+   * @return The parsed source map.
+   */
+  public static SourceMapConsumerV3 parseFast(String contents) throws SourceMapParseException {
+    if (contents.startsWith("{")) {
+      SourceMapObject sourceMapObject = SourceMapObjectParser.parseFast(contents);
+      checkArgument(
+          sourceMapObject.getVersion() == 3,
+          "Unknown source map version:%s",
+          sourceMapObject.getVersion());
+      SourceMapConsumerV3 consumer = new SourceMapConsumerV3();
+      consumer.parse(sourceMapObject, null);
+      return consumer;
+    }
     throw new SourceMapParseException("unable to detect source map format");
   }
 }

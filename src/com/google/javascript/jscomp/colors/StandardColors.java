@@ -36,11 +36,27 @@ public final class StandardColors {
   // These IDs are randomly chosen.
   public static final ColorId ARGUMENTS_ID = ColorId.fromUnsigned(0x1939a66d);
   public static final ColorId ARRAY_ID = ColorId.fromUnsigned(0x79d4a603);
+  public static final ColorId READONLY_ARRAY_ID = ColorId.fromUnsigned(0x5627ffb0);
   public static final ColorId GENERATOR_ID = ColorId.fromUnsigned(0x9bb1303f);
   public static final ColorId I_TEMPLATE_ARRAY_ID = ColorId.fromUnsigned(0x46ab3f0e);
   public static final ColorId ITERATOR_ID = ColorId.fromUnsigned(0x417ed2ab);
   public static final ColorId ASYNC_ITERATOR_ITERABLE_ID = ColorId.fromUnsigned(0xcb382e0a);
   public static final ColorId PROMISE_ID = ColorId.fromUnsigned(0x39581abf);
+
+  // Deterministic ColorIds produced by JSTypeColorIdHasher for global externs collection types.
+  public static final ColorId ARRAY_PROTOTYPE_ID = ColorId.fromUnsigned(0x64c23e6d334e56f7L);
+  public static final ColorId READONLY_ARRAY_PROTOTYPE_ID =
+      ColorId.fromUnsigned(0x3589d35cec22a47fL);
+  public static final ColorId I_TEMPLATE_ARRAY_PROTOTYPE_ID =
+      ColorId.fromUnsigned(0x7a40cd76f33e9198L);
+  public static final ColorId MAP_ID = ColorId.fromUnsigned(0x33a2e1724e099aa4L);
+  public static final ColorId MAP_PROTOTYPE_ID = ColorId.fromUnsigned(0x6d01d1a4e84831d6L);
+  public static final ColorId READONLY_MAP_ID = ColorId.fromUnsigned(0x03a6d92ab09bc918L);
+  public static final ColorId READONLY_MAP_PROTOTYPE_ID = ColorId.fromUnsigned(0x158c76decaa1fa9eL);
+  public static final ColorId SET_ID = ColorId.fromUnsigned(0x4e48c8722ab53ebdL);
+  public static final ColorId SET_PROTOTYPE_ID = ColorId.fromUnsigned(0xfe841a0bed231439L);
+  public static final ColorId READONLY_SET_ID = ColorId.fromUnsigned(0x30860b55852d1f9dL);
+  public static final ColorId READONLY_SET_PROTOTYPE_ID = ColorId.fromUnsigned(0x8d0f691546b43933L);
 
   public static final ColorId BIGINT_OBJECT_ID = ColorId.fromUnsigned(0xa9d9ad6d);
   public static final ColorId BOOLEAN_OBJECT_ID = ColorId.fromUnsigned(0x9205dc06);
@@ -103,12 +119,27 @@ public final class StandardColors {
           .setInvalidating(true)
           .buildAxiomatic();
 
+  /** The supertype of all functions. */
+  public static final Color TOP_FUNCTION =
+      Color.singleBuilder()
+          .setId(ColorId.fromUnsigned(0x283b5838))
+          .setBoxId(null)
+          .setInvalidating(true)
+          .buildAxiomatic();
+
   /** Analagous to Closure '*'/'?' and TS unknown/any */
   public static final Color UNKNOWN =
       Color.singleBuilder()
           .setBoxId(null)
           .setId(ColorId.fromUnsigned(0)) // Make UNKNOWN the "default" numerical value.
           .setInvalidating(true)
+          .buildAxiomatic();
+
+  public static final Color GBIGINT =
+      Color.singleBuilder()
+          .setId(ColorId.fromUnsigned(0xaaae3678))
+          .setBoxId(null)
+          .setInvalidating(false)
           .buildAxiomatic();
 
   /**
@@ -130,6 +161,8 @@ public final class StandardColors {
           .put(SYMBOL.getId(), SYMBOL)
           .put(TOP_OBJECT.getId(), TOP_OBJECT)
           .put(UNKNOWN.getId(), UNKNOWN)
+          .put(GBIGINT.getId(), GBIGINT)
+          .put(TOP_FUNCTION.getId(), TOP_FUNCTION)
           .buildOrThrow();
 
   /**
@@ -145,6 +178,7 @@ public final class StandardColors {
           .put(NUMBER.getId(), NUMBER)
           .put(STRING.getId(), STRING)
           .put(SYMBOL.getId(), SYMBOL)
+          .put(GBIGINT.getId(), GBIGINT)
           .buildOrThrow();
 
   /**
@@ -172,11 +206,23 @@ public final class StandardColors {
       ImmutableSet.<ColorId>builder()
           .addAll(PRIMITIVE_BOX_IDS)
           .add(ARRAY_ID)
+          .add(ARRAY_PROTOTYPE_ID)
+          .add(READONLY_ARRAY_ID)
+          .add(READONLY_ARRAY_PROTOTYPE_ID)
           .add(ARGUMENTS_ID)
           .add(ASYNC_ITERATOR_ITERABLE_ID)
           .add(GENERATOR_ID)
           .add(I_TEMPLATE_ARRAY_ID)
+          .add(I_TEMPLATE_ARRAY_PROTOTYPE_ID)
           .add(ITERATOR_ID)
+          .add(MAP_ID)
+          .add(MAP_PROTOTYPE_ID)
+          .add(READONLY_MAP_ID)
+          .add(READONLY_MAP_PROTOTYPE_ID)
+          .add(SET_ID)
+          .add(SET_PROTOTYPE_ID)
+          .add(READONLY_SET_ID)
+          .add(READONLY_SET_PROTOTYPE_ID)
           .add(PROMISE_ID)
           .build();
 

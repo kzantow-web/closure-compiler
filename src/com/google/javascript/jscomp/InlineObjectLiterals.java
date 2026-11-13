@@ -18,21 +18,20 @@ package com.google.javascript.jscomp;
 
 import static com.google.common.base.Preconditions.checkState;
 
-import com.google.common.base.Supplier;
 import com.google.common.collect.Lists;
 import com.google.javascript.jscomp.ReferenceCollector.Behavior;
+import com.google.javascript.jscomp.parsing.parser.FeatureSet.Feature;
 import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.Token;
 import com.google.javascript.rhino.TokenStream;
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /**
  * Using the infrastructure provided by {@link ReferenceCollector}, identify variables that are only
@@ -73,7 +72,7 @@ class InlineObjectLiterals implements CompilerPass {
      * A list of variables that should not be inlined, because their reference information is out of
      * sync with the state of the AST.
      */
-    private final Set<Var> staleVars = new HashSet<>();
+    private final Set<Var> staleVars = new LinkedHashSet<>();
 
     @Override
     public void afterExitScope(NodeTraversal t, ReferenceMap referenceMap) {
@@ -83,6 +82,12 @@ class InlineObjectLiterals implements CompilerPass {
         }
 
         ReferenceCollection referenceInfo = referenceMap.getReferences(v);
+        // ReferenceMap only creates collections for variables that have references.
+        // A variable declared in a scope (e.g. unreferenced catch parameter or block-scoped
+        // function declaration) without references will return null.
+        if (referenceInfo == null) {
+          continue;
+        }
 
         if (isInlinableObject(referenceInfo.references)) {
           // Skiplist the object itself, as well as any other values
@@ -131,7 +136,7 @@ class InlineObjectLiterals implements CompilerPass {
 
       return var.isGlobal()
           || var.isExtern()
-          || compiler.getCodingConvention().isExported(var.getName(), /* local */ true)
+          || compiler.getCodingConvention().isExported(var.getName(), /* local= */ true)
           || compiler.getCodingConvention().isPropertyRenameFunction(var.getNameNode())
           || staleVars.contains(var);
     }
@@ -147,7 +152,7 @@ class InlineObjectLiterals implements CompilerPass {
      */
     private boolean isInlinableObject(List<Reference> refs) {
       boolean ret = false;
-      Set<String> validProperties = new HashSet<>();
+      Set<String> validProperties = new LinkedHashSet<>();
       for (Reference ref : refs) {
         Node name = ref.getNode();
         Node parent = ref.getParent();
@@ -156,10 +161,10 @@ class InlineObjectLiterals implements CompilerPass {
         // Ignore most indirect references, like x.y (but not x.y(),
         // since the function referenced by y might reference 'this').
         //
-        if (parent.isGetProp()) {
+        if (NodeUtil.isNormalOrOptChainGetProp(parent)) {
           checkState(parent.getFirstChild() == name);
           // A call target may be using the object as a 'this' value.
-          if (grandparent.isCall() && grandparent.getFirstChild() == parent) {
+          if (NodeUtil.isInvocationTarget(parent)) {
             return false;
           }
 
@@ -222,23 +227,17 @@ class InlineObjectLiterals implements CompilerPass {
         // Also, ES5 getters/setters aren't handled by this pass.
         for (Node child = val.getFirstChild(); child != null; child = child.getNext()) {
           switch (child.getToken()) {
+            case GETTER_DEF, SETTER_DEF, COMPUTED_PROP, OBJECT_SPREAD -> {
               // ES5 get/set not supported.
-            case GETTER_DEF:
-            case SETTER_DEF:
               // Don't inline computed property names
-            case COMPUTED_PROP:
               // Spread can overwrite any preceding prop if there are matching keys.
               // TODO(b/126567617): Allow inlining props declared after the SPREAD.
-            case OBJECT_SPREAD:
               return false;
-
-            case MEMBER_FUNCTION_DEF:
-            case STRING_KEY:
-              break;
-
-            default:
-              throw new IllegalStateException(
-                  "Unexpected child of OBJECTLIT: " + child.toStringTree());
+            }
+            case MEMBER_FUNCTION_DEF, STRING_KEY -> {}
+            default ->
+                throw new IllegalStateException(
+                    "Unexpected child of OBJECTLIT: " + child.toStringTree());
           }
 
           validProperties.add(child.getString());
@@ -304,7 +303,7 @@ class InlineObjectLiterals implements CompilerPass {
           // This is the var. There is no value.
         } else {
           Node getprop = ref.getParent();
-          checkState(getprop.isGetProp(), getprop);
+          checkState(NodeUtil.isNormalOrOptChainGetProp(getprop), getprop);
 
           // The key being looked up in the original map.
           String varname = getprop.getString();
@@ -397,25 +396,28 @@ class InlineObjectLiterals implements CompilerPass {
       // can all be properly set as necessary.
       Map<String, String> varmap = computeVarList(referenceInfo);
 
-      Map<String, Node> initvals = new HashMap<>();
+      Map<String, Node> initvals = new LinkedHashMap<>();
       // Figure out the top-level of the var assign node. If it's a plain
       // ASSIGN, then there's an EXPR_STATEMENT above it, if it's a
       // VAR then it should be directly replaced.
       Node vnode;
+      boolean isBlockScoped = v.isLet() || v.isConst();
       boolean defined =
           referenceInfo.isWellDefined() && NodeUtil.isNameDeclaration(init.getParent());
       if (defined) {
         vnode = init.getParent();
         fillInitialValues(init, initvals);
-      } else if (v.getParentNode().isLet() || v.getParentNode().isConst()) {
+      } else if (isBlockScoped) {
         // Find the beginning of the current scope.
         Node scopeRoot = v.getScope().getRootNode();
         // Assuming scopeRoot is a BLOCK, then we want to insert at the top of the block, before the
         // first statement.
         vnode = scopeRoot.getFirstChild();
-        // Some scope-creating nodes might not be BLOCK nodes (e.g. SWITCH)
+        // Some scope-creating nodes might not be BLOCK nodes
         if (!NodeUtil.isStatement(vnode) && NodeUtil.isStatement(scopeRoot)) {
           vnode = scopeRoot;
+        } else if (scopeRoot.isSwitchBody()) {
+          vnode = scopeRoot.getParent();
         }
       } else {
         // Find the beginning of the function body / script.
@@ -424,13 +426,22 @@ class InlineObjectLiterals implements CompilerPass {
 
       checkState(NodeUtil.isStatement(vnode), vnode);
 
+      if (isBlockScoped && !varmap.isEmpty()) {
+        Node script = NodeUtil.getEnclosingScript(vnode);
+        if (script != null) {
+          NodeUtil.addFeatureToScript(script, Feature.LET_DECLARATIONS, compiler);
+        }
+      }
+
       for (Map.Entry<String, String> entry : varmap.entrySet()) {
         Node val = initvals.get(entry.getKey());
-        Node newVarNode = NodeUtil.newVarNode(entry.getValue(), val);
+        Node lhs = IR.name(entry.getValue());
+        Token declarationType = isBlockScoped ? Token.LET : Token.VAR;
+        Node newVarNode;
         if (val == null) {
-          // is this right?
-          newVarNode.srcrefTreeIfMissing(vnode);
+          newVarNode = IR.declaration(lhs, declarationType).srcrefTreeIfMissing(vnode);
         } else {
+          newVarNode = IR.declaration(lhs, val, declarationType).srcrefTreeIfMissing(val);
           recordStaleVarReferencesInTree(val, v.getScope());
         }
         newVarNode.insertBefore(vnode);
@@ -461,7 +472,7 @@ class InlineObjectLiterals implements CompilerPass {
         } else {
           // Make sure that the reference is a GETPROP as we expect it to be.
           Node getprop = ref.getParent();
-          checkState(getprop.isGetProp(), getprop);
+          checkState(NodeUtil.isNormalOrOptChainGetProp(getprop), getprop);
 
           // The key being looked up in the original map.
           String var = getprop.getString();

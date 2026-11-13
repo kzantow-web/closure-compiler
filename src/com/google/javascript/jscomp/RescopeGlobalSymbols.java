@@ -17,12 +17,14 @@ package com.google.javascript.jscomp;
 
 import static com.google.common.base.Preconditions.checkState;
 
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.javascript.jscomp.NodeTraversal.AbstractPostOrderCallback;
 import com.google.javascript.jscomp.NodeTraversal.AbstractShallowStatementCallback;
 import com.google.javascript.rhino.IR;
 import com.google.javascript.rhino.Node;
 import java.util.ArrayList;
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -38,13 +40,13 @@ import java.util.Set;
  *
  * <pre> NS.a = 1; NS.b = function b() { return NS.a }</pre>
  *
- * This allows splitting code into modules that depend on each other's global symbols, without using
+ * This allows splitting code into chunks that depend on each other's global symbols, without using
  * polluting JavaScript's global scope with those symbols. You typically define just a single global
- * symbol, wrap each module in a function wrapper, and pass the global symbol around, eg,
+ * symbol, wrap each chunk in a function wrapper, and pass the global symbol around, eg,
  *
  * <pre> var uniqueNs = uniqueNs || {}; </pre>
  *
- * <pre> (function (NS) { ...your module code here... })(uniqueNs); </pre>
+ * <pre> (function (NS) { ...your chunk code here... })(uniqueNs); </pre>
  *
  * <p>This compile step requires rewriteGlobalDeclarationsForTryCatchWrapping to be turned on to
  * guarantee semantics.
@@ -53,71 +55,51 @@ import java.util.Set;
  */
 final class RescopeGlobalSymbols implements CompilerPass {
 
-  // Appended to variables names that conflict with globalSymbolNamespace.
-  private static final String DISAMBIGUATION_SUFFIX = "$";
-
   private final AbstractCompiler compiler;
   private final String globalSymbolNamespace;
   private final boolean addExtern;
-  private final boolean assumeCrossModuleNames;
-  private final Set<String> crossModuleNames = new HashSet<>();
-  /** Global identifiers that may be a non-arrow function referencing "this" */
-  private final Set<String> maybeReferencesThis = new HashSet<>();
-  private Set<String> externNames;
+  private final boolean assumeCrossChunkNames;
+  private final CompilerOptions.OptimizeLocalAccess optimizeLocalAccess;
 
   /**
    * Constructor for the RescopeGlobalSymbols compiler pass.
    *
    * @param compiler The JSCompiler, for reporting code changes.
-   * @param globalSymbolNamespace Name of namespace into which all global
-   *     symbols are transferred.
-   * @param assumeCrossModuleNames If true, all global symbols will be assumed
-   *     cross module boundaries and thus require renaming.
+   * @param globalSymbolNamespace Name of namespace into which all global symbols are transferred.
+   * @param assumeCrossChunkNames If true, all global symbols will be assumed cross chunk boundaries
+   *     and thus require renaming.
+   * @param optimizeLocalAccess If true, write aliases for global symbols in the chunk where they
+   *     are defined, for more efficient access.
    */
   RescopeGlobalSymbols(
       AbstractCompiler compiler,
       String globalSymbolNamespace,
-      boolean assumeCrossModuleNames) {
-    this(compiler, globalSymbolNamespace, true, assumeCrossModuleNames);
+      boolean assumeCrossChunkNames,
+      CompilerOptions.OptimizeLocalAccess optimizeLocalAccess) {
+    this(compiler, globalSymbolNamespace, true, assumeCrossChunkNames, optimizeLocalAccess);
   }
 
   /**
    * Constructor for the RescopeGlobalSymbols compiler pass for use in testing.
    *
    * @param compiler The JSCompiler, for reporting code changes.
-   * @param globalSymbolNamespace Name of namespace into which all global
-   *     symbols are transferred.
-   * @param addExtern If true, the compiler will consider the
-   *    globalSymbolNamespace an extern name.
-   * @param assumeCrossModuleNames If true, all global symbols will be assumed
-   *     cross module boundaries and thus require renaming.
-   * VisibleForTesting
+   * @param globalSymbolNamespace Name of namespace into which all global symbols are transferred.
+   * @param addExtern If true, the compiler will consider the globalSymbolNamespace an extern name.
+   * @param assumeCrossChunkNames If true, all global symbols will be assumed cross chunk boundaries
+   *     and thus require renaming. VisibleForTesting
+   * @param optimizeLocalAccess Mode for optimizing local access to global symbols.
    */
   RescopeGlobalSymbols(
       AbstractCompiler compiler,
       String globalSymbolNamespace,
       boolean addExtern,
-      boolean assumeCrossModuleNames) {
+      boolean assumeCrossChunkNames,
+      CompilerOptions.OptimizeLocalAccess optimizeLocalAccess) {
     this.compiler = compiler;
     this.globalSymbolNamespace = globalSymbolNamespace;
     this.addExtern = addExtern;
-    this.assumeCrossModuleNames = assumeCrossModuleNames;
-  }
-
-  private boolean isCrossModuleName(String name) {
-    return assumeCrossModuleNames
-        || crossModuleNames.contains(name)
-        || compiler.getCodingConvention().isExported(name, /* local */ false);
-  }
-
-  private boolean isExternVar(String varname, NodeTraversal t) {
-    if (varname.isEmpty()) {
-      return false;
-    }
-    Var v = t.getScope().getVar(varname);
-    return v == null
-        || v.isExtern()
-        || (v.getScope().isGlobal() && this.externNames.contains(varname));
+    this.assumeCrossChunkNames = assumeCrossChunkNames;
+    this.optimizeLocalAccess = optimizeLocalAccess;
   }
 
   private void addExternForGlobalSymbolNamespace() {
@@ -129,9 +111,6 @@ final class RescopeGlobalSymbols implements CompilerPass {
 
   @Override
   public void process(Node externs, Node root) {
-    // Collect variables in externs; they can be shadowed by the same names in global scope.
-    this.externNames = NodeUtil.collectExternVariableNames(this.compiler, externs);
-
     // Make the name of the globalSymbolNamespace an extern.
     if (addExtern) {
       addExternForGlobalSymbolNamespace();
@@ -141,25 +120,60 @@ final class RescopeGlobalSymbols implements CompilerPass {
 
     // Turn global named function statements into var assignments.
     NodeTraversal.traverse(
-        compiler, root, new RewriteGlobalClassFunctionDeclarationsToVarAssignmentsCallback());
+        compiler,
+        root,
+        new RewriteGlobalClassFunctionDeclarationsToVarAssignmentsCallback(compiler));
 
-    // Find global names that are used in more than one module. Those that
+    RescopeGlobalSymbolsRenameHelper.HelperBuilder renameHelperBuilder =
+        new RescopeGlobalSymbolsRenameHelper.HelperBuilder(
+            compiler, globalSymbolNamespace, optimizeLocalAccess);
+
+    // Find global names that are used in more than one chunk. Those that
     // are have to be rewritten.
-    List<NodeTraversal.Callback> nonMutatingPasses = new ArrayList<>();
-    nonMutatingPasses.add(new FindCrossModuleNamesCallback());
+    FindCrossChunkNamesCallback findCrossChunkNames =
+        new FindCrossChunkNamesCallback(
+            compiler,
+            assumeCrossChunkNames,
+            optimizeLocalAccess.shouldOptimize(),
+            renameHelperBuilder);
 
     // And find names that may refer to functions that reference this.
-    nonMutatingPasses.add(new FindNamesReferencingThis());
-    CombinedCompilerPass.traverse(compiler, root, nonMutatingPasses);
+    FindNamesReferencingThis findNamesReferencingThis = new FindNamesReferencingThis();
+
+    CombinedCompilerPass.traverse(
+        compiler, root, ImmutableList.of(findCrossChunkNames, findNamesReferencingThis));
+
+    ImmutableSet<String> externNames = NodeUtil.collectExternVariableNames(compiler, externs);
+
+    RescopeGlobalSymbolsInfo symbolInfo =
+        new RescopeGlobalSymbolsInfo(
+            globalSymbolNamespace,
+            externNames,
+            findCrossChunkNames.crossChunkNames,
+            findCrossChunkNames.crossChunkNamesWithWriteFromOtherChunk,
+            findCrossChunkNames.crossChunkNamesUsedInNonDependentChunk,
+            findCrossChunkNames.globalNamesWithReadInDefiningChunk,
+            findCrossChunkNames.globalNamesWithInnerScopeWriteInDefiningChunk,
+            findCrossChunkNames.globalNamesWithUnsafeWriteForLocalAliasInDefiningChunk,
+            findNamesReferencingThis.maybeReferencesThis);
+
+    RescopeGlobalSymbolsRenameHelper renameHelper = renameHelperBuilder.build(symbolInfo);
 
     // Rewrite all references to be property accesses of the single symbol.
-    RewriteScopeCallback rewriteScope = new RewriteScopeCallback();
+    RescopeGlobalSymbolsRewriteCallback rewriteScope =
+        new RescopeGlobalSymbolsRewriteCallback(
+            compiler, optimizeLocalAccess, symbolInfo, renameHelper);
     NodeTraversal.traverse(compiler, root, rewriteScope);
 
     // Remove the var from statements in global scope if the declared names have been rewritten
     // in the previous pass.
-    NodeTraversal.traverse(compiler, root, new RemoveGlobalVarCallback());
-    rewriteScope.declareModuleGlobals();
+    NodeTraversal.traverse(
+        compiler,
+        root,
+        new RemoveGlobalVarCallback(
+            compiler, optimizeLocalAccess.shouldPreserveLocalVarDeclarations()));
+
+    rewriteScope.addDeclarations();
   }
 
   /**
@@ -183,78 +197,223 @@ final class RescopeGlobalSymbols implements CompilerPass {
    * <p>This is helpful when rewriting simple names to property accesses on the global symbol, since
    * {@code class A {}} cannot be rewritten directly to {@code class NS.A {}}
    */
-  private class RewriteGlobalClassFunctionDeclarationsToVarAssignmentsCallback
+  private static class RewriteGlobalClassFunctionDeclarationsToVarAssignmentsCallback
       extends AbstractShallowStatementCallback {
+    private final AbstractCompiler compiler;
+
+    RewriteGlobalClassFunctionDeclarationsToVarAssignmentsCallback(AbstractCompiler compiler) {
+      this.compiler = compiler;
+    }
+
     @Override
     public void visit(NodeTraversal t, Node n, Node parent) {
-      if (NodeUtil.isFunctionDeclaration(n)
-          // Since class declarations are block-scoped, only handle them if in the global scope.
-          || (NodeUtil.isClassDeclaration(n) && t.inGlobalScope())) {
-        Node nameNode = NodeUtil.getNameNode(n);
-        String name = nameNode.getString();
-        // Remove the class or function name. Anonymous classes have an EMPTY node, while anonymous
-        // functions have a NAME node with an empty string.
-        if (n.isClass()) {
-          nameNode.replaceWith(IR.empty().srcref(nameNode));
-        } else {
-          nameNode.setString("");
-          compiler.reportChangeToEnclosingScope(nameNode);
-        }
-        Node prev = n.getPrevious();
-        n.detach();
-        Node var = NodeUtil.newVarNode(name, n);
-        if (prev == null) {
-          parent.addChildToFront(var);
-        } else {
-          var.insertAfter(prev);
-        }
-        compiler.reportChangeToEnclosingScope(parent);
+      // Ignore block scopes within the global scope, as class and function declarations are
+      // block-scoped.
+      // Note that we should never find block-scoped function declarations if outputting ES5
+      // code. Es6RewriteBlockScopedFunctionDeclaration will have rewritten them.
+      if (!t.inGlobalScope()) {
+        return;
       }
+      // Ignore everything that's not a function or class declaration.
+      if (!NodeUtil.isFunctionDeclaration(n) && !NodeUtil.isClassDeclaration(n)) {
+        return;
+      }
+      Node nameNode = NodeUtil.getNameNode(n);
+      String name = nameNode.getString();
+      // Remove the class or function name. Anonymous classes have an EMPTY node, while anonymous
+      // functions have a NAME node with an empty string.
+      if (n.isClass()) {
+        nameNode.replaceWith(IR.empty().srcref(nameNode));
+      } else {
+        nameNode.setString("");
+        compiler.reportChangeToEnclosingScope(nameNode);
+      }
+      Node prev = n.getPrevious();
+      n.detach();
+      Node var = NodeUtil.newVarNode(name, n);
+      if (prev == null) {
+        parent.addChildToFront(var);
+      } else {
+        var.insertAfter(prev);
+      }
+      compiler.reportChangeToEnclosingScope(parent);
     }
   }
 
   /**
-   * Find all global names that are used in more than one module. The following
-   * compiler transformations can ignore the globals that are not.
+   * Find all global names that are used in more than one chunk. The following compiler
+   * transformations can ignore the globals that are not.
    */
-  private class FindCrossModuleNamesCallback extends
-      AbstractPostOrderCallback {
+  private static class FindCrossChunkNamesCallback extends AbstractPostOrderCallback {
+    private final AbstractCompiler compiler;
+    private final boolean assumeCrossChunkNames;
+    private final boolean trackLocalAccessSets;
+    final Set<String> crossChunkNames = new LinkedHashSet<>();
+
+    /**
+     * Global cross-chunk identifiers that are written to from a chunk other than the defining one.
+     * Only populated if trackLocalAccessSets is true.
+     */
+    final Set<String> crossChunkNamesWithWriteFromOtherChunk = new LinkedHashSet<>();
+
+    /**
+     * Global cross-chunk identifiers that are referenced in a chunk that does not depend on their
+     * defining chunk. Only populated if trackLocalAccessSets is true.
+     */
+    final Set<String> crossChunkNamesUsedInNonDependentChunk = new LinkedHashSet<>();
+
+    /**
+     * Global identifiers that are read in the chunk where they are defined. Only populated if
+     * trackLocalAccessSets is true.
+     */
+    final Set<String> globalNamesWithReadInDefiningChunk = new LinkedHashSet<>();
+
+    /**
+     * Global identifiers that are written to from a nested scope (i.e. not the global scope) in
+     * their defining chunk. Only populated if trackLocalAccessSets is true.
+     */
+    final Set<String> globalNamesWithInnerScopeWriteInDefiningChunk = new LinkedHashSet<>();
+
+    /**
+     * Global identifiers that have an L-value write in their defining chunk that cannot be safely
+     * mirrored by {@link RescopeGlobalSymbolsRewriteCallback#addGlobalNamespaceAlias} (such as a
+     * destructuring assignment in an expression context or a {@code for-in}/{@code for-of} loop
+     * header). Only populated if trackLocalAccessSets is true.
+     */
+    final Set<String> globalNamesWithUnsafeWriteForLocalAliasInDefiningChunk =
+        new LinkedHashSet<>();
+
+    private final RescopeGlobalSymbolsRenameHelper.HelperBuilder renameHelperBuilder;
+
+    FindCrossChunkNamesCallback(
+        AbstractCompiler compiler,
+        boolean assumeCrossChunkNames,
+        boolean trackLocalAccessSets,
+        RescopeGlobalSymbolsRenameHelper.HelperBuilder renameHelperBuilder) {
+      this.compiler = compiler;
+      this.assumeCrossChunkNames = assumeCrossChunkNames;
+      this.trackLocalAccessSets = trackLocalAccessSets;
+      this.renameHelperBuilder = renameHelperBuilder;
+    }
+
     @Override
     public void visit(NodeTraversal t, Node n, Node parent) {
       if (n.isName()) {
         String name = n.getString();
-        if ("".equals(name) || crossModuleNames.contains(name)) {
+        if (name.isEmpty() || (!trackLocalAccessSets && crossChunkNames.contains(name))) {
           return;
         }
+        renameHelperBuilder.recordExistingName(name);
         Scope s = t.getScope();
         Var v = s.getVar(name);
         if (v == null || !v.isGlobal()) {
           return;
         }
+
+        if (assumeCrossChunkNames
+            || compiler.getCodingConvention().isExported(name, /* local= */ false)) {
+          crossChunkNames.add(name);
+        }
+
         CompilerInput input = v.getInput();
+
+        if (trackLocalAccessSets
+            && !t.inGlobalScope()
+            && (input == null || input.getChunk() == t.getChunk())
+            && NodeUtil.isLValueWrite(n)) {
+          globalNamesWithInnerScopeWriteInDefiningChunk.add(name);
+        }
+
         if (input == null) {
-          // We know nothing. Assume name is used across modules.
-          crossModuleNames.add(name);
+          // We know nothing. Assume name is used across chunks.
+          crossChunkNames.add(name);
           return;
         }
-        // Compare the module where the variable is declared to the current
-        // module. If they are different, the variable is used across modules.
-        JSChunk module = input.getChunk();
-        if (module != t.getChunk()) {
-          crossModuleNames.add(name);
+        // Compare the chunk where the variable is declared to the current
+        // chunk. If they are different, the variable is used across chunks.
+        JSChunk chunk = input.getChunk();
+        if (chunk != t.getChunk()) {
+          crossChunkNames.add(name);
+
+          if (trackLocalAccessSets) {
+            // If tracking local access, track names with non-local writes separately. This includes
+            // all L-value names except for declarations without children.
+            if (NodeUtil.isLValueWrite(n)) {
+              crossChunkNamesWithWriteFromOtherChunk.add(name);
+            }
+            if (!compiler.getChunkGraph().dependsOn(t.getChunk(), chunk)) {
+              crossChunkNamesUsedInNonDependentChunk.add(name);
+            }
+          }
+        } else if (trackLocalAccessSets) {
+          if (isReadReference(n)) {
+            globalNamesWithReadInDefiningChunk.add(name);
+          }
+          if (NodeUtil.isLValueWrite(n) && !isWriteSafeForLocalAliasMirroring(n, parent)) {
+            globalNamesWithUnsafeWriteForLocalAliasInDefiningChunk.add(name);
+          }
         }
       }
+    }
+
+    /**
+     * Returns whether the {@code NAME} node {@code n} reads the variable's value (either as a
+     * non-L-value reference or as the target of a read-modify-write operation such as {@code a +=
+     * 1} or {@code a++}).
+     */
+    private static boolean isReadReference(Node n) {
+      if (!NodeUtil.isLValue(n)) {
+        return true;
+      }
+      Node parent = n.getParent();
+      return NodeUtil.isCompoundAssignmentOp(parent) || parent.isInc() || parent.isDec();
+    }
+
+    /**
+     * Returns whether an L-value write {@code n} in its defining chunk can be safely mirrored to
+     * the global namespace or wrapper object by {@link
+     * RescopeGlobalSymbolsRewriteCallback#addGlobalNamespaceAlias}.
+     *
+     * <p>{@code addGlobalNamespaceAlias} rewrites assignments ({@code a = x}, {@code a += x}),
+     * initialized declarations ({@code var a = x}), and increments/decrements ({@code ++a}, {@code
+     * a++}) in place as expressions, which works in any expression context. For destructuring
+     * writes, it appends a separate {@code _.a._ = _a;} statement after the enclosing statement,
+     * which is only sound when the write is a top-level destructuring assignment statement or a
+     * non-for-loop destructuring declaration.
+     */
+    private static boolean isWriteSafeForLocalAliasMirroring(Node n, Node parent) {
+      if ((NodeUtil.isAssignmentOp(parent) && parent.getFirstChild() == n)
+          || parent.isInc()
+          || parent.isDec()) {
+        return true;
+      }
+      if (NodeUtil.isNameDeclaration(parent)) {
+        return !NodeUtil.isEnhancedFor(parent.getParent());
+      }
+      if (NodeUtil.isLhsByDestructuring(n)) {
+        Node rootTarget = NodeUtil.getRootTarget(n);
+        Node rootTargetParent = rootTarget.getParent();
+        if (rootTargetParent.isDestructuringLhs()) {
+          Node declaration = rootTargetParent.getParent();
+          return NodeUtil.isStatementBlock(declaration.getParent());
+        }
+        if (rootTargetParent.isAssign() && rootTargetParent.getFirstChild() == rootTarget) {
+          Node exprResult = rootTargetParent.getParent();
+          return exprResult.isExprResult() && NodeUtil.isStatementBlock(exprResult.getParent());
+        }
+      }
+      return false;
     }
   }
 
   /**
-   * Builds the maybeReferencesThis set of names that may reference a function
-   * that references this. If the function a name references does not reference
-   * this it can be called as a method call where the this value is not the
-   * same as in a normal function call.
+   * Builds the maybeReferencesThis set of names that may reference a function that references this.
+   * If the function a name references does not reference this it can be called as a method call
+   * where the this value is not the same as in a normal function call.
    */
-  private class FindNamesReferencingThis extends
-      AbstractPostOrderCallback {
+  private static class FindNamesReferencingThis extends AbstractPostOrderCallback {
+    final Set<String> maybeReferencesThis = new LinkedHashSet<>();
+
     @Override
     public void visit(NodeTraversal t, Node n, Node parent) {
       if (n.isName()) {
@@ -297,211 +456,11 @@ final class RescopeGlobalSymbols implements CompilerPass {
   }
 
   /**
-   * Visits each NAME token and checks whether it refers to a global variable. If yes, rewrites the
-   * name to be a property access on the "globalSymbolNamespace". If the NAME is an extern variable,
-   * it becomes a property access on window.
+   * Removes {@code var}/{@code let}/{@code const} declarations whose global variables have been
+   * rewritten to property assignments by {@link RescopeGlobalSymbolsRewriteCallback}, while
+   * preserving {@code var} declarations for variables that remain local to the chunk.
    *
-   * <pre>var a = 1, b = 2, c = 3;</pre>
-   *
-   * becomes
-   *
-   * <pre>var NS.a = 1, NS.b = 2, NS.c = 4</pre>
-   *
-   * (The var token is removed in a later traversal.)
-   *
-   * <pre>a + b</pre>
-   *
-   * becomes
-   *
-   * <pre>NS.a + NS.b</pre>
-   *
-   * <pre>a()</pre>
-   *
-   * becomes
-   *
-   * <pre>(0,NS.a)()</pre>
-   *
-   * Notice the special syntax here to preserve the *this* semantics in the function call.
-   *
-   * <pre>var {a: b} = {}</pre>
-   *
-   * becomes
-   *
-   * <pre>var {a: NS.b} = {}</pre>
-   *
-   * (This is invalid syntax, but the VAR token is removed later).
-   */
-  private class RewriteScopeCallback implements NodeTraversal.Callback {
-    final List<ModuleGlobal> preDeclarations = new ArrayList<>();
-
-    @Override
-    public boolean shouldTraverse(NodeTraversal t, Node n, Node parent) {
-      if (NodeUtil.isNameDeclaration(n)) {
-        visitNameDeclaration(t, n);
-      }
-      return true;
-    }
-
-    @Override
-    public void visit(NodeTraversal t, Node n, Node parent) {
-      if (n.isName()) {
-        visitName(t, n, parent);
-      }
-    }
-
-    private void visitNameDeclaration(NodeTraversal t, Node declaration) {
-      List<Node> allLhsNodes = NodeUtil.findLhsNodesInNode(declaration);
-      if (allLhsNodes.isEmpty()) {
-        return;
-      }
-      boolean hasImportantName = false;
-      boolean isGlobalDeclaration = t.getScope().getVar(allLhsNodes.get(0).getString()).isGlobal();
-
-      // Check if any names are in the externs or are global and cross module.
-      for (Node lhs : allLhsNodes) {
-        checkState(lhs.isName(), "Unexpected lhs node %s, expected NAME", lhs);
-        if ((isGlobalDeclaration && isCrossModuleName(lhs.getString()))
-            || isExternVar(lhs.getString(), t)) {
-          hasImportantName = true;
-          break;
-        }
-      }
-
-      if (hasImportantName) {
-        rewriteNameDeclaration(t, declaration, allLhsNodes, isGlobalDeclaration);
-      }
-    }
-
-    /**
-     * Partially rewrites a declaration as an assignment.
-     *
-     * <p>In the post traversal, all global, cross-module names and extern name references will
-     * become property accesses. They will then be invalid as the lhs of a declaration, so we need
-     * to convert them to assignments. We also convert any other names or destructuring patterns in
-     * the same declaration to assignments and add an earlier declaration.
-     */
-    private void rewriteNameDeclaration(
-        NodeTraversal t, Node declaration, List<Node> allLhsNodes, boolean isGlobalDeclaration) {
-
-      // Add predeclarations for variables that are neither global/cross-module names nor externs.
-      CompilerInput input = t.getInput();
-      for (Node lhs : allLhsNodes) {
-        String name = lhs.getString();
-        if (!(isGlobalDeclaration && isCrossModuleName(name)) && !isExternVar(name, t)) {
-          preDeclarations.add(
-              new ModuleGlobal(input.getAstRoot(compiler), IR.name(name).srcref(lhs)));
-        }
-      }
-
-      // Convert all names with an rhs and all destructuring patterns to be assignments. e.g.
-      //  VAR
-      //    NAME foo
-      //      NUMBER 3
-      // becomes
-      //  VAR
-      //    ASSIGN
-      //      NAME foo
-      //      NUMBER 3
-      for (Node child = declaration.getFirstChild(); child != null; ) {
-        final Node next = child.getNext();
-        if (child.isName() && child.hasChildren()) {
-          Node assign = IR.assign(child.cloneNode(), child.removeFirstChild());
-          child.replaceWith(assign);
-          assign.setJSDocInfo(declaration.getJSDocInfo());
-        } else if (child.isDestructuringLhs()) {
-          if (child.hasOneChild()) {
-            checkState(
-                NodeUtil.isEnhancedFor(declaration.getParent()),
-                "DESTRUCTURING_LHS should have two children: %s",
-                declaration.toStringTree());
-            // remove the DESTRUCTURING_LHS but leave the actual destructuring pattern
-            child.replaceWith(child.removeFirstChild());
-          } else {
-            Node assign = IR.assign(child.removeFirstChild(), child.removeFirstChild());
-            child.replaceWith(assign);
-            assign.setJSDocInfo(declaration.getJSDocInfo());
-          }
-        }
-        child = next;
-      }
-      compiler.reportChangeToEnclosingScope(declaration);
-    }
-
-    private void visitName(NodeTraversal t, Node n, Node parent) {
-      String name = n.getString();
-      // Ignore anonymous functions
-      if (parent.isFunction() && name.isEmpty()) {
-        return;
-      }
-      if (isExternVar(name, t)) {
-        return;
-      }
-      // When the globalSymbolNamespace is used as a local variable name
-      // add suffix to avoid shadowing the namespace. Also add a suffix
-      // if a name starts with the name of the globalSymbolNamespace and
-      // the suffix.
-      Var var = t.getScope().getVar(name);
-      if (!var.isGlobal()
-          && (name.equals(globalSymbolNamespace)
-              || name.startsWith(globalSymbolNamespace + DISAMBIGUATION_SUFFIX))) {
-        n.setString(name + DISAMBIGUATION_SUFFIX);
-        compiler.reportChangeToEnclosingScope(n);
-      }
-      // We only care about global vars.
-      if (!(var.isGlobal() && isCrossModuleName(name))) {
-        return;
-      }
-      replaceSymbol(n, name);
-    }
-
-    /** Replaces a global cross-module name with an access on the global namespace symbol */
-    private void replaceSymbol(Node node, String name) {
-      Node parent = node.getParent();
-      Node replacement = IR.getprop(IR.name(globalSymbolNamespace), name);
-      replacement.srcrefTree(node);
-
-      node.replaceWith(replacement);
-      compiler.reportChangeToEnclosingScope(replacement);
-      if (parent.isCall() && !maybeReferencesThis.contains(name)) {
-        // Do not write calls like this: (0, _a)() but rather as _.a(). The
-        // this inside the function will be wrong, but it doesn't matter
-        // because the this is never read.
-        parent.putBooleanProp(Node.FREE_CALL, false);
-      }
-      compiler.reportChangeToEnclosingScope(parent);
-    }
-
-    /**
-     * Adds back declarations for variables that do not cross module boundaries.
-     * Must be called after RemoveGlobalVarCallback.
-     */
-    void declareModuleGlobals() {
-      for (ModuleGlobal global : preDeclarations) {
-        if (global.root.hasChildren() && global.root.getFirstChild().isVar()) {
-          global.root.getFirstChild().addChildToBack(global.name);
-        } else {
-          global.root.addChildToFront(IR.var(global.name).srcref(global.name));
-        }
-        compiler.reportChangeToEnclosingScope(global.root);
-      }
-    }
-
-    /**
-     * Variable that doesn't cross module boundaries.
-     */
-    private class ModuleGlobal {
-      final Node root;
-      final Node name;
-
-      ModuleGlobal(Node root, Node name) {
-        this.root = root;
-        this.name = name;
-      }
-    }
-  }
-
-  /**
-   * Removes every occurrence of var/let/const that declares a global variable.
+   * <p>When all variables in a declaration are rewritten to namespace assignments:
    *
    * <pre>var NS.a = 1, NS.b = 2;</pre>
    *
@@ -509,13 +468,25 @@ final class RescopeGlobalSymbols implements CompilerPass {
    *
    * <pre>NS.a = 1; NS.b = 2;</pre>
    *
+   * <p>When {@code preserveLocalVarDeclarations} is true and a declaration mixes local variables
+   * with rewritten namespace assignments, the statement is split in order so local variables retain
+   * their {@code var} declarations in place:
+   *
+   * <pre>var a = NS.a = 1, NS.b = 2, c = 3;</pre>
+   *
+   * becomes
+   *
+   * <pre>var a = NS.a = 1; NS.b = 2; var c = 3;</pre>
+   *
+   * <p>In {@code for}-loop headers:
+   *
    * <pre>for (var a = 0, b = 0;;)</pre>
    *
    * becomes
    *
    * <pre>for (NS.a = 0, NS.b = 0;;)</pre>
    *
-   * Declarations without assignments are optimized away:
+   * <p>Rewritten declarations without assignments are optimized away:
    *
    * <pre>var a = 1, b;</pre>
    *
@@ -523,52 +494,115 @@ final class RescopeGlobalSymbols implements CompilerPass {
    *
    * <pre>NS.a = 1</pre>
    */
-  private class RemoveGlobalVarCallback extends AbstractShallowStatementCallback {
+  private static class RemoveGlobalVarCallback extends AbstractShallowStatementCallback {
+    private final AbstractCompiler compiler;
+
+    /**
+     * Whether {@code NAME} children remaining in a partially rewritten declaration should be
+     * preserved in place as {@code var} declarations.
+     *
+     * <p>When {@code true} (used when {@code
+     * optimizeLocalAccess.shouldPreserveLocalVarDeclarations()} is true), variables that stay local
+     * to their defining chunk are left as {@code NAME} nodes (with optional initializers) in the
+     * declaration by {@link RescopeGlobalSymbolsRewriteCallback} and must be emitted as {@code var}
+     * statements in place. When {@code false}, all local variables in a partially rewritten
+     * declaration have already been hoisted to the top of the chunk via {@code preDeclarations} and
+     * their initializers converted to {@code ASSIGN} nodes, so any remaining bare {@code NAME}
+     * children are uninitialized and should be dropped.
+     */
+    private final boolean preserveLocalVarDeclarations;
+
+    /**
+     * @param compiler The JSCompiler, for reporting code changes.
+     * @param preserveLocalVarDeclarations If true, preserve remaining {@code NAME} children as
+     *     in-place {@code var} declarations rather than dropping them.
+     */
+    RemoveGlobalVarCallback(AbstractCompiler compiler, boolean preserveLocalVarDeclarations) {
+      this.compiler = compiler;
+      this.preserveLocalVarDeclarations = preserveLocalVarDeclarations;
+    }
+
     @Override
     public void visit(NodeTraversal t, Node n, Node parent) {
       if (!NodeUtil.isNameDeclaration(n)) {
         return;
       }
 
-      List<Node> commas = new ArrayList<>();
-      List<Node> interestingChildren = new ArrayList<>();
-      // Filter out declarations without assignments.
-      // As opposed to regular var nodes, there are always assignments
-      // because the previous traversal in RewriteScopeCallback creates
-      // them.
-      boolean allNameOrDestructuring = true;
-      for (Node c = n.getFirstChild(); c != null; c = c.getNext()) {
-        if (!c.isName() && !c.isDestructuringLhs()) {
-          allNameOrDestructuring = false;
-        }
-        if (c.isAssign() || NodeUtil.isAnyFor(parent)) {
-          interestingChildren.add(c);
-        }
-      }
-      // If every child of a var declares a name, it must stay in place.
-      // This is the case if none of the declared variables cross module
-      // boundaries.
-      if (allNameOrDestructuring) {
+      // If every child of a non-empty declaration is still a variable binding (NAME or
+      // DESTRUCTURING_LHS) rather than a rewritten assignment (ASSIGN) or property access
+      // (GETPROP), then no variables in the declaration were rewritten into standalone
+      // expressions, and the declaration node must stay in place as-is.
+      if (hasOnlyNameOrDestructuringChildren(n)) {
         return;
       }
-      for (Node c : interestingChildren) {
-        if (NodeUtil.isAnyFor(parent) && parent.getFirstChild() == n) {
+
+      if (NodeUtil.isAnyFor(parent) && parent.getFirstChild() == n) {
+        // Declaration in a for-loop header (`for (var a = 0, b = 1; ...)` or
+        // `for (var x in/of ...)`). A for-loop initializer or iteration target slot only accepts a
+        // single expression and cannot be split into multiple statements. In a standard for-loop,
+        // join all children into a comma expression (`for (_.a = 0, b = 1; ...)`). In a for-in or
+        // for-of loop, the single rewritten LHS child (e.g. `_.x` or `[_.a, _.b]`) replaces the
+        // declaration directly (`for (_.x in ...)`). Any local variables declared in the loop
+        // header were already recorded in `preDeclarations` by RescopeGlobalSymbolsRewriteCallback
+        // to be hoisted to the top of the chunk.
+        List<Node> commas = new ArrayList<>();
+        for (Node c = n.getFirstChild(); c != null; c = c.getNext()) {
           commas.add(c.cloneTree());
-        } else {
-          // Var statement outside of for-loop.
-          Node expr = IR.exprResult(c.cloneTree()).srcref(c);
-          NodeUtil.markNewScopesChanged(expr, compiler);
-          expr.insertBefore(n);
+        }
+        if (!commas.isEmpty()) {
+          Node comma = joinOnComma(commas, n);
+          comma.insertBefore(n);
+        }
+      } else {
+        // Declaration statement outside of a for-loop header.
+        // Group consecutive local variable bindings (NAME) into VAR declarations when
+        // preserveLocalVarDeclarations is enabled, and emit rewritten ASSIGN children as standalone
+        // EXPR_RESULT statements in original declaration order. Any DESTRUCTURING_LHS children in a
+        // rewritten declaration were already converted to ASSIGN nodes by
+        // RescopeGlobalSymbolsRewriteCallback.
+        // Any other children (such as bare GETPROP nodes from uninitialized cross-chunk
+        // declarations, or uninitialized NAME nodes when preserveLocalVarDeclarations is false)
+        // have no side effects and are omitted.
+        Node currentVar = null;
+        for (Node c = n.getFirstChild(); c != null; c = c.getNext()) {
+          checkState(!c.isDestructuringLhs(), "Unexpected DESTRUCTURING_LHS child: %s", c);
+          if (preserveLocalVarDeclarations && c.isName()) {
+            if (currentVar == null) {
+              currentVar = IR.var(c.cloneTree()).srcref(n);
+              currentVar.setJSDocInfo(n.getJSDocInfo());
+              currentVar.insertBefore(n);
+            } else {
+              currentVar.addChildToBack(c.cloneTree());
+            }
+          } else if (c.isAssign()) {
+            // Finalize any in-progress VAR declaration before emitting the assignment expression
+            // so that initializer evaluation order is preserved across mixed declarations.
+            if (currentVar != null) {
+              NodeUtil.markNewScopesChanged(currentVar, compiler);
+              currentVar = null;
+            }
+            Node expr = IR.exprResult(c.cloneTree()).srcref(c);
+            NodeUtil.markNewScopesChanged(expr, compiler);
+            expr.insertBefore(n);
+          }
+        }
+        if (currentVar != null) {
+          NodeUtil.markNewScopesChanged(currentVar, compiler);
         }
       }
-      if (!commas.isEmpty()) {
-        Node comma = joinOnComma(commas, n);
-        comma.insertBefore(n);
-      }
-      // Remove the var/const/let node.
+      // Remove the original var/const/let node.
       n.detach();
       NodeUtil.markFunctionsDeleted(n, compiler);
       compiler.reportChangeToEnclosingScope(parent);
+    }
+
+    private static boolean hasOnlyNameOrDestructuringChildren(Node n) {
+      for (Node c = n.getFirstChild(); c != null; c = c.getNext()) {
+        if (!c.isName() && !c.isDestructuringLhs()) {
+          return false;
+        }
+      }
+      return n.hasChildren();
     }
 
     private Node joinOnComma(List<Node> commas, Node source) {
@@ -582,4 +616,3 @@ final class RescopeGlobalSymbols implements CompilerPass {
     }
   }
 }
-
